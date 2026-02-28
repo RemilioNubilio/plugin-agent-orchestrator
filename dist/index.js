@@ -1,20 +1,5 @@
-import { createRequire } from "node:module";
-var __create = Object.create;
-var __getProtoOf = Object.getPrototypeOf;
+import {createRequire} from "node:module";
 var __defProp = Object.defineProperty;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __toESM = (mod, isNodeMode, target) => {
-  target = mod != null ? __create(__getProtoOf(mod)) : {};
-  const to = isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target;
-  for (let key of __getOwnPropNames(mod))
-    if (!__hasOwnProp.call(to, key))
-      __defProp(to, key, {
-        get: () => mod[key],
-        enumerable: true
-      });
-  return to;
-};
 var __export = (target, all) => {
   for (var name in all)
     __defProp(target, name, {
@@ -36,8 +21,7 @@ function stripAnsi(raw) {
 }
 function cleanForChat(raw) {
   const stripped = applyAnsiStrip(raw);
-  return stripped.replace(TUI_DECORATIVE, " ").replace(/\xa0/g, " ").split(`
-`).filter((line) => {
+  return stripped.replace(TUI_DECORATIVE, " ").replace(/\xa0/g, " ").split("\n").filter((line) => {
     const trimmed = line.trim();
     if (!trimmed)
       return false;
@@ -48,10 +32,7 @@ function cleanForChat(raw) {
     if (!/[a-zA-Z0-9]/.test(trimmed))
       return false;
     return true;
-  }).map((line) => line.replace(/ {2,}/g, " ").trim()).filter((line) => line.length > 0).join(`
-`).replace(/\n{3,}/g, `
-
-`).trim();
+  }).map((line) => line.replace(/ {2,}/g, " ").trim()).filter((line) => line.length > 0).join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 function extractCompletionSummary(raw) {
   const stripped = applyAnsiStrip(raw);
@@ -76,8 +57,7 @@ function extractCompletionSummary(raw) {
     for (const m of diffStat)
       lines.push(m.trim());
   }
-  return lines.join(`
-`);
+  return lines.join("\n");
 }
 function extractDevServerUrl(raw) {
   const stripped = applyAnsiStrip(raw);
@@ -91,8 +71,7 @@ function captureTaskResponse(sessionId, buffers, markers) {
     return "";
   const responseLines = buffer.slice(marker);
   markers.delete(sessionId);
-  return cleanForChat(responseLines.join(`
-`));
+  return cleanForChat(responseLines.join("\n"));
 }
 var CURSOR_MOVEMENT, CURSOR_POSITION, ERASE, OSC, ALL_ANSI, CONTROL_CHARS, ORPHAN_SGR, LONG_SPACES, TUI_DECORATIVE, LOADING_LINE, STATUS_LINE;
 var init_ansi_utils = __esm(() => {
@@ -111,127 +90,34 @@ var init_ansi_utils = __esm(() => {
 
 // src/services/swarm-coordinator-prompts.ts
 function buildCoordinationPrompt(taskCtx, promptText, recentOutput, decisionHistory) {
-  const historySection = decisionHistory.length > 0 ? `
-Previous decisions for this session:
-${decisionHistory.slice(-5).map((d, i) => `  ${i + 1}. [${d.event}] prompt="${d.promptText}" → ${d.action}${d.response ? ` ("${d.response}")` : ""} — ${d.reasoning}`).join(`
-`)}
-` : "";
-  return `You are Milady, an AI orchestrator managing a swarm of coding agents. ` + `A ${taskCtx.agentType} coding agent ("${taskCtx.label}", session: ${taskCtx.sessionId}) ` + `is blocked and waiting for input.
+  const historySection = decisionHistory.length > 0 ? `\nPrevious decisions for this session:\n${decisionHistory.slice(-5).map((d, i) => `  ${i + 1}. [${d.event}] prompt="${d.promptText}" \u2192 ${d.action}${d.response ? ` ("${d.response}")` : ""} \u2014 ${d.reasoning}`).join("\n")}\n` : "";
+  return `You are Milady, an AI orchestrator managing a swarm of coding agents. ` + `A ${taskCtx.agentType} coding agent ("${taskCtx.label}", session: ${taskCtx.sessionId}) ` + `is blocked and waiting for input.\n\n` + `Original task: "${taskCtx.originalTask}"\n` + `Working directory: ${taskCtx.workdir}\n` + `Repository: ${taskCtx.repo ?? "none (scratch directory)"}\n` + historySection + `\nRecent terminal output (last 50 lines):\n` + `---\n${recentOutput.slice(-3000)}\n---\n\n` + `The agent is showing this blocking prompt:\n` + `"${promptText}"\n\n` + `Decide how to respond. Your options:\n\n` + `1. "respond" \u2014 Send a response to unblock the agent. For text prompts (Y/n, questions), ` + `set "response" to the text to send. For TUI menus or interactive prompts that need ` + `special keys, set "useKeys": true and "keys" to the key sequence ` + `(e.g. ["enter"], ["down","enter"], ["y","enter"]).\n\n` + `2. "complete" \u2014 The original task has been fulfilled. The agent has finished its work ` + `(e.g. code written, PR created, tests passed) and is back at the idle prompt. ` + `Use this when the terminal output shows the task objectives have been met.\n\n` + `3. "escalate" \u2014 The prompt requires human judgment (e.g. design decisions, ` + `ambiguous requirements, security-sensitive actions). Do NOT respond yourself.\n\n` + `4. "ignore" \u2014 The prompt is not actually blocking or is already being handled.
 
-` + `Original task: "${taskCtx.originalTask}"
-` + `Working directory: ${taskCtx.workdir}
-` + historySection + `
-Recent terminal output (last 50 lines):
-` + `---
-${recentOutput.slice(-3000)}
----
+` + `Guidelines:\n` + `- IMPORTANT: If the prompt asks to approve access to files or directories OUTSIDE the working ` + `directory (${taskCtx.workdir}), DECLINE the request and REDIRECT the agent. Do NOT approve ` + `access to paths like /etc, ~/.ssh, ~/, /tmp, or any path that doesn't start with the working ` + `directory. Instead, respond with "n" (or the decline option) and tell the agent: ` + `"That path is outside your workspace. Use ${taskCtx.workdir} instead \u2014 ` + `create any files or directories you need there." This keeps the agent moving without ` + `granting out-of-scope access. The coordinator will also notify the human in case ` + `broader access was intended.\n` + `- For tool approval prompts (file writes, shell commands, etc.), respond "y" or use keys:["enter"] to approve.\n` + `- For Y/n confirmations that align with the original task, respond "y".\n` + `- For design questions or choices that could go either way, escalate.\n` + `- For error recovery prompts, try to respond if the path forward is clear.\n` + `- If the output shows a PR was just created (e.g. "Created pull request #N"), do NOT use "complete" yet. ` + `Instead respond with "Review your PR, run each test plan item to verify it works, update the PR to check off each item, then confirm all items pass".\n` + `- Only use "complete" if the agent confirmed it verified ALL test plan items after creating the PR.\n` + `- If the agent is asking for information that was NOT provided in the original task ` + `(e.g. which repository to use, project requirements, credentials), ESCALATE. ` + `The coordinator does not have this information \u2014 the human must provide it.
+` + `- When in doubt, escalate \u2014 it's better to ask the human than to make a wrong choice.
 
-` + `The agent is showing this blocking prompt:
-` + `"${promptText}"
-
-` + `Decide how to respond. Your options:
-
-` + `1. "respond" — Send a response to unblock the agent. For text prompts (Y/n, questions), ` + `set "response" to the text to send. For TUI menus or interactive prompts that need ` + `special keys, set "useKeys": true and "keys" to the key sequence ` + `(e.g. ["enter"], ["down","enter"], ["y","enter"]).
-
-` + `2. "complete" — The original task has been fulfilled. The agent has finished its work ` + `(e.g. code written, PR created, tests passed) and is back at the idle prompt. ` + `Use this when the terminal output shows the task objectives have been met.
-
-` + `3. "escalate" — The prompt requires human judgment (e.g. design decisions, ` + `ambiguous requirements, security-sensitive actions). Do NOT respond yourself.
-
-` + `4. "ignore" — The prompt is not actually blocking or is already being handled.
-
-` + `Guidelines:
-` + `- For tool approval prompts (file writes, shell commands, etc.), respond "y" or use keys:["enter"] to approve.
-` + `- For Y/n confirmations that align with the original task, respond "y".
-` + `- For design questions or choices that could go either way, escalate.
-` + `- For error recovery prompts, try to respond if the path forward is clear.
-` + `- If the output shows a PR was just created (e.g. "Created pull request #N"), do NOT use "complete" yet. ` + `Instead respond with "Review your PR, run each test plan item to verify it works, update the PR to check off each item, then confirm all items pass".
-` + `- Only use "complete" if the agent confirmed it verified ALL test plan items after creating the PR.
-` + `- When in doubt, escalate — it's better to ask the human than to make a wrong choice.
-
-` + `Respond with ONLY a JSON object:
-` + `{"action": "respond|complete|escalate|ignore", "response": "...", "useKeys": false, "keys": [], "reasoning": "..."}`;
+` + `Respond with ONLY a JSON object:\n` + `{"action": "respond|complete|escalate|ignore", "response": "...", "useKeys": false, "keys": [], "reasoning": "..."}`;
 }
 function buildIdleCheckPrompt(taskCtx, recentOutput, idleMinutes, idleCheckNumber, maxIdleChecks, decisionHistory) {
-  const historySection = decisionHistory.length > 0 ? `
-Previous decisions for this session:
-${decisionHistory.slice(-5).map((d, i) => `  ${i + 1}. [${d.event}] prompt="${d.promptText}" → ${d.action}${d.response ? ` ("${d.response}")` : ""} — ${d.reasoning}`).join(`
-`)}
-` : "";
-  return `You are Milady, an AI orchestrator managing a swarm of coding agents. ` + `A ${taskCtx.agentType} coding agent ("${taskCtx.label}", session: ${taskCtx.sessionId}) ` + `has been idle for ${idleMinutes} minutes with no events or output changes.
+  const historySection = decisionHistory.length > 0 ? `\nPrevious decisions for this session:\n${decisionHistory.slice(-5).map((d, i) => `  ${i + 1}. [${d.event}] prompt="${d.promptText}" \u2192 ${d.action}${d.response ? ` ("${d.response}")` : ""} \u2014 ${d.reasoning}`).join("\n")}\n` : "";
+  return `You are Milady, an AI orchestrator managing a swarm of coding agents. ` + `A ${taskCtx.agentType} coding agent ("${taskCtx.label}", session: ${taskCtx.sessionId}) ` + `has been idle for ${idleMinutes} minutes with no events or output changes.\n\n` + `Original task: "${taskCtx.originalTask}"\n` + `Working directory: ${taskCtx.workdir}\n` + `Repository: ${taskCtx.repo ?? "none (scratch directory)"}\n` + `Idle check: ${idleCheckNumber} of ${maxIdleChecks} (session will be force-escalated after ${maxIdleChecks})\n` + historySection + `\nRecent terminal output (last 50 lines):\n` + `---\n${recentOutput.slice(-3000)}\n---\n\n` + `The session has gone silent. Analyze the terminal output and decide:\n\n` + `1. "complete" \u2014 The task is FULLY done. ALL objectives in the original task were met ` + `AND the final deliverable is visible in the output (e.g. a PR URL was printed, or the ` + `task explicitly did not require a PR). The agent is back at the idle prompt.\n\n` + `2. "respond" \u2014 The agent appears stuck or waiting for input that wasn't detected ` + `as a blocking prompt. Send a message to nudge it (e.g. "continue", or answer a question ` + `visible in the output). If code was committed but no PR was created yet, respond with ` + `"please create a pull request with your changes" or similar.\n\n` + `3. "escalate" \u2014 Something looks wrong or unclear. The human should review.
 
-` + `Original task: "${taskCtx.originalTask}"
-` + `Working directory: ${taskCtx.workdir}
-` + `Idle check: ${idleCheckNumber} of ${maxIdleChecks} (session will be force-escalated after ${maxIdleChecks})
-` + historySection + `
-Recent terminal output (last 50 lines):
-` + `---
-${recentOutput.slice(-3000)}
----
+` + `4. "ignore" \u2014 The agent is still actively working (e.g. compiling, running tests, ` + `pushing to remote, creating a PR). The idle period is expected and it will produce output soon.\n\n` + `Guidelines:\n` + `- IMPORTANT: Do NOT mark "complete" if the original task involves creating a PR and no PR URL ` + `(e.g. github.com/...pull/...) appears in the output. Instead use "respond" to nudge the agent ` + `to create the PR.\n` + `- Do NOT mark "complete" just because code was committed \u2014 commits alone don't finish a task ` + `that requires a PR.\n` + `- Network operations (git push, gh pr create, API calls) can cause several minutes of silence \u2014 ` + `prefer "ignore" for early idle checks if the agent was mid-workflow.\n` + `- If the output ends with a command prompt (\$ or >) and ALL task objectives are confirmed met, use "complete".\n` + `- If the output shows an error or the agent seems stuck in a loop, escalate.\n` + `- If the agent is clearly mid-operation (build output, test runner, git operations), use "ignore".\n` + `- On check ${idleCheckNumber} of ${maxIdleChecks} \u2014 if unsure, lean toward "respond" with a nudge rather than "complete".
 
-` + `The session has gone silent. Analyze the terminal output and decide:
-
-` + `1. "complete" — The task is done. The output shows the objectives were met ` + `(e.g. PR created, code written, tests passed) and the agent is back at the idle prompt.
-
-` + `2. "respond" — The agent appears stuck or waiting for input that wasn't detected ` + `as a blocking prompt. Send a message to nudge it (e.g. "continue", or answer a question ` + `visible in the output).
-
-` + `3. "escalate" — Something looks wrong or unclear. The human should review.
-
-` + `4. "ignore" — The agent is still actively working (e.g. compiling, running tests, ` + `generating code). The idle period is expected and it will produce output soon.
-
-` + `Guidelines:
-` + `- If the output ends with a command prompt ($ or >) and the task objectives are met, use "complete".
-` + `- If the output shows an error or the agent seems stuck in a loop, escalate.
-` + `- If the agent is clearly mid-operation (build output, test runner), use "ignore".
-` + `- On check ${idleCheckNumber} of ${maxIdleChecks} — if unsure, lean toward "escalate" rather than "ignore".
-
-` + `Respond with ONLY a JSON object:
-` + `{"action": "respond|complete|escalate|ignore", "response": "...", "useKeys": false, "keys": [], "reasoning": "..."}`;
+` + `Respond with ONLY a JSON object:\n` + `{"action": "respond|complete|escalate|ignore", "response": "...", "useKeys": false, "keys": [], "reasoning": "..."}`;
 }
 function buildTurnCompletePrompt(taskCtx, turnOutput, decisionHistory) {
-  const historySection = decisionHistory.length > 0 ? `
-Previous decisions for this session:
-${decisionHistory.slice(-5).map((d, i) => `  ${i + 1}. [${d.event}] prompt="${d.promptText}" → ${d.action}${d.response ? ` ("${d.response}")` : ""} — ${d.reasoning}`).join(`
-`)}
-` : "";
-  return `You are Milady, an AI orchestrator managing a swarm of coding agents. ` + `A ${taskCtx.agentType} coding agent ("${taskCtx.label}", session: ${taskCtx.sessionId}) ` + `just finished a turn and is back at the idle prompt waiting for input.
+  const historySection = decisionHistory.length > 0 ? `\nPrevious decisions for this session:\n${decisionHistory.slice(-5).map((d, i) => `  ${i + 1}. [${d.event}] prompt="${d.promptText}" \u2192 ${d.action}${d.response ? ` ("${d.response}")` : ""} \u2014 ${d.reasoning}`).join("\n")}\n` : "";
+  return `You are Milady, an AI orchestrator managing a swarm of coding agents. ` + `A ${taskCtx.agentType} coding agent ("${taskCtx.label}", session: ${taskCtx.sessionId}) ` + `just finished a turn and is back at the idle prompt waiting for input.\n\n` + `Original task: "${taskCtx.originalTask}"\n` + `Working directory: ${taskCtx.workdir}\n` + historySection + `\nOutput from this turn:\n` + `---\n${turnOutput.slice(-3000)}\n---\n\n` + `The agent completed a turn. Decide if the OVERALL task is done or if more work is needed.\n\n` + `IMPORTANT: Coding agents work in multiple turns. A single turn completing does NOT mean ` + `the task is done. You must verify that EVERY objective in the original task has been addressed ` + `in the output before declaring "complete".\n\n` + `Your options:\n\n` + `1. "respond" \u2014 The agent finished a step but the overall task is NOT done yet. ` + `Send a follow-up instruction to continue. Set "response" to the next instruction ` + `(e.g. "Now run the tests", "Create a PR with these changes", "Continue with the next part"). ` + `THIS IS THE DEFAULT \u2014 most turns are intermediate steps, not the final result.
 
-` + `Original task: "${taskCtx.originalTask}"
-` + `Working directory: ${taskCtx.workdir}
-` + historySection + `
-Output from this turn:
-` + `---
-${turnOutput.slice(-3000)}
----
+` + `2. "complete" \u2014 The original task objectives have ALL been fully met. For repo-based tasks, ` + `this means code was written, changes were committed, pushed, AND a pull request was created. ` + `Only use this when you can point to specific evidence in the output for EVERY objective ` + `(e.g. "Created pull request #N" in the output).\n\n` + `3. "escalate" \u2014 Something looks wrong or you're unsure whether the task is complete. ` + `Let the human decide.\n\n` + `4. "ignore" \u2014 Should not normally be used here.
 
-` + `The agent completed a turn. Decide if the OVERALL task is done or if more work is needed.
+` + `Guidelines:\n` + `- BEFORE choosing "complete", enumerate each objective from the original task and verify ` + `evidence in the output. If ANY objective lacks evidence, use "respond" with the missing work.\n` + `- A PR being created does NOT mean the task is done \u2014 check that the PR covers ALL requested changes.
+` + `- If the task mentions multiple features/fixes, verify EACH one is addressed, not just the first.\n` + `- If the agent only analyzed code or read files, it hasn't done the actual work yet \u2014 send a follow-up.
+` + `- If the agent wrote code but didn't test it and testing seems appropriate, ask it to run tests.\n` + `- If the output shows errors or failed tests, send a follow-up to fix them.\n` + `- IMPORTANT: If the working directory is a git repository clone (not a scratch dir), the agent ` + `MUST commit its changes, push them, and create a pull request before the task can be "complete". ` + `If the output only shows code edits with no git commit or PR, respond with "Now commit your changes, push, and create a pull request".\n` + `- CRITICAL: Creating a PR is NEVER the final step. After you see "Created pull request" or a PR URL ` + `in the output, you MUST respond with "Review your PR, run each test plan item to verify it works, ` + `update the PR to check off each item, then confirm all items pass". NEVER mark as "complete" on the ` + `same turn that a PR was created \u2014 always send this follow-up first.
+` + `- Only mark as "complete" AFTER the agent has confirmed it verified the test plan items ` + `(look for output like "all items pass", "verified", "checked off", or similar confirmation).\n` + `- Keep follow-up instructions concise and specific.\n` + `- Default to "respond" \u2014 only use "complete" when you're certain ALL work is done.
 
-` + `IMPORTANT: Coding agents work in multiple turns. A single turn completing does NOT mean ` + `the task is done. You must verify that EVERY objective in the original task has been addressed ` + `in the output before declaring "complete".
-
-` + `Your options:
-
-` + `1. "respond" — The agent finished a step but the overall task is NOT done yet. ` + `Send a follow-up instruction to continue. Set "response" to the next instruction ` + `(e.g. "Now run the tests", "Create a PR with these changes", "Continue with the next part"). ` + `THIS IS THE DEFAULT — most turns are intermediate steps, not the final result.
-
-` + `2. "complete" — The original task objectives have ALL been fully met. For repo-based tasks, ` + `this means code was written, changes were committed, pushed, AND a pull request was created. ` + `Only use this when you can point to specific evidence in the output for EVERY objective ` + `(e.g. "Created pull request #N" in the output).
-
-` + `3. "escalate" — Something looks wrong or you're unsure whether the task is complete. ` + `Let the human decide.
-
-` + `4. "ignore" — Should not normally be used here.
-
-` + `Guidelines:
-` + `- BEFORE choosing "complete", enumerate each objective from the original task and verify ` + `evidence in the output. If ANY objective lacks evidence, use "respond" with the missing work.
-` + `- A PR being created does NOT mean the task is done — check that the PR covers ALL requested changes.
-` + `- If the task mentions multiple features/fixes, verify EACH one is addressed, not just the first.
-` + `- If the agent only analyzed code or read files, it hasn't done the actual work yet — send a follow-up.
-` + `- If the agent wrote code but didn't test it and testing seems appropriate, ask it to run tests.
-` + `- If the output shows errors or failed tests, send a follow-up to fix them.
-` + `- IMPORTANT: If the working directory is a git repository clone (not a scratch dir), the agent ` + `MUST commit its changes, push them, and create a pull request before the task can be "complete". ` + `If the output only shows code edits with no git commit or PR, respond with "Now commit your changes, push, and create a pull request".
-` + `- CRITICAL: Creating a PR is NEVER the final step. After you see "Created pull request" or a PR URL ` + `in the output, you MUST respond with "Review your PR, run each test plan item to verify it works, ` + `update the PR to check off each item, then confirm all items pass". NEVER mark as "complete" on the ` + `same turn that a PR was created — always send this follow-up first.
-` + `- Only mark as "complete" AFTER the agent has confirmed it verified the test plan items ` + `(look for output like "all items pass", "verified", "checked off", or similar confirmation).
-` + `- Keep follow-up instructions concise and specific.
-` + `- Default to "respond" — only use "complete" when you're certain ALL work is done.
-
-` + `Respond with ONLY a JSON object:
-` + `{"action": "respond|complete|escalate|ignore", "response": "...", "useKeys": false, "keys": [], "reasoning": "..."}`;
+` + `Respond with ONLY a JSON object:\n` + `{"action": "respond|complete|escalate|ignore", "response": "...", "useKeys": false, "keys": [], "reasoning": "..."}`;
 }
 function parseCoordinationResponse(llmOutput) {
   const jsonMatch = llmOutput.match(/\{[\s\S]*\}/);
@@ -266,20 +152,23 @@ function parseCoordinationResponse(llmOutput) {
 var exports_swarm_decision_loop = {};
 __export(exports_swarm_decision_loop, {
   makeCoordinationDecision: () => makeCoordinationDecision,
+  isOutOfScopeAccess: () => isOutOfScopeAccess,
   handleTurnComplete: () => handleTurnComplete,
   handleConfirmDecision: () => handleConfirmDecision,
   handleBlocked: () => handleBlocked,
   handleAutonomousDecision: () => handleAutonomousDecision,
   executeDecision: () => executeDecision
 });
-import { ModelType as ModelType2 } from "@elizaos/core";
+import * as path from "node:path";
+import {ModelType as ModelType2} from "@elizaos/core";
 function toContextSummary(taskCtx) {
   return {
     sessionId: taskCtx.sessionId,
     agentType: taskCtx.agentType,
     label: taskCtx.label,
     originalTask: taskCtx.originalTask,
-    workdir: taskCtx.workdir
+    workdir: taskCtx.workdir,
+    repo: taskCtx.repo
   };
 }
 function toDecisionHistory(taskCtx) {
@@ -295,6 +184,17 @@ function formatDecisionResponse(decision) {
   if (decision.action !== "respond")
     return;
   return decision.useKeys ? `keys:${decision.keys?.join(",")}` : decision.response;
+}
+function isOutOfScopeAccess(promptText, workdir) {
+  const pathPattern = /\/[\w.-]+(?:\/[\w.-]+)+/g;
+  const matches = promptText.match(pathPattern);
+  if (!matches)
+    return false;
+  const resolvedWorkdir = path.resolve(workdir);
+  return matches.some((p) => {
+    const resolved = path.resolve(p);
+    return !resolved.startsWith(resolvedWorkdir + path.sep) && resolved !== resolvedWorkdir;
+  });
 }
 async function fetchRecentOutput(ctx, sessionId, lines = 50) {
   if (!ctx.ptyService)
@@ -343,10 +243,9 @@ async function executeDecision(ctx, sessionId, decision) {
       try {
         const rawOutput = await ctx.ptyService.getSessionOutput(sessionId, 50);
         summary = extractCompletionSummary(rawOutput);
-      } catch {}
-      ctx.sendChatMessage(summary ? `Finished "${taskCtx?.label ?? sessionId}".
-
-${summary}` : `Finished "${taskCtx?.label ?? sessionId}".`, "coding-agent");
+      } catch {
+      }
+      ctx.sendChatMessage(summary ? `Finished "${taskCtx?.label ?? sessionId}".\n\n${summary}` : `Finished "${taskCtx?.label ?? sessionId}".`, "coding-agent");
       ctx.ptyService.stopSession(sessionId).catch((err) => {
         ctx.log(`Failed to stop session after LLM-detected completion: ${err}`);
       });
@@ -370,6 +269,31 @@ async function handleBlocked(ctx, sessionId, taskCtx, data) {
   const eventData = data;
   const promptText = eventData.promptInfo?.prompt ?? eventData.promptInfo?.instructions ?? "";
   if (eventData.autoResponded) {
+    if (isOutOfScopeAccess(promptText, taskCtx.workdir)) {
+      taskCtx.decisions.push({
+        timestamp: Date.now(),
+        event: "blocked",
+        promptText,
+        decision: "escalate",
+        reasoning: `SECURITY: Auto-response approved access outside workspace (${taskCtx.workdir}). Session stopped.`
+      });
+      ctx.broadcast({
+        type: "escalation",
+        sessionId,
+        timestamp: Date.now(),
+        data: {
+          prompt: promptText,
+          reason: "out_of_scope_auto_approved",
+          workdir: taskCtx.workdir
+        }
+      });
+      ctx.sendChatMessage(`[${taskCtx.label}] WARNING: Auto-approved access to path outside workspace (${taskCtx.workdir}). ` + `Prompt: "${promptText.slice(0, 150)}". Stopping session for safety.`, "coding-agent");
+      taskCtx.status = "error";
+      ctx.ptyService.stopSession(sessionId).catch((err) => {
+        ctx.log(`Failed to stop session after out-of-scope auto-approval: ${err}`);
+      });
+      return;
+    }
     taskCtx.autoResolvedCount++;
     taskCtx.decisions.push({
       timestamp: Date.now(),
@@ -437,7 +361,7 @@ async function handleBlocked(ctx, sessionId, taskCtx, data) {
         event: "blocked",
         promptText,
         decision: "escalate",
-        reasoning: "Supervision level is notify — broadcasting only"
+        reasoning: "Supervision level is notify \u2014 broadcasting only"
       });
       break;
   }
@@ -449,7 +373,7 @@ async function handleTurnComplete(ctx, sessionId, taskCtx, data) {
   }
   ctx.inFlightDecisions.add(sessionId);
   try {
-    ctx.log(`Turn complete for "${taskCtx.label}" — assessing whether task is done`);
+    ctx.log(`Turn complete for "${taskCtx.label}" \u2014 assessing whether task is done`);
     const rawResponse = data.response ?? "";
     let turnOutput = cleanForChat(rawResponse);
     if (!turnOutput) {
@@ -467,13 +391,13 @@ async function handleTurnComplete(ctx, sessionId, taskCtx, data) {
       ctx.log(`Turn-complete LLM call failed: ${err}`);
     }
     if (!decision) {
-      ctx.log(`Turn-complete for "${taskCtx.label}": LLM invalid response — defaulting to complete`);
+      ctx.log(`Turn-complete for "${taskCtx.label}": LLM invalid response \u2014 defaulting to complete`);
       decision = {
         action: "complete",
-        reasoning: "LLM returned invalid response — defaulting to complete"
+        reasoning: "LLM returned invalid response \u2014 defaulting to complete"
       };
     }
-    ctx.log(`Turn assessment for "${taskCtx.label}": ${decision.action}${decision.action === "respond" ? ` → "${(decision.response ?? "").slice(0, 80)}"` : ""} — ${decision.reasoning.slice(0, 120)}`);
+    ctx.log(`Turn assessment for "${taskCtx.label}": ${decision.action}${decision.action === "respond" ? ` \u2192 "${(decision.response ?? "").slice(0, 80)}"` : ""} \u2014 ${decision.reasoning.slice(0, 120)}`);
     taskCtx.decisions.push({
       timestamp: Date.now(),
       event: "turn_complete",
@@ -496,7 +420,7 @@ async function handleTurnComplete(ctx, sessionId, taskCtx, data) {
       const preview = instruction.length > 120 ? `${instruction.slice(0, 120)}...` : instruction;
       ctx.sendChatMessage(`[${taskCtx.label}] Turn done, continuing: ${preview}`, "coding-agent");
     } else if (decision.action === "escalate") {
-      ctx.sendChatMessage(`[${taskCtx.label}] Turn finished — needs your attention: ${decision.reasoning}`, "coding-agent");
+      ctx.sendChatMessage(`[${taskCtx.label}] Turn finished \u2014 needs your attention: ${decision.reasoning}`, "coding-agent");
     }
     await executeDecision(ctx, sessionId, decision);
   } finally {
@@ -514,7 +438,7 @@ async function handleAutonomousDecision(ctx, sessionId, taskCtx, promptText, rec
     if (!output) {
       output = await fetchRecentOutput(ctx, sessionId);
     }
-    const decision = await makeCoordinationDecision(ctx, taskCtx, promptText, output);
+    let decision = await makeCoordinationDecision(ctx, taskCtx, promptText, output);
     if (!decision) {
       taskCtx.decisions.push({
         timestamp: Date.now(),
@@ -533,6 +457,14 @@ async function handleAutonomousDecision(ctx, sessionId, taskCtx, promptText, rec
         }
       });
       return;
+    }
+    if (decision.action === "respond" && isOutOfScopeAccess(promptText, taskCtx.workdir)) {
+      decision = {
+        action: "respond",
+        response: `No \u2014 that path is outside your workspace. Use ${taskCtx.workdir} instead. Create any files or directories you need there.`,
+        reasoning: `Declined out-of-scope access (outside ${taskCtx.workdir}) and redirected agent to workspace.`
+      };
+      ctx.sendChatMessage(`[${taskCtx.label}] Declined out-of-scope access and redirected to workspace (${taskCtx.workdir}). If you intended broader access, send the agent an override.`, "coding-agent");
     }
     taskCtx.decisions.push({
       timestamp: Date.now(),
@@ -558,7 +490,7 @@ async function handleAutonomousDecision(ctx, sessionId, taskCtx, promptText, rec
     if (decision.action === "respond") {
       const actionDesc = decision.useKeys ? `Sent keys: ${decision.keys?.join(", ")}` : decision.response ? `Responded: ${decision.response.length > 100 ? `${decision.response.slice(0, 100)}...` : decision.response}` : "Responded";
       const reasonExcerpt = decision.reasoning.length > 150 ? `${decision.reasoning.slice(0, 150)}...` : decision.reasoning;
-      ctx.sendChatMessage(`[${taskCtx.label}] ${actionDesc} — ${reasonExcerpt}`, "coding-agent");
+      ctx.sendChatMessage(`[${taskCtx.label}] ${actionDesc} \u2014 ${reasonExcerpt}`, "coding-agent");
     } else if (decision.action === "escalate") {
       ctx.sendChatMessage(`[${taskCtx.label}] Needs your attention: ${decision.reasoning}`, "coding-agent");
     }
@@ -584,7 +516,7 @@ async function handleConfirmDecision(ctx, sessionId, taskCtx, promptText, recent
         recentOutput: output,
         llmDecision: {
           action: "escalate",
-          reasoning: "LLM returned invalid response — needs human review"
+          reasoning: "LLM returned invalid response \u2014 needs human review"
         },
         taskContext: taskCtx,
         createdAt: Date.now()
@@ -706,9 +638,7 @@ var finalizeWorkspaceAction = {
           data: { workspaceId, status }
         };
       }
-      const commitMessage = content.commitMessage ?? `feat: automated changes from coding agent
-
-Generated by Milady coding agent plugin.`;
+      const commitMessage = content.commitMessage ?? `feat: automated changes from coding agent\n\nGenerated by Milady coding agent plugin.`;
       const commitHash = await workspaceService.commit(workspaceId, {
         message: commitMessage,
         all: true
@@ -717,15 +647,7 @@ Generated by Milady coding agent plugin.`;
       let prInfo = null;
       if (!content.skipPR) {
         const prTitle = content.prTitle ?? `[Milady] ${workspace.branch}`;
-        const prBody = content.prBody ?? `## Summary
-
-Automated changes generated by Milady coding agent.
-
-` + `**Branch:** ${workspace.branch}
-` + `**Commit:** ${commitHash}
-
-` + `---
-*Generated by @elizaos/plugin-agent-orchestrator*`;
+        const prBody = content.prBody ?? `## Summary\n\nAutomated changes generated by Milady coding agent.\n\n` + `**Branch:** ${workspace.branch}\n` + `**Commit:** ${commitHash}\n\n` + `---\n*Generated by @elizaos/plugin-agent-orchestrator*`;
         prInfo = await workspaceService.createPR(workspaceId, {
           title: prTitle,
           body: prBody,
@@ -736,14 +658,11 @@ Automated changes generated by Milady coding agent.
       if (callback) {
         if (prInfo) {
           await callback({
-            text: `Workspace finalized!
-` + `Commit: ${commitHash.slice(0, 8)}
-` + `PR #${prInfo.number}: ${prInfo.url}`
+            text: `Workspace finalized!\n` + `Commit: ${commitHash.slice(0, 8)}\n` + `PR #${prInfo.number}: ${prInfo.url}`
           });
         } else {
           await callback({
-            text: `Workspace changes committed and pushed.
-` + `Commit: ${commitHash.slice(0, 8)}`
+            text: `Workspace changes committed and pushed.\n` + `Commit: ${commitHash.slice(0, 8)}`
           });
         }
       }
@@ -887,23 +806,18 @@ var listAgentsAction = {
     }));
     const lines = sessions.map((session, index) => {
       const statusEmoji = {
-        running: "▶️",
-        idle: "⏸️",
-        blocked: "⚠️",
-        completed: "✅",
-        error: "❌"
-      }[session.status] ?? "❓";
+        running: "\u25B6\uFE0F",
+        idle: "\u23F8\uFE0F",
+        blocked: "\u26A0\uFE0F",
+        completed: "\u2705",
+        error: "\u274C"
+      }[session.status] ?? "\u2753";
       return `${index + 1}. ${statusEmoji} ${session.agentType} (${session.id.slice(0, 8)}...)
-   \uD83D\uDCC1 ${session.workdir}
-   Status: ${session.status}`;
+   \uD83D\uDCC1 ${session.workdir}\n   Status: ${session.status}`;
     });
     if (callback) {
       await callback({
-        text: `Active coding agents:
-
-${lines.join(`
-
-`)}`
+        text: `Active coding agents:\n\n${lines.join("\n\n")}`
       });
     }
     return {
@@ -916,150 +830,6 @@ ${lines.join(`
 };
 
 // src/actions/manage-issues.ts
-var manageIssuesAction = {
-  name: "MANAGE_ISSUES",
-  similes: [
-    "CREATE_ISSUE",
-    "LIST_ISSUES",
-    "CLOSE_ISSUE",
-    "COMMENT_ISSUE",
-    "UPDATE_ISSUE",
-    "GET_ISSUE"
-  ],
-  description: "Manage GitHub issues for a repository. " + "Supports creating issues, listing issues, getting issue details, " + "adding comments, updating, closing, and reopening issues.",
-  examples: [
-    [
-      {
-        name: "{{user1}}",
-        content: {
-          text: "Create an issue on the testbed repo to add a login page"
-        }
-      },
-      {
-        name: "{{agentName}}",
-        content: {
-          text: "I'll create that issue for you.",
-          action: "MANAGE_ISSUES"
-        }
-      }
-    ],
-    [
-      {
-        name: "{{user1}}",
-        content: {
-          text: "List the open issues on HaruHunab1320/git-workspace-service-testbed"
-        }
-      },
-      {
-        name: "{{agentName}}",
-        content: {
-          text: "Let me check the open issues for that repo.",
-          action: "MANAGE_ISSUES"
-        }
-      }
-    ],
-    [
-      {
-        name: "{{user1}}",
-        content: { text: "Close issue #3 on the testbed repo" }
-      },
-      {
-        name: "{{agentName}}",
-        content: {
-          text: "I'll close that issue.",
-          action: "MANAGE_ISSUES"
-        }
-      }
-    ]
-  ],
-  validate: async (runtime, _message) => {
-    const workspaceService = runtime.getService("CODING_WORKSPACE_SERVICE");
-    return workspaceService != null;
-  },
-  handler: async (runtime, message, _state, options, callback) => {
-    const workspaceService = runtime.getService("CODING_WORKSPACE_SERVICE");
-    if (!workspaceService) {
-      if (callback) {
-        await callback({ text: "Workspace Service is not available." });
-      }
-      return { success: false, error: "SERVICE_UNAVAILABLE" };
-    }
-    workspaceService.setAuthPromptCallback((prompt) => {
-      if (callback) {
-        callback({
-          text: `I need GitHub access to manage issues. Please authorize me:
-
-` + `Go to: ${prompt.verificationUri}
-` + `Enter code: **${prompt.userCode}**
-
-` + `This code expires in ${Math.floor(prompt.expiresIn / 60)} minutes. ` + `I'll wait for you to complete authorization...`
-        });
-      }
-    });
-    const params = options?.parameters;
-    const content = message.content;
-    const text = content.text ?? "";
-    const operation = params?.operation ?? content.operation ?? inferOperation(text);
-    const repo = params?.repo ?? content.repo;
-    if (!repo) {
-      const urlMatch = text?.match(/(?:https?:\/\/github\.com\/)?([a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+)/);
-      if (!urlMatch) {
-        if (callback) {
-          await callback({
-            text: "Please specify a repository (e.g., owner/repo or a GitHub URL)."
-          });
-        }
-        return { success: false, error: "MISSING_REPO" };
-      }
-      return handleOperation(workspaceService, urlMatch[1], operation, params ?? content, text, callback);
-    }
-    return handleOperation(workspaceService, repo, operation, params ?? content, text, callback);
-  },
-  parameters: [
-    {
-      name: "operation",
-      description: "The operation to perform: create, list, get, update, comment, close, reopen, add_labels",
-      required: true,
-      schema: { type: "string" }
-    },
-    {
-      name: "repo",
-      description: "Repository in owner/repo format or full GitHub URL.",
-      required: true,
-      schema: { type: "string" }
-    },
-    {
-      name: "title",
-      description: "Issue title (for create operation).",
-      required: false,
-      schema: { type: "string" }
-    },
-    {
-      name: "body",
-      description: "Issue body/description (for create or comment operations).",
-      required: false,
-      schema: { type: "string" }
-    },
-    {
-      name: "issueNumber",
-      description: "Issue number (for get, update, comment, close, reopen operations).",
-      required: false,
-      schema: { type: "number" }
-    },
-    {
-      name: "labels",
-      description: "Labels to add (comma-separated string or array).",
-      required: false,
-      schema: { type: "string" }
-    },
-    {
-      name: "state",
-      description: "Filter by state: open, closed, or all (for list operation).",
-      required: false,
-      schema: { type: "string" }
-    }
-  ]
-};
 async function handleOperation(service, repo, operation, params, originalText, callback) {
   try {
     switch (operation.toLowerCase()) {
@@ -1080,12 +850,9 @@ async function handleOperation(service, repo, operation, params, originalText, c
               created.push(issue2);
             }
             if (callback) {
-              const summary = created.map((i) => `#${i.number}: ${i.title}
-  ${i.url}`).join(`
-`);
+              const summary = created.map((i) => `#${i.number}: ${i.title}\n  ${i.url}`).join("\n");
               await callback({
-                text: `Created ${created.length} issues:
-${summary}`
+                text: `Created ${created.length} issues:\n${summary}`
               });
             }
             return { success: true, data: { issues: created } };
@@ -1102,8 +869,7 @@ ${summary}`
         });
         if (callback) {
           await callback({
-            text: `Created issue #${issue.number}: ${issue.title}
-${issue.url}`
+            text: `Created issue #${issue.number}: ${issue.title}\n${issue.url}`
           });
         }
         return { success: true, data: { issue } };
@@ -1121,10 +887,8 @@ ${issue.url}`
               text: `No ${stateFilter} issues found in ${repo}.`
             });
           } else {
-            const summary = issues.map((i) => `#${i.number} [${i.state}] ${i.title}${i.labels.length > 0 ? ` (${i.labels.join(", ")})` : ""}`).join(`
-`);
-            await callback({ text: `Issues in ${repo}:
-${summary}` });
+            const summary = issues.map((i) => `#${i.number} [${i.state}] ${i.title}${i.labels.length > 0 ? ` (${i.labels.join(", ")})` : ""}`).join("\n");
+            await callback({ text: `Issues in ${repo}:\n${summary}` });
           }
         }
         return { success: true, data: { issues } };
@@ -1139,12 +903,7 @@ ${summary}` });
         const issue = await service.getIssue(repo, issueNumber);
         if (callback) {
           await callback({
-            text: `Issue #${issue.number}: ${issue.title} [${issue.state}]
-
-${issue.body}
-
-Labels: ${issue.labels.join(", ") || "none"}
-${issue.url}`
+            text: `Issue #${issue.number}: ${issue.title} [${issue.state}]\n\n${issue.body}\n\nLabels: ${issue.labels.join(", ") || "none"}\n${issue.url}`
           });
         }
         return { success: true, data: { issue } };
@@ -1313,6 +1072,145 @@ function parseLabels(input) {
     return input.split(",").map((s) => s.trim()).filter(Boolean);
   return [];
 }
+var manageIssuesAction = {
+  name: "MANAGE_ISSUES",
+  similes: [
+    "CREATE_ISSUE",
+    "LIST_ISSUES",
+    "CLOSE_ISSUE",
+    "COMMENT_ISSUE",
+    "UPDATE_ISSUE",
+    "GET_ISSUE"
+  ],
+  description: "Manage GitHub issues for a repository. " + "Supports creating issues, listing issues, getting issue details, " + "adding comments, updating, closing, and reopening issues.",
+  examples: [
+    [
+      {
+        name: "{{user1}}",
+        content: {
+          text: "Create an issue on the testbed repo to add a login page"
+        }
+      },
+      {
+        name: "{{agentName}}",
+        content: {
+          text: "I'll create that issue for you.",
+          action: "MANAGE_ISSUES"
+        }
+      }
+    ],
+    [
+      {
+        name: "{{user1}}",
+        content: {
+          text: "List the open issues on HaruHunab1320/git-workspace-service-testbed"
+        }
+      },
+      {
+        name: "{{agentName}}",
+        content: {
+          text: "Let me check the open issues for that repo.",
+          action: "MANAGE_ISSUES"
+        }
+      }
+    ],
+    [
+      {
+        name: "{{user1}}",
+        content: { text: "Close issue #3 on the testbed repo" }
+      },
+      {
+        name: "{{agentName}}",
+        content: {
+          text: "I'll close that issue.",
+          action: "MANAGE_ISSUES"
+        }
+      }
+    ]
+  ],
+  validate: async (runtime, _message) => {
+    const workspaceService = runtime.getService("CODING_WORKSPACE_SERVICE");
+    return workspaceService != null;
+  },
+  handler: async (runtime, message, _state, options, callback) => {
+    const workspaceService = runtime.getService("CODING_WORKSPACE_SERVICE");
+    if (!workspaceService) {
+      if (callback) {
+        await callback({ text: "Workspace Service is not available." });
+      }
+      return { success: false, error: "SERVICE_UNAVAILABLE" };
+    }
+    workspaceService.setAuthPromptCallback((prompt) => {
+      if (callback) {
+        callback({
+          text: `I need GitHub access to manage issues. Please authorize me:\n\n` + `Go to: ${prompt.verificationUri}\n` + `Enter code: **${prompt.userCode}**\n\n` + `This code expires in ${Math.floor(prompt.expiresIn / 60)} minutes. ` + `I'll wait for you to complete authorization...`
+        });
+      }
+    });
+    const params = options?.parameters;
+    const content = message.content;
+    const text = content.text ?? "";
+    const operation = params?.operation ?? content.operation ?? inferOperation(text);
+    const repo = params?.repo ?? content.repo;
+    if (!repo) {
+      const urlMatch = text?.match(/(?:https?:\/\/github\.com\/)?([a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+)/);
+      if (!urlMatch) {
+        if (callback) {
+          await callback({
+            text: "Please specify a repository (e.g., owner/repo or a GitHub URL)."
+          });
+        }
+        return { success: false, error: "MISSING_REPO" };
+      }
+      return handleOperation(workspaceService, urlMatch[1], operation, params ?? content, text, callback);
+    }
+    return handleOperation(workspaceService, repo, operation, params ?? content, text, callback);
+  },
+  parameters: [
+    {
+      name: "operation",
+      description: "The operation to perform: create, list, get, update, comment, close, reopen, add_labels",
+      required: true,
+      schema: { type: "string" }
+    },
+    {
+      name: "repo",
+      description: "Repository in owner/repo format or full GitHub URL.",
+      required: true,
+      schema: { type: "string" }
+    },
+    {
+      name: "title",
+      description: "Issue title (for create operation).",
+      required: false,
+      schema: { type: "string" }
+    },
+    {
+      name: "body",
+      description: "Issue body/description (for create or comment operations).",
+      required: false,
+      schema: { type: "string" }
+    },
+    {
+      name: "issueNumber",
+      description: "Issue number (for get, update, comment, close, reopen operations).",
+      required: false,
+      schema: { type: "number" }
+    },
+    {
+      name: "labels",
+      description: "Labels to add (comma-separated string or array).",
+      required: false,
+      schema: { type: "string" }
+    },
+    {
+      name: "state",
+      description: "Filter by state: open, closed, or all (for list operation).",
+      required: false,
+      schema: { type: "string" }
+    }
+  ]
+};
 
 // src/actions/provision-workspace.ts
 var provisionWorkspaceAction = {
@@ -1425,9 +1323,7 @@ var provisionWorkspaceAction = {
       }
       if (callback) {
         await callback({
-          text: `Created workspace at ${workspace.path}
-` + `Branch: ${workspace.branch}
-` + `Type: ${workspace.isWorktree ? "worktree" : "clone"}`
+          text: `Created workspace at ${workspace.path}\n` + `Branch: ${workspace.branch}\n` + `Type: ${workspace.isWorktree ? "worktree" : "clone"}`
         });
       }
       return {
@@ -1634,19 +1530,21 @@ var sendToAgentAction = {
 
 // src/actions/spawn-agent.ts
 import * as os from "node:os";
-import * as path from "node:path";
+import * as path2 from "node:path";
 import {
-  logger as logger3
+logger as logger3
 } from "@elizaos/core";
 
 // src/services/pty-service.ts
-import { logger as logger2 } from "@elizaos/core";
+import {mkdir, readFile, writeFile} from "node:fs/promises";
+import {dirname, join} from "node:path";
+import {logger as logger2} from "@elizaos/core";
 import {
-  checkAdapters,
-  createAdapter,
-  generateApprovalConfig
+checkAdapters,
+createAdapter,
+generateApprovalConfig
 } from "coding-agent-adapters";
-import { PTYConsoleBridge } from "pty-console";
+import {PTYConsoleBridge} from "pty-console";
 
 // src/services/agent-metrics.ts
 class AgentMetricsTracker {
@@ -1702,7 +1600,6 @@ function computeAgentScore(metrics) {
   const speedPenalty = Math.min(avgCompletionMs / 300000, 1) * 0.1;
   return Math.max(0, successRate - stallPenalty - speedPenalty);
 }
-var DEFAULT_ORDER = ["claude", "gemini", "codex", "aider"];
 function selectAgentType(ctx) {
   if (ctx.config.strategy === "fixed") {
     return ctx.config.fixedAgentType;
@@ -1724,6 +1621,7 @@ function selectAgentType(ctx) {
   }
   return bestAgent;
 }
+var DEFAULT_ORDER = ["claude", "gemini", "codex", "aider"];
 
 // src/services/pty-auto-response.ts
 async function pushDefaultRules(ctx, sessionId, agentType) {
@@ -1801,19 +1699,14 @@ async function handleGeminiAuth(ctx, sessionId, sendKeysToSession) {
 
 // src/services/pty-init.ts
 init_ansi_utils();
-import { createRequire as createRequire2 } from "node:module";
-import { createAllAdapters } from "coding-agent-adapters";
+import {createRequire as createRequire2} from "node:module";
+import {createAllAdapters} from "coding-agent-adapters";
 import {
-  BunCompatiblePTYManager,
-  isBun,
-  PTYManager,
-  ShellAdapter
+BunCompatiblePTYManager,
+isBun,
+PTYManager,
+ShellAdapter
 } from "pty-manager";
-var _require = createRequire2(import.meta.url);
-var resolvedAdapterModule = "coding-agent-adapters";
-try {
-  resolvedAdapterModule = _require.resolve("coding-agent-adapters");
-} catch {}
 async function initializePTYManager(ctx) {
   const usingBunWorker = isBun();
   if (usingBunWorker) {
@@ -1856,7 +1749,7 @@ async function initializePTYManager(ctx) {
       ctx.emitEvent(session.id, "task_complete", { session, response });
     });
     bunManager.on("tool_running", (session, info) => {
-      ctx.log(`tool_running for ${session.id}: ${info.toolName}${info.description ? ` — ${info.description}` : ""}`);
+      ctx.log(`tool_running for ${session.id}: ${info.toolName}${info.description ? ` \u2014 ${info.description}` : ""}`);
       ctx.emitEvent(session.id, "tool_running", { session, ...info });
     });
     bunManager.on("message", (message) => {
@@ -1926,7 +1819,7 @@ async function initializePTYManager(ctx) {
     ctx.emitEvent(session.id, "task_complete", { session, response });
   });
   nodeManager.on("tool_running", (session, info) => {
-    ctx.log(`tool_running for ${session.id}: ${info.toolName}${info.description ? ` — ${info.description}` : ""}`);
+    ctx.log(`tool_running for ${session.id}: ${info.toolName}${info.description ? ` \u2014 ${info.description}` : ""}`);
     ctx.emitEvent(session.id, "tool_running", { session, ...info });
   });
   nodeManager.on("session_stopped", (session, reason) => {
@@ -1939,6 +1832,12 @@ async function initializePTYManager(ctx) {
     ctx.emitEvent(message.sessionId, "message", message);
   });
   return { manager: nodeManager, usingBunWorker: false };
+}
+var _require = createRequire2(import.meta.url);
+var resolvedAdapterModule = "coding-agent-adapters";
+try {
+  resolvedAdapterModule = _require.resolve("coding-agent-adapters");
+} catch {
 }
 
 // src/services/pty-session-io.ts
@@ -2011,8 +1910,7 @@ async function getSessionOutput(ctx, sessionId, lines) {
     if (!buffer)
       return "";
     const tail = lines ?? buffer.length;
-    return buffer.slice(-tail).join(`
-`);
+    return buffer.slice(-tail).join("\n");
   }
   const output = [];
   for await (const line of ctx.manager.logs(sessionId, {
@@ -2020,17 +1918,24 @@ async function getSessionOutput(ctx, sessionId, lines) {
   })) {
     output.push(line);
   }
-  return output.join(`
-`);
+  return output.join("\n");
 }
 
 // src/services/pty-spawn.ts
+function buildSanitizedBaseEnv() {
+  const env = {};
+  for (const key of ENV_ALLOWLIST) {
+    const val = process.env[key];
+    if (val)
+      env[key] = val;
+  }
+  return env;
+}
 function setupOutputBuffer(ctx, sessionId) {
   const buffer = [];
   ctx.sessionOutputBuffers.set(sessionId, buffer);
   const unsubscribe = ctx.manager.onSessionData(sessionId, (data) => {
-    const lines = data.split(`
-`);
+    const lines = data.split("\n");
     buffer.push(...lines);
     while (buffer.length > (ctx.serviceConfig.maxLogLines ?? 1000)) {
       buffer.shift();
@@ -2053,17 +1958,17 @@ function setupDeferredTaskDelivery(ctx, session, task, agentType) {
   const sendTaskWithRetry = (attempt) => {
     const buffer = ctx.sessionOutputBuffers.get(sid);
     const baselineLength = buffer?.length ?? 0;
-    ctx.log(`Session ${sid} — sending task (attempt ${attempt + 1}, ${settleMs}ms settle, baseline ${baselineLength} lines)`);
+    ctx.log(`Session ${sid} \u2014 sending task (attempt ${attempt + 1}, ${settleMs}ms settle, baseline ${baselineLength} lines)`);
     ctx.sendToSession(sid, task).catch((err) => ctx.log(`Failed to send deferred task to ${sid}: ${err}`));
     if (attempt < MAX_RETRIES) {
       setTimeout(() => {
         const currentLength = buffer?.length ?? 0;
         const newLines = currentLength - baselineLength;
         if (newLines < MIN_NEW_LINES) {
-          ctx.log(`Session ${sid} — task may not have been accepted (only ${newLines} new lines after ${VERIFY_DELAY_MS}ms). Retrying (attempt ${attempt + 2}/${MAX_RETRIES + 1})`);
+          ctx.log(`Session ${sid} \u2014 task may not have been accepted (only ${newLines} new lines after ${VERIFY_DELAY_MS}ms). Retrying (attempt ${attempt + 2}/${MAX_RETRIES + 1})`);
           sendTaskWithRetry(attempt + 1);
         } else {
-          ctx.log(`Session ${sid} — task accepted (${newLines} new lines after ${VERIFY_DELAY_MS}ms)`);
+          ctx.log(`Session ${sid} \u2014 task accepted (${newLines} new lines after ${VERIFY_DELAY_MS}ms)`);
         }
       }, VERIFY_DELAY_MS);
     }
@@ -2114,7 +2019,8 @@ function buildSpawnConfig(sessionId, options, workdir) {
     name: options.name,
     type: options.agentType,
     workdir,
-    env: { ...options.env, ...modelEnv },
+    inheritProcessEnv: false,
+    env: { ...buildSanitizedBaseEnv(), ...options.env, ...modelEnv },
     ...options.skipAdapterAutoResponse ? { skipAdapterAutoResponse: true } : {},
     adapterConfig: {
       ...options.credentials,
@@ -2126,6 +2032,19 @@ function buildSpawnConfig(sessionId, options, workdir) {
     }
   };
 }
+var ENV_ALLOWLIST = [
+  "PATH",
+  "HOME",
+  "USER",
+  "SHELL",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TMPDIR",
+  "XDG_RUNTIME_DIR",
+  "NODE_OPTIONS",
+  "BUN_INSTALL"
+];
 
 // src/services/pty-types.ts
 var PI_AGENT_ALIASES = new Set([
@@ -2170,39 +2089,17 @@ var toPiCommand = (task) => {
 
 // src/services/stall-classifier.ts
 init_ansi_utils();
-import { ModelType } from "@elizaos/core";
+import {ModelType} from "@elizaos/core";
 import {
-  buildTaskCompletionTimeline,
-  extractTaskCompletionTraceRecords
+buildTaskCompletionTimeline,
+extractTaskCompletionTraceRecords
 } from "pty-manager";
 function buildStallClassificationPrompt(agentType, sessionId, output) {
-  return `You are Milady, an AI orchestrator managing coding agent sessions. ` + `A ${agentType} coding agent (session: ${sessionId}) appears to have stalled — ` + `it has stopped producing output while in a busy state.
+  return `You are Milady, an AI orchestrator managing coding agent sessions. ` + `A ${agentType} coding agent (session: ${sessionId}) appears to have stalled \u2014 ` + `it has stopped producing output while in a busy state.\n\n` + `Here is the recent terminal output:\n` + `---\n${output.slice(-1500)}\n---\n\n` + `Classify what's happening. Read the output carefully and choose the MOST specific match:\n\n` + `1. "task_complete" \u2014 The agent FINISHED its task and returned to its idle prompt. ` + `Strong indicators: a summary of completed work ("Done", "All done", "Here's what was completed"), ` + `timing info ("Baked for", "Churned for", "Crunched for", "Cooked for", "Worked for"), ` + `or the agent's main prompt symbol (\u276F) appearing AFTER completion output. ` + `If the output contains evidence of completed work followed by an idle prompt, this is ALWAYS task_complete, ` + `even though the agent is technically "waiting" \u2014 it is waiting for a NEW task, not asking a question.
 
-` + `Here is the recent terminal output:
-` + `---
-${output.slice(-1500)}
----
+` + `2. "waiting_for_input" \u2014 The agent is MID-TASK and blocked on a specific question or permission prompt. ` + `The agent has NOT finished its work \u2014 it needs a response to continue. ` + `Examples: Y/n confirmation, file permission dialogs, "Do you want to proceed?", ` + `tool approval prompts, or interactive menus. ` + `This is NOT the same as the agent sitting at its idle prompt after finishing work.\n\n` + `3. "still_working" \u2014 The agent is actively processing (API call, compilation, thinking, etc.) ` + `and has not produced final output yet. No prompt or completion summary visible.\n\n` + `4. "error" \u2014 The agent hit an error state (crash, unrecoverable error, stack trace).
 
-` + `Classify what's happening. Read the output carefully and choose the MOST specific match:
-
-` + `1. "task_complete" — The agent FINISHED its task and returned to its idle prompt. ` + `Strong indicators: a summary of completed work ("Done", "All done", "Here's what was completed"), ` + `timing info ("Baked for", "Churned for", "Crunched for", "Cooked for", "Worked for"), ` + `or the agent's main prompt symbol (❯) appearing AFTER completion output. ` + `If the output contains evidence of completed work followed by an idle prompt, this is ALWAYS task_complete, ` + `even though the agent is technically "waiting" — it is waiting for a NEW task, not asking a question.
-
-` + `2. "waiting_for_input" — The agent is MID-TASK and blocked on a specific question or permission prompt. ` + `The agent has NOT finished its work — it needs a response to continue. ` + `Examples: Y/n confirmation, file permission dialogs, "Do you want to proceed?", ` + `tool approval prompts, or interactive menus. ` + `This is NOT the same as the agent sitting at its idle prompt after finishing work.
-
-` + `3. "still_working" — The agent is actively processing (API call, compilation, thinking, etc.) ` + `and has not produced final output yet. No prompt or completion summary visible.
-
-` + `4. "error" — The agent hit an error state (crash, unrecoverable error, stack trace).
-
-` + `5. "tool_running" — The agent is using an external tool (browser automation, ` + `MCP tool, etc.). Indicators: "Claude in Chrome", "javascript_tool", ` + `"computer_tool", "screenshot", "navigate", tool execution output. ` + `The agent is actively working but the terminal may be quiet.
-
-` + `IMPORTANT: If you see BOTH completed work output AND an idle prompt (❯), choose "task_complete". ` + `Only choose "waiting_for_input" if the agent is clearly asking a question mid-task.
-
-` + `If "waiting_for_input", also provide:
-` + `- "prompt": the text of what it's asking
-` + `- "suggestedResponse": what to type/send. Use "keys:enter" for TUI menu confirmation, ` + `"keys:down,enter" to select a non-default option, or plain text like "y" for text prompts.
-
-` + `Respond with ONLY a JSON object:
-` + `{"state": "...", "prompt": "...", "suggestedResponse": "..."}`;
+` + `5. "tool_running" \u2014 The agent is using an external tool (browser automation, ` + `MCP tool, etc.). Indicators: "Claude in Chrome", "javascript_tool", ` + `"computer_tool", "screenshot", "navigate", tool execution output. ` + `The agent is actively working but the terminal may be quiet.\n\n` + `IMPORTANT: If you see BOTH completed work output AND an idle prompt (\u276F), choose "task_complete". ` + `Only choose "waiting_for_input" if the agent is clearly asking a question mid-task.\n\n` + `If "waiting_for_input", also provide:\n` + `- "prompt": the text of what it's asking\n` + `- "suggestedResponse": what to type/send. Use "keys:enter" for TUI menu confirmation, ` + `"keys:down,enter" to select a non-default option, or plain text like "y" for text prompts.\n\n` + `Respond with ONLY a JSON object:\n` + `{"state": "...", "prompt": "...", "suggestedResponse": "..."}`;
 }
 async function writeStallSnapshot(sessionId, agentType, recentOutput, effectiveOutput, buffers, traceEntries, log) {
   try {
@@ -2212,8 +2109,7 @@ async function writeStallSnapshot(sessionId, agentType, recentOutput, effectiveO
     const snapshotDir = path.join(os.homedir(), ".milady", "debug");
     fs.mkdirSync(snapshotDir, { recursive: true });
     const ourBuffer = buffers.get(sessionId);
-    const ourTail = ourBuffer ? ourBuffer.slice(-100).join(`
-`) : "(no buffer)";
+    const ourTail = ourBuffer ? ourBuffer.slice(-100).join("\n") : "(no buffer)";
     let traceTimeline = "(no trace entries)";
     try {
       const records = extractTaskCompletionTraceRecords(traceEntries);
@@ -2236,15 +2132,14 @@ async function writeStallSnapshot(sessionId, agentType, recentOutput, effectiveO
       traceTimeline,
       ``,
       `--- raw trace entries (last 20 of ${traceEntries.length}) ---`,
-      traceEntries.slice(-20).join(`
-`),
+      traceEntries.slice(-20).join("\n"),
       ``
-    ].join(`
-`);
+    ].join("\n");
     const snapshotPath = path.join(snapshotDir, `stall-snapshot-${sessionId}.txt`);
     fs.writeFileSync(snapshotPath, snapshot);
-    log(`Stall snapshot → ${snapshotPath}`);
-  } catch (_) {}
+    log(`Stall snapshot \u2192 ${snapshotPath}`);
+  } catch (_) {
+  }
 }
 async function classifyStallOutput(ctx) {
   const {
@@ -2263,8 +2158,7 @@ async function classifyStallOutput(ctx) {
   if (!recentOutput || recentOutput.trim().length < 200) {
     const ourBuffer = buffers.get(sessionId);
     if (ourBuffer && ourBuffer.length > 0) {
-      const rawTail = ourBuffer.slice(-100).join(`
-`);
+      const rawTail = ourBuffer.slice(-100).join("\n");
       const stripped = stripAnsi(rawTail);
       if (stripped.length > effectiveOutput.length) {
         effectiveOutput = stripped;
@@ -2304,7 +2198,7 @@ async function classifyStallOutput(ctx) {
       prompt: parsed.prompt,
       suggestedResponse: parsed.suggestedResponse
     };
-    log(`Stall classification for ${sessionId}: ${classification.state}${classification.suggestedResponse ? ` → "${classification.suggestedResponse}"` : ""}`);
+    log(`Stall classification for ${sessionId}: ${classification.state}${classification.suggestedResponse ? ` \u2192 "${classification.suggestedResponse}"` : ""}`);
     if (classification.state === "task_complete") {
       const session = manager?.get(sessionId);
       const durationMs = session?.startedAt ? Date.now() - new Date(session.startedAt).getTime() : 0;
@@ -2320,14 +2214,12 @@ async function classifyStallOutput(ctx) {
 // src/services/swarm-coordinator.ts
 init_ansi_utils();
 init_swarm_decision_loop();
-import { logger } from "@elizaos/core";
+import {logger} from "@elizaos/core";
 
 // src/services/swarm-idle-watchdog.ts
 init_ansi_utils();
 init_swarm_decision_loop();
-import { ModelType as ModelType3 } from "@elizaos/core";
-var IDLE_THRESHOLD_MS = 3 * 60 * 1000;
-var MAX_IDLE_CHECKS = 3;
+import {ModelType as ModelType3} from "@elizaos/core";
 async function scanIdleSessions(ctx) {
   const now = Date.now();
   for (const taskCtx of ctx.tasks.values()) {
@@ -2346,10 +2238,11 @@ async function scanIdleSessions(ctx) {
         if (currentOutput !== lastSeen) {
           taskCtx.lastActivityAt = now;
           taskCtx.idleCheckCount = 0;
-          ctx.log(`Idle watchdog: "${taskCtx.label}" has fresh PTY output — not idle`);
+          ctx.log(`Idle watchdog: "${taskCtx.label}" has fresh PTY output \u2014 not idle`);
           continue;
         }
-      } catch {}
+      } catch {
+      }
     }
     taskCtx.idleCheckCount++;
     const idleMinutes = Math.round(idleMs / 60000);
@@ -2417,8 +2310,8 @@ async function handleIdleCheck(ctx, taskCtx, idleMinutes) {
       ctx.log(`Idle check LLM call failed: ${err}`);
     }
     if (!decision) {
-      ctx.log(`Idle check for "${taskCtx.label}": LLM returned invalid response — escalating`);
-      ctx.sendChatMessage(`[${taskCtx.label}] Session idle for ${idleMinutes}m — couldn't determine status. Needs your attention.`, "coding-agent");
+      ctx.log(`Idle check for "${taskCtx.label}": LLM returned invalid response \u2014 escalating`);
+      ctx.sendChatMessage(`[${taskCtx.label}] Session idle for ${idleMinutes}m \u2014 couldn't determine status. Needs your attention.`, "coding-agent");
       return;
     }
     taskCtx.decisions.push({
@@ -2440,19 +2333,22 @@ async function handleIdleCheck(ctx, taskCtx, idleMinutes) {
         reasoning: decision.reasoning
       }
     });
-    if (decision.action === "complete") {} else if (decision.action === "respond") {
+    if (decision.action === "complete") {
+    } else if (decision.action === "respond") {
       const actionDesc = decision.useKeys ? `Sent keys: ${decision.keys?.join(", ")}` : `Nudged: ${decision.response ?? ""}`;
-      ctx.sendChatMessage(`[${taskCtx.label}] Idle for ${idleMinutes}m — ${actionDesc}`, "coding-agent");
+      ctx.sendChatMessage(`[${taskCtx.label}] Idle for ${idleMinutes}m \u2014 ${actionDesc}`, "coding-agent");
     } else if (decision.action === "escalate") {
-      ctx.sendChatMessage(`[${taskCtx.label}] Idle for ${idleMinutes}m — needs your attention: ${decision.reasoning}`, "coding-agent");
+      ctx.sendChatMessage(`[${taskCtx.label}] Idle for ${idleMinutes}m \u2014 needs your attention: ${decision.reasoning}`, "coding-agent");
     } else if (decision.action === "ignore") {
-      ctx.log(`Idle check for "${taskCtx.label}": LLM says still working — ${decision.reasoning}`);
+      ctx.log(`Idle check for "${taskCtx.label}": LLM says still working \u2014 ${decision.reasoning}`);
     }
     await executeDecision(ctx, sessionId, decision);
   } finally {
     ctx.inFlightDecisions.delete(sessionId);
   }
 }
+var IDLE_THRESHOLD_MS = 5 * 60 * 1000;
+var MAX_IDLE_CHECKS = 4;
 
 // src/services/swarm-coordinator.ts
 var UNREGISTERED_BUFFER_MS = 2000;
@@ -2536,6 +2432,7 @@ class SwarmCoordinator {
       label: context.label,
       originalTask: context.originalTask,
       workdir: context.workdir,
+      repo: context.repo,
       status: "active",
       decisions: [],
       autoResolvedCount: 0,
@@ -2562,6 +2459,15 @@ class SwarmCoordinator {
         });
       }
     }
+  }
+  getLastUsedRepo() {
+    let latest;
+    for (const task of this.tasks.values()) {
+      if (task.repo && (!latest || task.registeredAt > latest.registeredAt)) {
+        latest = task;
+      }
+    }
+    return latest?.repo;
   }
   getTaskContext(sessionId) {
     return this.tasks.get(sessionId);
@@ -2604,10 +2510,9 @@ class SwarmCoordinator {
   }
   writeSseEvent(res, event) {
     try {
-      res.write(`data: ${JSON.stringify(event)}
-
-`);
-    } catch {}
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+    } catch {
+    }
   }
   async handleSessionEvent(sessionId, event, data) {
     const taskCtx = this.tasks.get(sessionId);
@@ -2626,7 +2531,8 @@ class SwarmCoordinator {
             if (ctx) {
               this.unregisteredBuffer.delete(sessionId);
               for (const entry of stillBuffered) {
-                this.handleSessionEvent(sessionId, entry.event, entry.data).catch(() => {});
+                this.handleSessionEvent(sessionId, entry.event, entry.data).catch(() => {
+                });
               }
             } else {
               this.unregisteredBuffer.delete(sessionId);
@@ -2636,6 +2542,12 @@ class SwarmCoordinator {
         }, UNREGISTERED_BUFFER_MS);
       }
       return;
+    }
+    if (taskCtx.status === "stopped" || taskCtx.status === "error" || taskCtx.status === "completed") {
+      if (event !== "stopped" && event !== "error") {
+        this.log(`Ignoring "${event}" for ${taskCtx.label} (status: ${taskCtx.status})`);
+        return;
+      }
     }
     taskCtx.lastActivityAt = Date.now();
     taskCtx.idleCheckCount = 0;
@@ -2667,6 +2579,7 @@ class SwarmCoordinator {
       }
       case "stopped":
         taskCtx.status = "stopped";
+        this.inFlightDecisions.delete(sessionId);
         this.broadcast({
           type: "stopped",
           sessionId,
@@ -2705,9 +2618,10 @@ class SwarmCoordinator {
               if (devUrl) {
                 urlSuffix = ` Dev server running at ${devUrl}`;
               }
-            } catch {}
+            } catch {
+            }
           }
-          this.sendChatMessage(`[${taskCtx.label}] Running ${toolDesc}.${urlSuffix} The agent is working outside the terminal — I'll let it finish.`, "coding-agent");
+          this.sendChatMessage(`[${taskCtx.label}] Running ${toolDesc}.${urlSuffix} The agent is working outside the terminal \u2014 I'll let it finish.`, "coding-agent");
         }
         break;
       }
@@ -2847,6 +2761,7 @@ class PTYService {
       const coordinator = new SwarmCoordinator(runtime);
       coordinator.start(service);
       service.coordinator = coordinator;
+      runtime.services.set("SWARM_COORDINATOR", [coordinator]);
       logger2.info("[PTYService] SwarmCoordinator wired and started");
     } catch (err) {
       logger2.error(`[PTYService] Failed to wire SwarmCoordinator: ${err}`);
@@ -2887,6 +2802,7 @@ class PTYService {
   async stop() {
     if (this.coordinator) {
       this.coordinator.stop();
+      this.runtime.services.delete("SWARM_COORDINATOR");
       this.coordinator = null;
     }
     if (this.consoleBridge) {
@@ -2954,6 +2870,24 @@ class PTYService {
         this.log(`Failed to write approval config: ${err}`);
       }
     }
+    if (resolvedAgentType === "claude") {
+      try {
+        const settingsPath = join(workdir, ".claude", "settings.json");
+        let settings = {};
+        try {
+          settings = JSON.parse(await readFile(settingsPath, "utf-8"));
+        } catch {
+        }
+        const permissions = settings.permissions ?? {};
+        permissions.allowedDirectories = [workdir];
+        settings.permissions = permissions;
+        await mkdir(dirname(settingsPath), { recursive: true });
+        await writeFile(settingsPath, JSON.stringify(settings, null, 2), "utf-8");
+        this.log(`Wrote allowedDirectories [${workdir}] to ${settingsPath}`);
+      } catch (err) {
+        this.log(`Failed to write allowedDirectories: ${err}`);
+      }
+    }
     const spawnConfig = buildSpawnConfig(sessionId, {
       ...options,
       agentType: resolvedAgentType,
@@ -2963,7 +2897,8 @@ class PTYService {
     this.sessionMetadata.set(session.id, {
       ...options.metadata,
       requestedType: options.metadata?.requestedType ?? options.agentType,
-      agentType: resolvedAgentType
+      agentType: resolvedAgentType,
+      coordinatorManaged: !!options.skipAdapterAutoResponse
     });
     const ctx = {
       manager: this.manager,
@@ -3096,7 +3031,7 @@ class PTYService {
   async classifyStall(sessionId, recentOutput) {
     const meta = this.sessionMetadata.get(sessionId);
     const agentType = meta?.agentType ?? "unknown";
-    return classifyStallOutput({
+    const classification = await classifyStallOutput({
       sessionId,
       recentOutput,
       agentType,
@@ -3108,6 +3043,11 @@ class PTYService {
       debugSnapshots: this.serviceConfig.debug === true,
       log: (msg) => this.log(msg)
     });
+    if (classification && meta?.coordinatorManaged && classification.suggestedResponse) {
+      this.log(`Suppressing stall auto-response for coordinator-managed session ${sessionId} ` + `(would have sent: "${classification.suggestedResponse}")`);
+      classification.suggestedResponse = undefined;
+    }
+    return classification;
   }
   getAdapter(agentType) {
     let adapter = this.adapterCache.get(agentType);
@@ -3267,13 +3207,13 @@ var spawnAgentAction = {
       }
       return { success: false, error: "NO_WORKSPACE" };
     }
-    const resolvedWorkdir = path.resolve(workdir);
-    const workspaceBaseDir = path.join(os.homedir(), ".milady", "workspaces");
+    const resolvedWorkdir = path2.resolve(workdir);
+    const workspaceBaseDir = path2.join(os.homedir(), ".milady", "workspaces");
     const allowedPrefixes = [
-      path.resolve(workspaceBaseDir),
-      path.resolve(process.cwd())
+      path2.resolve(workspaceBaseDir),
+      path2.resolve(process.cwd())
     ];
-    const isAllowed = allowedPrefixes.some((prefix) => resolvedWorkdir.startsWith(prefix + path.sep) || resolvedWorkdir === prefix);
+    const isAllowed = allowedPrefixes.some((prefix) => resolvedWorkdir.startsWith(prefix + path2.sep) || resolvedWorkdir === prefix);
     if (!isAllowed) {
       if (callback) {
         await callback({
@@ -3309,9 +3249,7 @@ var spawnAgentAction = {
         if (preflight && !preflight.installed) {
           if (callback) {
             await callback({
-              text: `${preflight.adapter} CLI is not installed.
-` + `Install with: ${preflight.installCommand}
-` + `Docs: ${preflight.docsUrl}`
+              text: `${preflight.adapter} CLI is not installed.\n` + `Install with: ${preflight.installCommand}\n` + `Docs: ${preflight.docsUrl}`
             });
           }
           return { success: false, error: "AGENT_NOT_INSTALLED" };
@@ -3437,21 +3375,21 @@ var spawnAgentAction = {
 
 // src/actions/coding-task-handlers.ts
 import {
-  logger as logger5
+logger as logger5
 } from "@elizaos/core";
 
 // src/actions/coding-task-helpers.ts
-import { randomUUID } from "node:crypto";
+import {randomUUID} from "node:crypto";
 import * as fs from "node:fs";
 import * as os2 from "node:os";
-import * as path2 from "node:path";
+import * as path3 from "node:path";
 import {
-  logger as logger4
+logger as logger4
 } from "@elizaos/core";
 function createScratchDir() {
-  const baseDir = path2.join(os2.homedir(), ".milady", "workspaces");
+  const baseDir = path3.join(os2.homedir(), ".milady", "workspaces");
   const scratchId = randomUUID();
-  const scratchDir = path2.join(baseDir, scratchId);
+  const scratchDir = path3.join(baseDir, scratchId);
   fs.mkdirSync(scratchDir, { recursive: true });
   return scratchDir;
 }
@@ -3485,9 +3423,7 @@ function registerSessionEvents(ptyService, runtime, sessionId, label, scratchDir
           const response = data.response ?? "";
           const preview = response.length > 500 ? `${response.slice(0, 500)}...` : response;
           callback({
-            text: preview ? `Agent "${label}" completed the task.
-
-${preview}` : `Agent "${label}" completed the task.`
+            text: preview ? `Agent "${label}" completed the task.\n\n${preview}` : `Agent "${label}" completed the task.`
           });
         }
         ptyService.stopSession(sessionId).catch((err) => {
@@ -3512,7 +3448,6 @@ ${preview}` : `Agent "${label}" completed the task.`
 }
 
 // src/actions/coding-task-handlers.ts
-var MAX_CONCURRENT_AGENTS = 8;
 async function handleMultiAgent(ctx, agentsParam) {
   const {
     runtime,
@@ -3653,7 +3588,8 @@ async function handleMultiAgent(ctx, agentsParam) {
           agentType: specAgentType,
           label: specLabel,
           originalTask: specTask,
-          workdir
+          workdir,
+          repo
         });
       }
       results.push({
@@ -3692,8 +3628,7 @@ async function handleMultiAgent(ctx, agentsParam) {
     `Launched ${succeeded.length}/${agentSpecs.length} agents${repo ? ` on ${repo}` : ""}:`,
     ...succeeded.map((r) => `  - "${r.label}" (${r.agentType}) [session: ${r.sessionId}]`),
     ...failed.length > 0 ? [`Failed: ${failed.map((r) => `"${r.label}": ${r.error}`).join(", ")}`] : []
-  ].join(`
-`);
+  ].join("\n");
   if (callback) {
     await callback({ text: summary });
   }
@@ -3774,9 +3709,7 @@ async function handleSingleAgent(ctx, task) {
         logger5.warn(`[START_CODING_TASK] ${preflight.adapter} CLI not installed`);
         if (callback) {
           await callback({
-            text: `${preflight.adapter} CLI is not installed.
-Install with: ${preflight.installCommand}
-Docs: ${preflight.docsUrl}`
+            text: `${preflight.adapter} CLI is not installed.\nInstall with: ${preflight.installCommand}\nDocs: ${preflight.docsUrl}`
           });
         }
         return { success: false, error: "AGENT_NOT_INSTALLED" };
@@ -3815,7 +3748,8 @@ Docs: ${preflight.docsUrl}`
         agentType,
         label,
         originalTask: task,
-        workdir
+        workdir,
+        repo
       });
     }
     if (state) {
@@ -3828,8 +3762,7 @@ Docs: ${preflight.docsUrl}`
     }
     const summary = repo ? `Cloned ${repo} and started ${displayType} agent as "${label}"${task ? ` with task: "${task}"` : ""}` : `Started ${displayType} agent as "${label}" in scratch workspace${task ? ` with task: "${task}"` : ""}`;
     if (callback) {
-      await callback({ text: `${summary}
-Session ID: ${session.id}` });
+      await callback({ text: `${summary}\nSession ID: ${session.id}` });
     }
     return {
       success: true,
@@ -3855,6 +3788,7 @@ Session ID: ${session.id}` });
     return { success: false, error: errorMessage };
   }
 }
+var MAX_CONCURRENT_AGENTS = 8;
 
 // src/actions/start-coding-task.ts
 var startCodingTaskAction = {
@@ -3866,7 +3800,7 @@ var startCodingTaskAction = {
     "SPAWN_AND_PROVISION",
     "CODE_THIS"
   ],
-  description: "Start a coding task: optionally clone a repo, then spawn a coding agent (Claude Code, Codex, Gemini, Aider, Pi) " + "to work on it. If no repo is provided, the agent runs in a safe scratch directory. " + "Use this whenever the user asks to work on code, research something with an agent, or run any agent task.",
+  description: "Start a coding task: optionally clone a repo, then spawn a coding agent (Claude Code, Codex, Gemini, Aider, Pi) " + "to work on it. If no repo is provided, the agent runs in a safe scratch directory. " + "Use this whenever the user asks to work on code, research something with an agent, or run any agent task. " + "IMPORTANT: If the user references a repository from conversation history (e.g. 'in the same repo', " + "'on that project', 'add a feature to it'), you MUST include the repo URL in the `repo` parameter. " + "If the task involves code changes to a real project but you don't know the repo URL, ASK the user for it " + "before calling this action \u2014 do not default to a scratch directory for real project work.",
   examples: [
     [
       {
@@ -3928,6 +3862,13 @@ var startCodingTaskAction = {
         repo = urlMatch[0];
       }
     }
+    if (!repo) {
+      const coordinator = getCoordinator(runtime);
+      const lastRepo = coordinator?.getLastUsedRepo();
+      if (lastRepo) {
+        repo = lastRepo;
+      }
+    }
     const customCredentialKeys = runtime.getSetting("CUSTOM_CREDENTIAL_KEYS");
     let customCredentials;
     if (customCredentialKeys) {
@@ -3971,7 +3912,7 @@ var startCodingTaskAction = {
   parameters: [
     {
       name: "repo",
-      description: "Git repository URL to clone (e.g. https://github.com/owner/repo). " + "If omitted, the agent runs in an isolated scratch directory.",
+      description: "Git repository URL to clone (e.g. https://github.com/owner/repo). " + "ALWAYS provide this when the user is working on a real project or references a repo from context. " + "Only omit for pure research/scratch tasks with no target repository. " + "If unsure which repo, ask the user before spawning.",
       required: false,
       schema: { type: "string" }
     },
@@ -4019,7 +3960,7 @@ var startCodingTaskAction = {
 
 // src/actions/stop-agent.ts
 import {
-  logger as logger6
+logger as logger6
 } from "@elizaos/core";
 var stopAgentAction = {
   name: "STOP_CODING_AGENT",
@@ -4182,6 +4123,15 @@ var stopAgentAction = {
 };
 
 // src/providers/action-examples.ts
+function formatExample(ex) {
+  const actionTags = ex.actions.map((a) => `  <action>${a}</action>`).join("\n");
+  const paramBlocks = Object.entries(ex.params ?? {}).map(([actionName, params]) => {
+    const inner = Object.entries(params).map(([k, v]) => `    <${k}>${v}</${k}>`).join("\n");
+    return `  <${actionName}>\n${inner}\n  </${actionName}>`;
+  }).join("\n");
+  const paramsSection = paramBlocks ? `\n<params>\n${paramBlocks}\n</params>` : "";
+  return `User: ${ex.user}\nAssistant:\n<actions>\n${actionTags}\n</actions>${paramsSection}`;
+}
 var CODING_AGENT_EXAMPLES = [
   {
     user: "Can you set up a workspace for https://github.com/acme/my-app and have Claude fix the login bug?",
@@ -4190,7 +4140,7 @@ var CODING_AGENT_EXAMPLES = [
       START_CODING_TASK: {
         repo: "https://github.com/acme/my-app",
         agentType: "claude",
-        task: "Fix the login bug in src/auth.ts — users are getting 401 errors after token refresh"
+        task: "Fix the login bug in src/auth.ts \u2014 users are getting 401 errors after token refresh"
       }
     }
   },
@@ -4243,28 +4193,7 @@ var CODING_AGENT_EXAMPLES = [
     }
   }
 ];
-function formatExample(ex) {
-  const actionTags = ex.actions.map((a) => `  <action>${a}</action>`).join(`
-`);
-  const paramBlocks = Object.entries(ex.params ?? {}).map(([actionName, params]) => {
-    const inner = Object.entries(params).map(([k, v]) => `    <${k}>${v}</${k}>`).join(`
-`);
-    return `  <${actionName}>
-${inner}
-  </${actionName}>`;
-  }).join(`
-`);
-  const paramsSection = paramBlocks ? `
-<params>
-${paramBlocks}
-</params>` : "";
-  return `User: ${ex.user}
-Assistant:
-<actions>
-${actionTags}
-</actions>${paramsSection}`;
-}
-var MULTI_AGENT_EXAMPLE = `User: Spin up 3 agents on https://github.com/acme/app — one to fix auth, one to write tests, one to update docs
+var MULTI_AGENT_EXAMPLE = `User: Spin up 3 agents on https://github.com/acme/app \u2014 one to fix auth, one to write tests, one to update docs
 Assistant:
 <actions>
   <action>REPLY</action>
@@ -4273,7 +4202,7 @@ Assistant:
 <params>
   <START_CODING_TASK>
     <repo>https://github.com/acme/app</repo>
-    <agents>Fix the authentication bug in src/auth.ts — users get 401 after token refresh. Your unique identifier is "alpha". | Write comprehensive unit tests for the auth module in src/auth.ts. Your unique identifier is "beta". | Update the API documentation in docs/ to reflect the new auth flow. Your unique identifier is "gamma".</agents>
+    <agents>Fix the authentication bug in src/auth.ts \u2014 users get 401 after token refresh. Your unique identifier is "alpha". | Write comprehensive unit tests for the auth module in src/auth.ts. Your unique identifier is "beta". | Update the API documentation in docs/ to reflect the new auth flow. Your unique identifier is "gamma".</agents>
   </START_CODING_TASK>
 </params>`;
 var codingAgentExamplesProvider = {
@@ -4281,14 +4210,12 @@ var codingAgentExamplesProvider = {
   description: "Structured examples showing how to use coding agent actions with parameters",
   position: -1,
   get: async (_runtime, _message, _state) => {
-    const examples = CODING_AGENT_EXAMPLES.map(formatExample).join(`
-
-`);
+    const examples = CODING_AGENT_EXAMPLES.map(formatExample).join("\n\n");
     const text = [
       "# Coding Agent Action Call Examples",
       "When the user asks you to work on code, clone repos, spawn agents, or run agent tasks,",
       "you MUST select the appropriate actions and include parameters. Do NOT just describe",
-      "what you would do — actually select the actions.",
+      "what you would do \u2014 actually select the actions.",
       "",
       "IMPORTANT: Use START_CODING_TASK to launch coding agents. It handles workspace setup",
       "automatically. If a repo URL is provided, it clones it first. If no repo, the agent",
@@ -4306,8 +4233,7 @@ var codingAgentExamplesProvider = {
       "and unique identifiers so their work is clearly differentiated.",
       "",
       MULTI_AGENT_EXAMPLE
-    ].join(`
-`);
+    ].join("\n");
     return {
       data: { codingAgentExamples: CODING_AGENT_EXAMPLES },
       values: { codingAgentExamples: text },
@@ -4340,7 +4266,7 @@ function formatWorkspaceLine(ws, sessions) {
   const label = ws.label || ws.id.slice(0, 8);
   const agents = sessions.filter((s) => s.workdir === ws.path);
   const agentSummary = agents.length > 0 ? agents.map((a) => `${a.agentType}:${formatStatus(a.status)}`).join(", ") : "no agents";
-  return `  - "${label}" → ${ws.repo} (branch: ${ws.branch}, ${agentSummary})`;
+  return `  - "${label}" \u2192 ${ws.repo} (branch: ${ws.branch}, ${agentSummary})`;
 }
 var activeWorkspaceContextProvider = {
   name: "ACTIVE_WORKSPACE_CONTEXT",
@@ -4355,7 +4281,7 @@ var activeWorkspaceContextProvider = {
       try {
         sessions = await Promise.race([
           ptyService.listSessions(),
-          new Promise((resolve2) => setTimeout(() => resolve2([]), 2000))
+          new Promise((resolve3) => setTimeout(() => resolve3([]), 2000))
         ]);
       } catch {
         sessions = [];
@@ -4369,8 +4295,7 @@ var activeWorkspaceContextProvider = {
         "# Active Workspaces & Agents",
         "No active workspaces or coding agent sessions.",
         "Use START_CODING_TASK to launch a new coding agent."
-      ].join(`
-`);
+      ].join("\n");
       return {
         data: { activeWorkspaces: [], activeSessions: [] },
         values: { activeWorkspaceContext: text2 },
@@ -4400,9 +4325,9 @@ var activeWorkspaceContextProvider = {
       const supervisionLevel = coordinator.getSupervisionLevel();
       if (pending.length > 0) {
         lines.push("");
-        lines.push(`## Pending Confirmations (${pending.length}) — supervision: ${supervisionLevel}`);
+        lines.push(`## Pending Confirmations (${pending.length}) \u2014 supervision: ${supervisionLevel}`);
         for (const p of pending) {
-          lines.push(`  - "${p.taskContext.label}" blocked: "${p.promptText}" → suggested: ${p.llmDecision.action}`);
+          lines.push(`  - "${p.taskContext.label}" blocked: "${p.promptText}" \u2192 suggested: ${p.llmDecision.action}`);
         }
       } else if (supervisionLevel !== "autonomous") {
         lines.push("");
@@ -4413,8 +4338,7 @@ var activeWorkspaceContextProvider = {
       lines.push("");
       lines.push("You can interact with agents using SEND_TO_CODING_AGENT (pass sessionId), " + "stop them with STOP_CODING_AGENT, or finalize their work with FINALIZE_WORKSPACE.");
     }
-    const text = lines.join(`
-`);
+    const text = lines.join("\n");
     return {
       data: {
         activeWorkspaces: workspaces.map((ws) => ({
@@ -4440,18 +4364,18 @@ var activeWorkspaceContextProvider = {
 
 // src/services/workspace-service.ts
 import * as os3 from "node:os";
-import * as path4 from "node:path";
+import * as path5 from "node:path";
 import {
-  CredentialService,
-  GitHubPatClient as GitHubPatClient2,
-  MemoryTokenStore,
-  WorkspaceService
+CredentialService,
+GitHubPatClient as GitHubPatClient2,
+MemoryTokenStore,
+WorkspaceService
 } from "git-workspace-service";
 
 // src/services/workspace-github.ts
 import {
-  GitHubPatClient,
-  OAuthDeviceFlow
+GitHubPatClient,
+OAuthDeviceFlow
 } from "git-workspace-service";
 function parseOwnerRepo(repo) {
   const match = repo.match(/(?:github\.com\/)?([^/]+)\/([^/.]+)/);
@@ -4507,9 +4431,7 @@ async function performOAuthFlow(ctx, clientId) {
       expiresIn: deviceCode.expiresIn
     });
   } else {
-    console.log(`
-[GitHub Auth] Go to ${deviceCode.verificationUri} and enter code: ${deviceCode.userCode}
-`);
+    console.log(`\n[GitHub Auth] Go to ${deviceCode.verificationUri} and enter code: ${deviceCode.userCode}\n`);
   }
   const token = await oauth.pollForToken(deviceCode);
   const client = new GitHubPatClient({ token: token.accessToken });
@@ -4578,8 +4500,7 @@ async function getStatus(workspacePath) {
     cwd: workspacePath,
     encoding: "utf-8"
   }).trim();
-  const lines = statusOutput.split(`
-`).filter(Boolean);
+  const lines = statusOutput.split("\n").filter(Boolean);
   const modified = [];
   const staged = [];
   const untracked = [];
@@ -4654,11 +4575,11 @@ async function createPR(workspaceService, workspace, workspaceId, options, log) 
 
 // src/services/workspace-lifecycle.ts
 import * as fs2 from "node:fs";
-import * as path3 from "node:path";
+import * as path4 from "node:path";
 async function removeScratchDir(dirPath, baseDir, log) {
-  const resolved = path3.resolve(dirPath);
-  const resolvedBase = path3.resolve(baseDir) + path3.sep;
-  if (!resolved.startsWith(resolvedBase) && resolved !== path3.resolve(baseDir)) {
+  const resolved = path4.resolve(dirPath);
+  const resolvedBase = path4.resolve(baseDir) + path4.sep;
+  if (!resolved.startsWith(resolvedBase) && resolved !== path4.resolve(baseDir)) {
     console.warn(`[CodingWorkspaceService] Refusing to remove dir outside base: ${resolved}`);
     return;
   }
@@ -4690,7 +4611,7 @@ async function gcOrphanedWorkspaces(baseDir, workspaceTtlMs, trackedWorkspaceIds
       skipped++;
       continue;
     }
-    const dirPath = path3.join(baseDir, entry.name);
+    const dirPath = path4.join(baseDir, entry.name);
     try {
       const stat = await fs2.promises.stat(dirPath);
       const age = now - stat.mtimeMs;
@@ -4727,7 +4648,7 @@ class CodingWorkspaceService {
   constructor(runtime, config = {}) {
     this.runtime = runtime;
     this.serviceConfig = {
-      baseDir: config.baseDir ?? path4.join(os3.homedir(), ".milady", "workspaces"),
+      baseDir: config.baseDir ?? path5.join(os3.homedir(), ".milady", "workspaces"),
       branchPrefix: config.branchPrefix ?? "milady",
       debug: config.debug ?? false,
       workspaceTtlMs: config.workspaceTtlMs ?? 24 * 60 * 60 * 1000
@@ -4989,7 +4910,7 @@ class CodingWorkspaceService {
 }
 // src/api/agent-routes.ts
 import * as os4 from "node:os";
-import * as path5 from "node:path";
+import * as path6 from "node:path";
 async function handleAgentRoutes(req, res, pathname, ctx) {
   const method = req.method?.toUpperCase();
   if (method === "GET" && pathname === "/api/coding-agents/preflight") {
@@ -5116,15 +5037,15 @@ async function handleAgentRoutes(req, res, pathname, ctx) {
         customCredentials,
         metadata
       } = body;
-      const workspaceBaseDir = path5.join(os4.homedir(), ".milady", "workspaces");
+      const workspaceBaseDir = path6.join(os4.homedir(), ".milady", "workspaces");
       const allowedPrefixes = [
-        path5.resolve(workspaceBaseDir),
-        path5.resolve(process.cwd())
+        path6.resolve(workspaceBaseDir),
+        path6.resolve(process.cwd())
       ];
       let workdir = rawWorkdir;
       if (workdir) {
-        const resolved = path5.resolve(workdir);
-        const isAllowed = allowedPrefixes.some((prefix2) => resolved === prefix2 || resolved.startsWith(prefix2 + path5.sep));
+        const resolved = path6.resolve(workdir);
+        const isAllowed = allowedPrefixes.some((prefix2) => resolved === prefix2 || resolved.startsWith(prefix2 + path6.sep));
         if (!isAllowed) {
           sendError(res, "workdir must be within workspace base directory or cwd", 403);
           return true;
@@ -5287,7 +5208,6 @@ async function handleAgentRoutes(req, res, pathname, ctx) {
 }
 
 // src/api/coordinator-routes.ts
-var COORDINATOR_PREFIX = "/api/coding-agents/coordinator";
 async function handleCoordinatorRoutes(req, res, pathname, ctx) {
   if (!pathname.startsWith(COORDINATOR_PREFIX)) {
     return false;
@@ -5305,9 +5225,7 @@ async function handleCoordinatorRoutes(req, res, pathname, ctx) {
       "Cache-Control": "no-cache",
       Connection: "keep-alive"
     });
-    res.write(`:ok
-
-`);
+    res.write(":ok\n\n");
     const unsubscribe = coordinator.addSseClient(res);
     req.on("close", unsubscribe);
     const keepAlive = setInterval(() => {
@@ -5315,9 +5233,7 @@ async function handleCoordinatorRoutes(req, res, pathname, ctx) {
         clearInterval(keepAlive);
         return;
       }
-      res.write(`:ping
-
-`);
+      res.write(":ping\n\n");
     }, 30000);
     req.on("close", () => clearInterval(keepAlive));
     return true;
@@ -5401,6 +5317,7 @@ async function handleCoordinatorRoutes(req, res, pathname, ctx) {
   }
   return false;
 }
+var COORDINATOR_PREFIX = "/api/coding-agents/coordinator";
 
 // src/api/issue-routes.ts
 async function handleIssueRoutes(req, res, pathname, ctx) {
@@ -5632,9 +5549,8 @@ async function handleWorkspaceRoutes(req, res, pathname, ctx) {
 }
 
 // src/api/routes.ts
-var MAX_BODY_SIZE = 1024 * 1024;
 async function parseBody(req) {
-  return new Promise((resolve4, reject) => {
+  return new Promise((resolve5, reject) => {
     let body = "";
     let size = 0;
     req.on("data", (chunk) => {
@@ -5648,7 +5564,7 @@ async function parseBody(req) {
     });
     req.on("end", () => {
       try {
-        resolve4(body ? JSON.parse(body) : {});
+        resolve5(body ? JSON.parse(body) : {});
       } catch {
         reject(new Error("Invalid JSON body"));
       }
@@ -5689,6 +5605,7 @@ function createCodingAgentRouteHandler(runtime, coordinator) {
   };
   return (req, res, pathname) => handleCodingAgentRoutes(req, res, pathname, ctx);
 }
+var MAX_BODY_SIZE = 1024 * 1024;
 
 // src/index.ts
 var codingAgentPlugin = {
@@ -5731,5 +5648,5 @@ export {
   CodingWorkspaceService
 };
 
-//# debugId=70379FA5545346E764756E2164756E21
+//# debugId=8ECA10FB673225DA64756E2164756E21
 //# sourceMappingURL=index.js.map
