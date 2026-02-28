@@ -52,6 +52,8 @@ export interface TaskContext {
   label: string;
   originalTask: string;
   workdir: string;
+  /** Repository URL if provided, undefined for scratch directory tasks. */
+  repo?: string;
   status: "active" | "completed" | "error" | "stopped";
   decisions: CoordinationDecision[];
   autoResolvedCount: number;
@@ -247,6 +249,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
       label: string;
       originalTask: string;
       workdir: string;
+      repo?: string;
     },
   ): void {
     this.tasks.set(sessionId, {
@@ -255,6 +258,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
       label: context.label,
       originalTask: context.originalTask,
       workdir: context.workdir,
+      repo: context.repo,
       status: "active",
       decisions: [],
       autoResolvedCount: 0,
@@ -286,6 +290,23 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
         );
       }
     }
+  }
+
+  /**
+   * Return the repo URL from the most recently registered task that had one.
+   * Useful as a fallback when the user says "in the same repo" without a URL.
+   */
+  getLastUsedRepo(): string | undefined {
+    let latest: TaskContext | undefined;
+    for (const task of this.tasks.values()) {
+      if (
+        task.repo &&
+        (!latest || task.registeredAt > latest.registeredAt)
+      ) {
+        latest = task;
+      }
+    }
+    return latest?.repo;
   }
 
   getTaskContext(sessionId: string): TaskContext | undefined {
@@ -403,6 +424,16 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
       return;
     }
 
+    // Skip decision-making events for terminal states, but always allow
+    // "stopped" and "error" through — they're definitive lifecycle signals
+    // that the frontend needs to close consoles and clean up.
+    if (taskCtx.status === "stopped" || taskCtx.status === "error" || taskCtx.status === "completed") {
+      if (event !== "stopped" && event !== "error") {
+        this.log(`Ignoring "${event}" for ${taskCtx.label} (status: ${taskCtx.status})`);
+        return;
+      }
+    }
+
     // Update activity timestamp — resets idle watchdog for this session
     taskCtx.lastActivityAt = Date.now();
     taskCtx.idleCheckCount = 0;
@@ -449,6 +480,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 
       case "stopped":
         taskCtx.status = "stopped";
+        this.inFlightDecisions.delete(sessionId);
         this.broadcast({
           type: "stopped",
           sessionId,
