@@ -78,7 +78,7 @@ export function isOutOfScopeAccess(
   // Match absolute paths: multi-segment (/dir/file) or well-known single-segment
   // roots that agents should never touch (/etc, /tmp, /var, /usr, /opt, /sys, /proc).
   const multiSegment = /\/[\w.-]+(?:\/[\w.-]+)+/g;
-  const sensitiveRoots = /\b\/(etc|tmp|var|usr|opt|sys|proc)\b/g;
+  const sensitiveRoots = /\b\/(etc|tmp|var|usr|opt|sys|proc|root)\b/g;
   const homeTilde = /~\/[\w.-]+/g;
 
   const matches = [

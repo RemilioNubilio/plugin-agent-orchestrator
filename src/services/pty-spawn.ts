@@ -34,6 +34,7 @@ const ENV_ALLOWLIST = [
   "LC_ALL",
   "LC_CTYPE",
   "TERM",
+  "TZ",
   "TMPDIR",
   "XDG_RUNTIME_DIR",
   "NODE_OPTIONS",
