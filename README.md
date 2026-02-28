@@ -9,12 +9,27 @@ Orchestrate CLI-based coding agents (Claude Code, Codex, Gemini CLI, Aider, Pi) 
 - **PR Workflow**: Commit changes, push to remote, create pull requests
 - **Multi-Agent Support**: Claude Code, Codex, Gemini CLI, Aider, Pi, or generic shell
 
+## Prerequisites
+
+This plugin spawns CLI coding agents in PTY sessions. You need **at least one** of the following installed on your machine:
+
+| Agent | Install | Docs |
+|-------|---------|------|
+| **Claude Code** | `npm install -g @anthropic-ai/claude-code` | [claude.ai/claude-code](https://claude.ai/claude-code) |
+| **Codex** | `npm install -g @openai/codex` | [github.com/openai/codex](https://github.com/openai/codex) |
+| **Gemini CLI** | `npm install -g @anthropic-ai/gemini-cli` | [github.com/google-gemini/gemini-cli](https://github.com/google-gemini/gemini-cli) |
+| **Aider** | `pip install aider-chat` | [aider.chat](https://aider.chat) |
+
+Each agent also requires its own API key (e.g., `ANTHROPIC_API_KEY` for Claude Code, `OPENAI_API_KEY` for Codex, `GOOGLE_GENERATIVE_AI_API_KEY` for Gemini). Set these in your environment or runtime settings.
+
+The plugin auto-detects which agents are available at spawn time and will report if a requested agent isn't installed.
+
 ## Installation
 
 This plugin is part of the Milady monorepo. It requires the following peer dependencies:
 
 ```bash
-pnpm add pty-manager git-workspace-service
+pnpm add pty-manager git-workspace-service coding-agent-adapters
 ```
 
 ## Usage
@@ -161,8 +176,10 @@ runtime.setSetting("CODING_WORKSPACE_CONFIG", {
 
 ## Dependencies
 
-- `pty-manager` - PTY session management with adapter pattern
-- `git-workspace-service` - Git workspace provisioning and PR creation
+- `pty-manager` - PTY session management with stall detection and auto-response
+- `coding-agent-adapters` - Adapter layer for Claude Code, Codex, Gemini CLI, Aider CLIs
+- `git-workspace-service` - Git workspace provisioning, credential management, and PR creation
+- `pty-console` - Terminal bridge for xterm.js frontend integration
 
 ## License
 
