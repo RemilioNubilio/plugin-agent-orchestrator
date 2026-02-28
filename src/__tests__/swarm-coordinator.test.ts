@@ -298,6 +298,57 @@ describe("SwarmCoordinator", () => {
       expect(ctx.idleCheckCount).toBe(0);
     });
 
+    it("skips events for stopped sessions", async () => {
+      const ctx = coordinator.getTaskContext("s-1");
+      ctx.status = "stopped";
+      const activityBefore = ctx.lastActivityAt;
+
+      await coordinator.handleSessionEvent("s-1", "blocked", {
+        promptInfo: { prompt: "Allow?" },
+        autoResponded: false,
+      });
+
+      // Should not have called LLM or updated activity
+      expect(mockRuntime.useModel).not.toHaveBeenCalled();
+      expect(ctx.lastActivityAt).toBe(activityBefore);
+      expect(ctx.decisions.length).toBe(0);
+    });
+
+    it("skips events for completed sessions", async () => {
+      const ctx = coordinator.getTaskContext("s-1");
+      ctx.status = "completed";
+
+      await coordinator.handleSessionEvent("s-1", "blocked", {
+        promptInfo: { prompt: "Allow?" },
+        autoResponded: false,
+      });
+
+      expect(mockRuntime.useModel).not.toHaveBeenCalled();
+      expect(ctx.decisions.length).toBe(0);
+    });
+
+    it("skips events for errored sessions", async () => {
+      const ctx = coordinator.getTaskContext("s-1");
+      ctx.status = "error";
+
+      await coordinator.handleSessionEvent("s-1", "blocked", {
+        promptInfo: { prompt: "Allow?" },
+        autoResponded: false,
+      });
+
+      expect(mockRuntime.useModel).not.toHaveBeenCalled();
+      expect(ctx.decisions.length).toBe(0);
+    });
+
+    it("clears inFlightDecisions on stop", async () => {
+      coordinator.inFlightDecisions.add("s-1");
+
+      await coordinator.handleSessionEvent("s-1", "stopped", {});
+
+      expect(coordinator.inFlightDecisions.has("s-1")).toBe(false);
+      expect(coordinator.getTaskContext("s-1").status).toBe("stopped");
+    });
+
     it("broadcasts unknown event types for observability", async () => {
       const res = createMockSseRes();
       coordinator.addSseClient(res);

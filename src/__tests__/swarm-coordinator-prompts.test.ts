@@ -98,6 +98,20 @@ describe("swarm-coordinator-prompts", () => {
       expect(prompt).not.toContain("Previous decisions");
     });
 
+    it("includes workdir scoping guideline with decline and redirect", () => {
+      const prompt = buildCoordinationPrompt(
+        makeTaskCtx({ workdir: "/home/user/project" }),
+        "Allow write to /etc/passwd?",
+        "output",
+        [],
+      );
+      expect(prompt).toContain("OUTSIDE the working");
+      expect(prompt).toContain("/home/user/project");
+      expect(prompt).toContain("DECLINE");
+      expect(prompt).toContain("REDIRECT");
+      expect(prompt).toContain("Use /home/user/project instead");
+    });
+
     it("contains all three action options", () => {
       const prompt = buildCoordinationPrompt(
         makeTaskCtx(),
@@ -108,6 +122,37 @@ describe("swarm-coordinator-prompts", () => {
       expect(prompt).toContain('"respond"');
       expect(prompt).toContain('"escalate"');
       expect(prompt).toContain('"ignore"');
+    });
+
+    it("includes repo context when provided", () => {
+      const prompt = buildCoordinationPrompt(
+        makeTaskCtx({ repo: "https://github.com/org/repo" }),
+        "prompt",
+        "output",
+        [],
+      );
+      expect(prompt).toContain("Repository: https://github.com/org/repo");
+    });
+
+    it("shows scratch directory when no repo", () => {
+      const prompt = buildCoordinationPrompt(
+        makeTaskCtx(),
+        "prompt",
+        "output",
+        [],
+      );
+      expect(prompt).toContain("Repository: none (scratch directory)");
+    });
+
+    it("includes escalation guideline for missing context", () => {
+      const prompt = buildCoordinationPrompt(
+        makeTaskCtx(),
+        "prompt",
+        "output",
+        [],
+      );
+      expect(prompt).toContain("NOT provided in the original task");
+      expect(prompt).toContain("ESCALATE");
     });
 
     it("truncates very long output to 3000 chars", () => {

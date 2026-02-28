@@ -177,6 +177,7 @@ describe("PTYService", () => {
         taskId: "task-456",
         requestedType: "shell",
         agentType: "shell",
+        coordinatorManaged: false,
       });
     });
 
