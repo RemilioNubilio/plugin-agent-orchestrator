@@ -2,7 +2,7 @@
 
 Orchestrate CLI-based coding agents (Claude Code, Codex, Gemini CLI, Aider, Pi) via PTY sessions and manage git workspaces for autonomous coding tasks.
 
-Built for [Milady](https://github.com/milady-ai/milady), compatible with any [ElizaOS](https://github.com/elizaOS/eliza) agent.
+Built for [Milady](https://github.com/milady-ai/milady). The plugin registers ElizaOS-compatible actions and services, so any ElizaOS agent can spawn and manage coding agents via chat. The full experience — live xterm terminal views, real-time PTY output streaming, and the swarm monitoring dashboard — requires the Milady frontend and server.
 
 ## Features
 
