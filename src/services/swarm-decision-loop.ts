@@ -72,11 +72,23 @@ export function isOutOfScopeAccess(
   promptText: string,
   workdir: string,
 ): boolean {
-  // Match absolute path patterns with at least two segments (e.g. /dir/file)
-  // to avoid false positives like "/n" from "(Y/n)".
-  const pathPattern = /\/[\w.-]+(?:\/[\w.-]+)+/g;
-  const matches = promptText.match(pathPattern);
-  if (!matches) return false;
+  // Strip URLs so we don't false-positive on https://example.com/foo/bar
+  const stripped = promptText.replace(/https?:\/\/\S+/g, "");
+
+  // Match absolute paths: multi-segment (/dir/file) or well-known single-segment
+  // roots that agents should never touch (/etc, /tmp, /var, /usr, /opt, /sys, /proc).
+  const multiSegment = /\/[\w.-]+(?:\/[\w.-]+)+/g;
+  const sensitiveRoots = /\b\/(etc|tmp|var|usr|opt|sys|proc)\b/g;
+  const homeTilde = /~\/[\w.-]+/g;
+
+  const matches = [
+    ...(stripped.match(multiSegment) ?? []),
+    ...(stripped.match(sensitiveRoots) ?? []).map((m) => m.trimStart()),
+    ...(stripped.match(homeTilde) ?? []).map((m) =>
+      m.replace("~", process.env.HOME ?? "/home/user"),
+    ),
+  ];
+  if (matches.length === 0) return false;
 
   const resolvedWorkdir = path.resolve(workdir);
   return matches.some((p) => {

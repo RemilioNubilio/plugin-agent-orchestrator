@@ -200,6 +200,7 @@ export function buildTurnCompletePrompt(
     `just finished a turn and is back at the idle prompt waiting for input.\n\n` +
     `Original task: "${taskCtx.originalTask}"\n` +
     `Working directory: ${taskCtx.workdir}\n` +
+    `Repository: ${taskCtx.repo ?? "none (scratch directory)"}\n` +
     historySection +
     `\nOutput from this turn:\n` +
     `---\n${turnOutput.slice(-3000)}\n---\n\n` +

@@ -33,6 +33,7 @@ const ENV_ALLOWLIST = [
   "LANG",
   "LC_ALL",
   "LC_CTYPE",
+  "TERM",
   "TMPDIR",
   "XDG_RUNTIME_DIR",
   "NODE_OPTIONS",

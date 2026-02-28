@@ -17,7 +17,7 @@ This plugin spawns CLI coding agents in PTY sessions. You need **at least one** 
 |-------|---------|------|
 | **Claude Code** | `npm install -g @anthropic-ai/claude-code` | [claude.ai/claude-code](https://claude.ai/claude-code) |
 | **Codex** | `npm install -g @openai/codex` | [github.com/openai/codex](https://github.com/openai/codex) |
-| **Gemini CLI** | `npm install -g @anthropic-ai/gemini-cli` | [github.com/google-gemini/gemini-cli](https://github.com/google-gemini/gemini-cli) |
+| **Gemini CLI** | `npm install -g @google/gemini-cli` | [github.com/google-gemini/gemini-cli](https://github.com/google-gemini/gemini-cli) |
 | **Aider** | `pip install aider-chat` | [aider.chat](https://aider.chat) |
 
 Each agent also requires its own API key (e.g., `ANTHROPIC_API_KEY` for Claude Code, `OPENAI_API_KEY` for Codex, `GOOGLE_GENERATIVE_AI_API_KEY` for Gemini). Set these in your environment or runtime settings.
