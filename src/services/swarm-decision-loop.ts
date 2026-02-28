@@ -263,7 +263,7 @@ export async function handleBlocked(
 
       // Stop the session to prevent further out-of-scope access
       taskCtx.status = "error";
-      ctx.ptyService.stopSession(sessionId).catch((err) => {
+      ctx.ptyService?.stopSession(sessionId).catch((err) => {
         ctx.log(
           `Failed to stop session after out-of-scope auto-approval: ${err}`,
         );

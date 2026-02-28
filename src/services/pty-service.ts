@@ -141,7 +141,7 @@ export class PTYService {
       // without a hard import from this plugin package.
       // We bypass registerService() (which would call start() again) and
       // write directly to the services map that getService() reads from.
-      runtime.services.set("SWARM_COORDINATOR", [coordinator as unknown as Service]);
+      (runtime.services as Map<string, Service[]>).set("SWARM_COORDINATOR", [coordinator as unknown as Service]);
 
       logger.info("[PTYService] SwarmCoordinator wired and started");
     } catch (err) {
@@ -194,7 +194,7 @@ export class PTYService {
     if (this.coordinator) {
       this.coordinator.stop();
       // Remove from runtime services map
-      this.runtime.services.delete("SWARM_COORDINATOR");
+      (this.runtime.services as Map<string, Service[]>).delete("SWARM_COORDINATOR");
       this.coordinator = null;
     }
 
