@@ -21,6 +21,38 @@ import type {
   SpawnSessionOptions,
 } from "./pty-types.js";
 
+/**
+ * System environment variables safe to pass to spawned agents.
+ * Everything else (API keys, tokens, cloud credentials) is stripped.
+ */
+const ENV_ALLOWLIST = [
+  "PATH",
+  "HOME",
+  "USER",
+  "SHELL",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TMPDIR",
+  "XDG_RUNTIME_DIR",
+  "NODE_OPTIONS",
+  "BUN_INSTALL",
+];
+
+/**
+ * Build a sanitized base environment from process.env, keeping only
+ * safe system variables. Agent-specific credentials are injected
+ * separately by the adapter's getEnv().
+ */
+export function buildSanitizedBaseEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const key of ENV_ALLOWLIST) {
+    const val = process.env[key];
+    if (val) env[key] = val;
+  }
+  return env;
+}
+
 export interface SpawnContext {
   manager: PTYManager | BunCompatiblePTYManager;
   usingBunWorker: boolean;
@@ -186,7 +218,8 @@ export function buildSpawnConfig(
     name: options.name,
     type: options.agentType,
     workdir,
-    env: { ...options.env, ...modelEnv },
+    inheritProcessEnv: false,
+    env: { ...buildSanitizedBaseEnv(), ...options.env, ...modelEnv },
     ...(options.skipAdapterAutoResponse
       ? { skipAdapterAutoResponse: true }
       : {}),

@@ -1,6 +1,8 @@
 /** @module services/pty-service */
 
-import { type IAgentRuntime, logger } from "@elizaos/core";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { type IAgentRuntime, type Service, logger } from "@elizaos/core";
 import {
   type AdapterType,
   type AgentFileDescriptor,
@@ -133,6 +135,14 @@ export class PTYService {
       const coordinator = new SwarmCoordinator(runtime);
       coordinator.start(service);
       service.coordinator = coordinator;
+
+      // Register the coordinator as a discoverable runtime service so
+      // server.ts can find it via runtime.getService("SWARM_COORDINATOR")
+      // without a hard import from this plugin package.
+      // We bypass registerService() (which would call start() again) and
+      // write directly to the services map that getService() reads from.
+      runtime.services.set("SWARM_COORDINATOR", [coordinator as unknown as Service]);
+
       logger.info("[PTYService] SwarmCoordinator wired and started");
     } catch (err) {
       logger.error(`[PTYService] Failed to wire SwarmCoordinator: ${err}`);
@@ -183,6 +193,8 @@ export class PTYService {
     // Stop the coordinator if one was wired to this service
     if (this.coordinator) {
       this.coordinator.stop();
+      // Remove from runtime services map
+      this.runtime.services.delete("SWARM_COORDINATOR");
       this.coordinator = null;
     }
 
@@ -284,6 +296,32 @@ export class PTYService {
       }
     }
 
+    // Inject allowedDirectories into Claude settings to restrict auto-approval scope
+    if (resolvedAgentType === "claude") {
+      try {
+        const settingsPath = join(workdir, ".claude", "settings.json");
+        let settings: Record<string, unknown> = {};
+        try {
+          settings = JSON.parse(await readFile(settingsPath, "utf-8"));
+        } catch {
+          // File may not exist yet
+        }
+        const permissions =
+          (settings.permissions as Record<string, unknown>) ?? {};
+        permissions.allowedDirectories = [workdir];
+        settings.permissions = permissions;
+        await mkdir(dirname(settingsPath), { recursive: true });
+        await writeFile(
+          settingsPath,
+          JSON.stringify(settings, null, 2),
+          "utf-8",
+        );
+        this.log(`Wrote allowedDirectories [${workdir}] to ${settingsPath}`);
+      } catch (err) {
+        this.log(`Failed to write allowedDirectories: ${err}`);
+      }
+    }
+
     const spawnConfig = buildSpawnConfig(
       sessionId,
       {
@@ -300,6 +338,7 @@ export class PTYService {
       ...options.metadata,
       requestedType: options.metadata?.requestedType ?? options.agentType,
       agentType: resolvedAgentType,
+      coordinatorManaged: !!options.skipAdapterAutoResponse,
     });
 
     // Build spawn context for delegating to extracted spawn modules
@@ -521,7 +560,7 @@ export class PTYService {
   ): Promise<StallClassification | null> {
     const meta = this.sessionMetadata.get(sessionId);
     const agentType = (meta?.agentType as string) ?? "unknown";
-    return classifyStallOutput({
+    const classification = await classifyStallOutput({
       sessionId,
       recentOutput,
       agentType,
@@ -533,6 +572,20 @@ export class PTYService {
       debugSnapshots: this.serviceConfig.debug === true,
       log: (msg: string) => this.log(msg),
     });
+
+    // When the SwarmCoordinator manages this session, strip suggestedResponse
+    // so the PTY worker doesn't auto-respond. The coordinator's LLM decision
+    // loop will handle blocked prompts instead — it has full task context and
+    // can make smarter choices than the stall classifier's generic suggestion.
+    if (classification && meta?.coordinatorManaged && classification.suggestedResponse) {
+      this.log(
+        `Suppressing stall auto-response for coordinator-managed session ${sessionId} ` +
+        `(would have sent: "${classification.suggestedResponse}")`,
+      );
+      classification.suggestedResponse = undefined;
+    }
+
+    return classification;
   }
 
   // ─── Workspace Files ───
