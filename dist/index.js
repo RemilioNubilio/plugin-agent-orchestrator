@@ -289,7 +289,7 @@ async function handleBlocked(ctx, sessionId, taskCtx, data) {
       });
       ctx.sendChatMessage(`[${taskCtx.label}] WARNING: Auto-approved access to path outside workspace (${taskCtx.workdir}). ` + `Prompt: "${promptText.slice(0, 150)}". Stopping session for safety.`, "coding-agent");
       taskCtx.status = "error";
-      ctx.ptyService.stopSession(sessionId).catch((err) => {
+      ctx.ptyService?.stopSession(sessionId).catch((err) => {
         ctx.log(`Failed to stop session after out-of-scope auto-approval: ${err}`);
       });
       return;
@@ -5648,5 +5648,5 @@ export {
   CodingWorkspaceService
 };
 
-//# debugId=8ECA10FB673225DA64756E2164756E21
+//# debugId=89F11C0ED7C9BDFC64756E2164756E21
 //# sourceMappingURL=index.js.map
