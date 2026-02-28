@@ -250,6 +250,7 @@ export async function handleMultiAgent(
           label: specLabel,
           originalTask: specTask,
           workdir,
+          repo,
         });
       }
 
@@ -473,6 +474,7 @@ export async function handleSingleAgent(
         label,
         originalTask: task,
         workdir,
+        repo,
       });
     }
 

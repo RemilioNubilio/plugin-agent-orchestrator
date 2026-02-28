@@ -24,6 +24,7 @@ import type {
 } from "@elizaos/core";
 import type { AgentCredentials } from "coding-agent-adapters";
 import type { PTYService } from "../services/pty-service.js";
+import { getCoordinator } from "../services/pty-service.js";
 import { normalizeAgentType } from "../services/pty-types.js";
 import type { CodingWorkspaceService } from "../services/workspace-service.js";
 import {
@@ -46,7 +47,11 @@ export const startCodingTaskAction: Action = {
   description:
     "Start a coding task: optionally clone a repo, then spawn a coding agent (Claude Code, Codex, Gemini, Aider, Pi) " +
     "to work on it. If no repo is provided, the agent runs in a safe scratch directory. " +
-    "Use this whenever the user asks to work on code, research something with an agent, or run any agent task.",
+    "Use this whenever the user asks to work on code, research something with an agent, or run any agent task. " +
+    "IMPORTANT: If the user references a repository from conversation history (e.g. 'in the same repo', " +
+    "'on that project', 'add a feature to it'), you MUST include the repo URL in the `repo` parameter. " +
+    "If the task involves code changes to a real project but you don't know the repo URL, ASK the user for it " +
+    "before calling this action — do not default to a scratch directory for real project work.",
 
   examples: [
     [
@@ -139,6 +144,16 @@ export const startCodingTaskAction: Action = {
       }
     }
 
+    // Fallback: if no repo was explicitly provided, check the coordinator for
+    // the most recently used repo. Handles "in the same repo" style requests.
+    if (!repo) {
+      const coordinator = getCoordinator(runtime);
+      const lastRepo = coordinator?.getLastUsedRepo();
+      if (lastRepo) {
+        repo = lastRepo;
+      }
+    }
+
     // Build credentials (shared across all agents)
     const customCredentialKeys = runtime.getSetting("CUSTOM_CREDENTIAL_KEYS") as
       | string
@@ -202,7 +217,9 @@ export const startCodingTaskAction: Action = {
       name: "repo",
       description:
         "Git repository URL to clone (e.g. https://github.com/owner/repo). " +
-        "If omitted, the agent runs in an isolated scratch directory.",
+        "ALWAYS provide this when the user is working on a real project or references a repo from context. " +
+        "Only omit for pure research/scratch tasks with no target repository. " +
+        "If unsure which repo, ask the user before spawning.",
       required: false,
       schema: { type: "string" as const },
     },

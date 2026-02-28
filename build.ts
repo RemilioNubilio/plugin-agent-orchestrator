@@ -31,7 +31,7 @@ async function build() {
           outdir: "./dist",
           target: "node",
           format: "esm",
-          sourcemap: true,
+          sourcemap: "linked",
           minify: false,
           external: [
             "node:*",

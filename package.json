@@ -21,6 +21,7 @@
     "package.json"
   ],
   "scripts": {
+    "postinstall": "node ./scripts/ensure-node-pty.mjs",
     "build": "bun run build.ts",
     "test": "bun test",
     "test:watch": "bun test --watch",
@@ -28,7 +29,7 @@
   },
   "peerDependencies": {
     "@elizaos/core": ">=2.0.0-alpha.0",
-    "git-workspace-service": ">=0.3.0",
+    "git-workspace-service": "0.4.4",
     "pty-manager": ">=1.8.0"
   },
   "devDependencies": {
@@ -37,7 +38,7 @@
   },
   "license": "MIT",
   "dependencies": {
-    "coding-agent-adapters": "0.8.0",
-    "pty-console": "0.3.0"
+    "coding-agent-adapters": "0.8.1",
+    "pty-console": "0.3.1"
   }
 }

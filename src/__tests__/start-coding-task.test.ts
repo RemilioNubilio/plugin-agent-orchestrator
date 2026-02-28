@@ -24,6 +24,7 @@ const createMockPTYService = () => ({
   spawnSession: mockSpawnSession,
   onSessionEvent: mockOnSessionEvent,
   checkAvailableAgents: mockCheckAvailableAgents,
+  resolveAgentType: jest.fn().mockResolvedValue("claude"),
   listSessions: jest.fn().mockResolvedValue([]),
   stopSession: jest.fn().mockResolvedValue(undefined),
 });

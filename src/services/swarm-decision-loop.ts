@@ -8,6 +8,7 @@
  * @module services/swarm-decision-loop
  */
 
+import * as path from "node:path";
 import { ModelType } from "@elizaos/core";
 import { cleanForChat, extractCompletionSummary } from "./ansi-utils.js";
 import type {
@@ -38,6 +39,7 @@ function toContextSummary(taskCtx: TaskContext): TaskContextSummary {
     label: taskCtx.label,
     originalTask: taskCtx.originalTask,
     workdir: taskCtx.workdir,
+    repo: taskCtx.repo,
   };
 }
 
@@ -63,6 +65,39 @@ function formatDecisionResponse(
   return decision.useKeys
     ? `keys:${decision.keys?.join(",")}`
     : decision.response;
+}
+
+/** Check if a permission prompt references paths outside the workspace. */
+export function isOutOfScopeAccess(
+  promptText: string,
+  workdir: string,
+): boolean {
+  // Strip URLs so we don't false-positive on https://example.com/foo/bar
+  const stripped = promptText.replace(/https?:\/\/\S+/g, "");
+
+  // Match absolute paths: multi-segment (/dir/file) or well-known single-segment
+  // roots that agents should never touch (/etc, /tmp, /var, /usr, /opt, /sys, /proc).
+  const multiSegment = /\/[\w.-]+(?:\/[\w.-]+)+/g;
+  const sensitiveRoots = /\b\/(etc|tmp|var|usr|opt|sys|proc|root)\b/g;
+  const homeTilde = /~\/[\w.-]+/g;
+
+  const matches = [
+    ...(stripped.match(multiSegment) ?? []),
+    ...(stripped.match(sensitiveRoots) ?? []).map((m) => m.trimStart()),
+    ...(stripped.match(homeTilde) ?? []).map((m) =>
+      m.replace("~", process.env.HOME ?? "/home/user"),
+    ),
+  ];
+  if (matches.length === 0) return false;
+
+  const resolvedWorkdir = path.resolve(workdir);
+  return matches.some((p) => {
+    const resolved = path.resolve(p);
+    return (
+      !resolved.startsWith(resolvedWorkdir + path.sep) &&
+      resolved !== resolvedWorkdir
+    );
+  });
 }
 
 /** Fetch recent PTY output, returning empty string on failure. */
@@ -209,6 +244,45 @@ export async function handleBlocked(
 
   // Auto-responded by rules — log and broadcast, no LLM needed
   if (eventData.autoResponded) {
+    // Safety: check if the auto-approved prompt accessed out-of-scope paths.
+    // The approval already happened in pty-manager, but we can stop the session
+    // and alert the user to prevent further damage.
+    if (isOutOfScopeAccess(promptText, taskCtx.workdir)) {
+      taskCtx.decisions.push({
+        timestamp: Date.now(),
+        event: "blocked",
+        promptText,
+        decision: "escalate",
+        reasoning: `SECURITY: Auto-response approved access outside workspace (${taskCtx.workdir}). Session stopped.`,
+      });
+
+      ctx.broadcast({
+        type: "escalation",
+        sessionId,
+        timestamp: Date.now(),
+        data: {
+          prompt: promptText,
+          reason: "out_of_scope_auto_approved",
+          workdir: taskCtx.workdir,
+        },
+      });
+
+      ctx.sendChatMessage(
+        `[${taskCtx.label}] WARNING: Auto-approved access to path outside workspace (${taskCtx.workdir}). ` +
+          `Prompt: "${promptText.slice(0, 150)}". Stopping session for safety.`,
+        "coding-agent",
+      );
+
+      // Stop the session to prevent further out-of-scope access
+      taskCtx.status = "error";
+      ctx.ptyService?.stopSession(sessionId).catch((err) => {
+        ctx.log(
+          `Failed to stop session after out-of-scope auto-approval: ${err}`,
+        );
+      });
+      return;
+    }
+
     taskCtx.autoResolvedCount++;
     taskCtx.decisions.push({
       timestamp: Date.now(),
@@ -437,7 +511,7 @@ export async function handleAutonomousDecision(
       output = await fetchRecentOutput(ctx, sessionId);
     }
 
-    const decision = await makeCoordinationDecision(
+    let decision = await makeCoordinationDecision(
       ctx,
       taskCtx,
       promptText,
@@ -463,6 +537,25 @@ export async function handleAutonomousDecision(
         },
       });
       return;
+    }
+
+    // Guard: decline + redirect if the prompt references out-of-scope paths.
+    // Instead of stalling via escalate, tell the agent "no" and point it to the
+    // workspace. Also notify the human in case broader access was intended.
+    if (
+      decision.action === "respond" &&
+      isOutOfScopeAccess(promptText, taskCtx.workdir)
+    ) {
+      decision = {
+        action: "respond",
+        response: `No — that path is outside your workspace. Use ${taskCtx.workdir} instead. Create any files or directories you need there.`,
+        reasoning: `Declined out-of-scope access (outside ${taskCtx.workdir}) and redirected agent to workspace.`,
+      };
+      // Surface to human so they can grant broader access if intended
+      ctx.sendChatMessage(
+        `[${taskCtx.label}] Declined out-of-scope access and redirected to workspace (${taskCtx.workdir}). If you intended broader access, send the agent an override.`,
+        "coding-agent",
+      );
     }
 
     // Record the decision

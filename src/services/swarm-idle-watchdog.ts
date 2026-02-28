@@ -25,10 +25,10 @@ import { executeDecision } from "./swarm-decision-loop.js";
 // ─── Constants ───
 
 /** How long a session can be idle before the watchdog checks on it (ms). */
-export const IDLE_THRESHOLD_MS = 3 * 60 * 1000; // 3 minutes
+export const IDLE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
 
 /** Max idle checks before force-escalating a session. */
-export const MAX_IDLE_CHECKS = 3;
+export const MAX_IDLE_CHECKS = 4;
 
 // ─── Idle Watchdog ───
 

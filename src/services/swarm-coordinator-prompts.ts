@@ -15,6 +15,7 @@ export interface TaskContextSummary {
   label: string;
   originalTask: string;
   workdir: string;
+  repo?: string;
 }
 
 /** A previous coordination decision, included for context continuity. */
@@ -65,6 +66,7 @@ export function buildCoordinationPrompt(
     `is blocked and waiting for input.\n\n` +
     `Original task: "${taskCtx.originalTask}"\n` +
     `Working directory: ${taskCtx.workdir}\n` +
+    `Repository: ${taskCtx.repo ?? "none (scratch directory)"}\n` +
     historySection +
     `\nRecent terminal output (last 50 lines):\n` +
     `---\n${recentOutput.slice(-3000)}\n---\n\n` +
@@ -82,6 +84,14 @@ export function buildCoordinationPrompt(
     `ambiguous requirements, security-sensitive actions). Do NOT respond yourself.\n\n` +
     `4. "ignore" — The prompt is not actually blocking or is already being handled.\n\n` +
     `Guidelines:\n` +
+    `- IMPORTANT: If the prompt asks to approve access to files or directories OUTSIDE the working ` +
+    `directory (${taskCtx.workdir}), DECLINE the request and REDIRECT the agent. Do NOT approve ` +
+    `access to paths like /etc, ~/.ssh, ~/, /tmp, or any path that doesn't start with the working ` +
+    `directory. Instead, respond with "n" (or the decline option) and tell the agent: ` +
+    `"That path is outside your workspace. Use ${taskCtx.workdir} instead — ` +
+    `create any files or directories you need there." This keeps the agent moving without ` +
+    `granting out-of-scope access. The coordinator will also notify the human in case ` +
+    `broader access was intended.\n` +
     `- For tool approval prompts (file writes, shell commands, etc.), respond "y" or use keys:["enter"] to approve.\n` +
     `- For Y/n confirmations that align with the original task, respond "y".\n` +
     `- For design questions or choices that could go either way, escalate.\n` +
@@ -89,6 +99,9 @@ export function buildCoordinationPrompt(
     `- If the output shows a PR was just created (e.g. "Created pull request #N"), do NOT use "complete" yet. ` +
     `Instead respond with "Review your PR, run each test plan item to verify it works, update the PR to check off each item, then confirm all items pass".\n` +
     `- Only use "complete" if the agent confirmed it verified ALL test plan items after creating the PR.\n` +
+    `- If the agent is asking for information that was NOT provided in the original task ` +
+    `(e.g. which repository to use, project requirements, credentials), ESCALATE. ` +
+    `The coordinator does not have this information — the human must provide it.\n` +
     `- When in doubt, escalate — it's better to ask the human than to make a wrong choice.\n\n` +
     `Respond with ONLY a JSON object:\n` +
     `{"action": "respond|complete|escalate|ignore", "response": "...", "useKeys": false, "keys": [], "reasoning": "..."}`
@@ -124,24 +137,34 @@ export function buildIdleCheckPrompt(
     `has been idle for ${idleMinutes} minutes with no events or output changes.\n\n` +
     `Original task: "${taskCtx.originalTask}"\n` +
     `Working directory: ${taskCtx.workdir}\n` +
+    `Repository: ${taskCtx.repo ?? "none (scratch directory)"}\n` +
     `Idle check: ${idleCheckNumber} of ${maxIdleChecks} (session will be force-escalated after ${maxIdleChecks})\n` +
     historySection +
     `\nRecent terminal output (last 50 lines):\n` +
     `---\n${recentOutput.slice(-3000)}\n---\n\n` +
     `The session has gone silent. Analyze the terminal output and decide:\n\n` +
-    `1. "complete" — The task is done. The output shows the objectives were met ` +
-    `(e.g. PR created, code written, tests passed) and the agent is back at the idle prompt.\n\n` +
+    `1. "complete" — The task is FULLY done. ALL objectives in the original task were met ` +
+    `AND the final deliverable is visible in the output (e.g. a PR URL was printed, or the ` +
+    `task explicitly did not require a PR). The agent is back at the idle prompt.\n\n` +
     `2. "respond" — The agent appears stuck or waiting for input that wasn't detected ` +
     `as a blocking prompt. Send a message to nudge it (e.g. "continue", or answer a question ` +
-    `visible in the output).\n\n` +
+    `visible in the output). If code was committed but no PR was created yet, respond with ` +
+    `"please create a pull request with your changes" or similar.\n\n` +
     `3. "escalate" — Something looks wrong or unclear. The human should review.\n\n` +
     `4. "ignore" — The agent is still actively working (e.g. compiling, running tests, ` +
-    `generating code). The idle period is expected and it will produce output soon.\n\n` +
+    `pushing to remote, creating a PR). The idle period is expected and it will produce output soon.\n\n` +
     `Guidelines:\n` +
-    `- If the output ends with a command prompt ($ or >) and the task objectives are met, use "complete".\n` +
+    `- IMPORTANT: Do NOT mark "complete" if the original task involves creating a PR and no PR URL ` +
+    `(e.g. github.com/...pull/...) appears in the output. Instead use "respond" to nudge the agent ` +
+    `to create the PR.\n` +
+    `- Do NOT mark "complete" just because code was committed — commits alone don't finish a task ` +
+    `that requires a PR.\n` +
+    `- Network operations (git push, gh pr create, API calls) can cause several minutes of silence — ` +
+    `prefer "ignore" for early idle checks if the agent was mid-workflow.\n` +
+    `- If the output ends with a command prompt ($ or >) and ALL task objectives are confirmed met, use "complete".\n` +
     `- If the output shows an error or the agent seems stuck in a loop, escalate.\n` +
-    `- If the agent is clearly mid-operation (build output, test runner), use "ignore".\n` +
-    `- On check ${idleCheckNumber} of ${maxIdleChecks} — if unsure, lean toward "escalate" rather than "ignore".\n\n` +
+    `- If the agent is clearly mid-operation (build output, test runner, git operations), use "ignore".\n` +
+    `- On check ${idleCheckNumber} of ${maxIdleChecks} — if unsure, lean toward "respond" with a nudge rather than "complete".\n\n` +
     `Respond with ONLY a JSON object:\n` +
     `{"action": "respond|complete|escalate|ignore", "response": "...", "useKeys": false, "keys": [], "reasoning": "..."}`
   );
@@ -177,6 +200,7 @@ export function buildTurnCompletePrompt(
     `just finished a turn and is back at the idle prompt waiting for input.\n\n` +
     `Original task: "${taskCtx.originalTask}"\n` +
     `Working directory: ${taskCtx.workdir}\n` +
+    `Repository: ${taskCtx.repo ?? "none (scratch directory)"}\n` +
     historySection +
     `\nOutput from this turn:\n` +
     `---\n${turnOutput.slice(-3000)}\n---\n\n` +
