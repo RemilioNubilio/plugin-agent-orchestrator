@@ -2,6 +2,8 @@
 
 Orchestrate CLI-based coding agents (Claude Code, Codex, Gemini CLI, Aider, Pi) via PTY sessions and manage git workspaces for autonomous coding tasks.
 
+Built for [Milady](https://github.com/milady-ai/milady), compatible with any [ElizaOS](https://github.com/elizaOS/eliza) agent.
+
 ## Features
 
 - **PTY Session Management**: Spawn, control, and monitor coding agents running in pseudo-terminals
@@ -26,11 +28,15 @@ The plugin auto-detects which agents are available at spawn time and will report
 
 ## Installation
 
-This plugin is part of the Milady monorepo. It requires the following peer dependencies:
-
 ```bash
-pnpm add pty-manager git-workspace-service coding-agent-adapters
+npm install @elizaos/plugin-agent-orchestrator
 ```
+
+The following peer dependencies will be installed automatically:
+
+- `pty-manager` — PTY session management
+- `git-workspace-service` — git workspace provisioning
+- `coding-agent-adapters` — CLI agent adapter layer
 
 ## Usage
 
@@ -39,7 +45,7 @@ pnpm add pty-manager git-workspace-service coding-agent-adapters
 ```typescript
 import { codingAgentPlugin } from "@elizaos/plugin-agent-orchestrator";
 
-// Add to your ElizaOS agent configuration
+// Add to your Milady or ElizaOS agent configuration
 const agent = {
   plugins: [codingAgentPlugin],
   // ... other config
