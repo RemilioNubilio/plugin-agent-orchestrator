@@ -530,6 +530,11 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
       }
     }
 
+    // Update activity timestamp — resets idle watchdog for this session.
+    // This runs before buffering so buffered events still reset the idle timer.
+    taskCtx.lastActivityAt = Date.now();
+    taskCtx.idleCheckCount = 0;
+
     // Buffer decision-making events when paused (user sent a chat message).
     // Auto-responses still flow through handleBlocked — only LLM decisions are deferred.
     if (this._paused && (event === "blocked" || event === "task_complete")) {
@@ -549,10 +554,6 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
       }
       // Auto-responded: fall through to normal handling below
     }
-
-    // Update activity timestamp — resets idle watchdog for this session
-    taskCtx.lastActivityAt = Date.now();
-    taskCtx.idleCheckCount = 0;
 
     // Route by event type
     switch (event) {
