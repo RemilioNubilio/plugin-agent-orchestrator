@@ -56,6 +56,8 @@ export interface InitContext {
   traceEntries: Array<string | Record<string, unknown>>;
   maxTraceEntries: number;
   log: (msg: string) => void;
+  /** Check if a session has an active task in the coordinator. */
+  hasActiveTask?: (sessionId: string) => boolean;
 }
 
 /** Value returned by {@link initializePTYManager}. */
@@ -94,12 +96,31 @@ export async function initializePTYManager(
       },
     });
 
-    // Set up event forwarding for worker-based manager
+    // Set up event forwarding for worker-based manager.
+    // IMPORTANT: The stall classifier's "task_complete" classification emits
+    // "ready" (not "task_complete") in pty-manager. When session_ready fires
+    // for a session that already has an active task registered in the coordinator,
+    // it means the agent returned to idle after working — treat as task_complete.
     bunManager.on("session_ready", (session: WorkerSessionHandle) => {
       ctx.log(
         `session_ready event received for ${session.id} (type: ${session.type}, status: ${session.status})`,
       );
       ctx.emitEvent(session.id, "ready", { session });
+
+      // If this session has an active task, this "ready" likely means the
+      // stall classifier detected task completion. Emit task_complete so
+      // the coordinator can evaluate whether the overall task is done.
+      if (ctx.hasActiveTask?.(session.id)) {
+        const response = captureTaskResponse(
+          session.id,
+          ctx.sessionOutputBuffers,
+          ctx.taskResponseMarkers,
+        );
+        ctx.log(
+          `session_ready for active task ${session.id} — forwarding as task_complete (stall classifier path)`,
+        );
+        ctx.emitEvent(session.id, "task_complete", { session, response });
+      }
     });
 
     bunManager.on("session_exit", (id: string, code: number) => {
@@ -250,9 +271,15 @@ export async function initializePTYManager(
     }
   }
 
-  // Set up event forwarding
+  // Set up event forwarding (same stall-classifier workaround as Bun path)
   nodeManager.on("session_ready", (session: SessionHandle) => {
     ctx.emitEvent(session.id, "ready", { session });
+    if (ctx.hasActiveTask?.(session.id)) {
+      ctx.log(
+        `session_ready for active task ${session.id} — forwarding as task_complete (stall classifier path)`,
+      );
+      ctx.emitEvent(session.id, "task_complete", { session, response: "" });
+    }
   });
 
   nodeManager.on(

@@ -16,13 +16,19 @@ import type {
   TaskContext,
 } from "./swarm-coordinator.js";
 import {
+  buildBlockedEventMessage,
   buildCoordinationPrompt,
+  buildTurnCompleteEventMessage,
   buildTurnCompletePrompt,
   type CoordinationLLMResponse,
   type DecisionHistoryEntry,
   parseCoordinationResponse,
   type TaskContextSummary,
 } from "./swarm-coordinator-prompts.js";
+import {
+  classifyEventTier,
+  type TriageContext,
+} from "./swarm-event-triage.js";
 
 // ─── Constants ───
 
@@ -97,6 +103,51 @@ export function isOutOfScopeAccess(
       !resolved.startsWith(resolvedWorkdir + path.sep) &&
       resolved !== resolvedWorkdir
     );
+  });
+}
+
+/**
+ * Check if all registered tasks have reached a terminal state.
+ * If so, send a swarm-wide summary message to the chat.
+ */
+export function checkAllTasksComplete(ctx: SwarmCoordinatorContext): void {
+  const tasks = Array.from(ctx.tasks.values());
+  if (tasks.length === 0) return;
+
+  const terminalStates = new Set(["completed", "stopped", "error"]);
+  const allDone = tasks.every((t) => terminalStates.has(t.status));
+  if (!allDone) return;
+
+  const completed = tasks.filter((t) => t.status === "completed");
+  const stopped = tasks.filter((t) => t.status === "stopped");
+  const errored = tasks.filter((t) => t.status === "error");
+
+  const parts: string[] = [];
+  if (completed.length > 0) {
+    parts.push(`${completed.length} completed`);
+  }
+  if (stopped.length > 0) {
+    parts.push(`${stopped.length} stopped`);
+  }
+  if (errored.length > 0) {
+    parts.push(`${errored.length} errored`);
+  }
+
+  ctx.sendChatMessage(
+    `All ${tasks.length} coding agents finished (${parts.join(", ")}). Review their work when you're ready.`,
+    "coding-agent",
+  );
+
+  ctx.broadcast({
+    type: "swarm_complete",
+    sessionId: "",
+    timestamp: Date.now(),
+    data: {
+      total: tasks.length,
+      completed: completed.length,
+      stopped: stopped.length,
+      errored: errored.length,
+    },
   });
 }
 
@@ -196,6 +247,9 @@ export async function executeDecision(
       ctx.ptyService.stopSession(sessionId).catch((err) => {
         ctx.log(`Failed to stop session after LLM-detected completion: ${err}`);
       });
+
+      // Check if all tasks are now done — send a swarm-wide summary if so
+      checkAllTasksComplete(ctx);
       break;
     }
 
@@ -352,11 +406,11 @@ export async function handleBlocked(
   // Route based on supervision level
   switch (ctx.getSupervisionLevel()) {
     case "autonomous":
-      await handleAutonomousDecision(ctx, sessionId, taskCtx, promptText, "");
+      await handleAutonomousDecision(ctx, sessionId, taskCtx, promptText, "", eventData.promptInfo?.type);
       break;
 
     case "confirm":
-      await handleConfirmDecision(ctx, sessionId, taskCtx, promptText, "");
+      await handleConfirmDecision(ctx, sessionId, taskCtx, promptText, "", eventData.promptInfo?.type);
       break;
 
     case "notify":
@@ -404,30 +458,76 @@ export async function handleTurnComplete(
       turnOutput = cleanForChat(raw);
     }
 
-    const prompt = buildTurnCompletePrompt(
-      toContextSummary(taskCtx),
-      turnOutput,
-      toDecisionHistory(taskCtx),
-    );
-
+    // Triage: route to small LLM (routine) or Milaidy pipeline (creative)
+    const agentDecisionCb = ctx.getAgentDecisionCallback();
     let decision: CoordinationLLMResponse | null = null;
-    try {
-      const result = await ctx.runtime.useModel(ModelType.TEXT_SMALL, {
-        prompt,
-      });
-      decision = parseCoordinationResponse(result);
-    } catch (err) {
-      ctx.log(`Turn-complete LLM call failed: ${err}`);
+    let decisionFromPipeline = false;
+
+    const triageCtx: TriageContext = {
+      eventType: "turn_complete",
+      promptText: "",
+      recentOutput: turnOutput,
+      originalTask: taskCtx.originalTask,
+    };
+    const tier = agentDecisionCb
+      ? await classifyEventTier(ctx.runtime, triageCtx, ctx.log)
+      : "routine"; // No pipeline → always small LLM
+
+    if (tier === "routine") {
+      const prompt = buildTurnCompletePrompt(
+        toContextSummary(taskCtx),
+        turnOutput,
+        toDecisionHistory(taskCtx),
+      );
+      try {
+        const result = await ctx.runtime.useModel(ModelType.TEXT_SMALL, {
+          prompt,
+        });
+        decision = parseCoordinationResponse(result);
+      } catch (err) {
+        ctx.log(`Turn-complete LLM call failed: ${err}`);
+      }
+    } else {
+      // Creative — try Milaidy pipeline, fall back to small LLM
+      if (agentDecisionCb) {
+        const eventMessage = buildTurnCompleteEventMessage(
+          toContextSummary(taskCtx),
+          turnOutput,
+          toDecisionHistory(taskCtx),
+        );
+        try {
+          decision = await agentDecisionCb(eventMessage, sessionId, taskCtx);
+          if (decision) decisionFromPipeline = true;
+        } catch (err) {
+          ctx.log(`Agent decision callback failed for turn-complete: ${err} — falling back to small LLM`);
+        }
+      }
+
+      if (!decision) {
+        const prompt = buildTurnCompletePrompt(
+          toContextSummary(taskCtx),
+          turnOutput,
+          toDecisionHistory(taskCtx),
+        );
+        try {
+          const result = await ctx.runtime.useModel(ModelType.TEXT_SMALL, {
+            prompt,
+          });
+          decision = parseCoordinationResponse(result);
+        } catch (err) {
+          ctx.log(`Turn-complete LLM fallback call failed: ${err}`);
+        }
+      }
     }
 
     if (!decision) {
-      // LLM failed — fall back to completing (safer than leaving session hanging)
+      // Both paths failed — fall back to completing (safer than leaving session hanging)
       ctx.log(
-        `Turn-complete for "${taskCtx.label}": LLM invalid response — defaulting to complete`,
+        `Turn-complete for "${taskCtx.label}": all decision paths failed — defaulting to complete`,
       );
       decision = {
         action: "complete",
-        reasoning: "LLM returned invalid response — defaulting to complete",
+        reasoning: "All decision paths returned invalid response — defaulting to complete",
       };
     }
 
@@ -460,22 +560,25 @@ export async function handleTurnComplete(
       },
     });
 
-    // Chat message
-    if (decision.action === "respond") {
-      const instruction = decision.response ?? "";
-      const preview =
-        instruction.length > 120
-          ? `${instruction.slice(0, 120)}...`
-          : instruction;
-      ctx.sendChatMessage(
-        `[${taskCtx.label}] Turn done, continuing: ${preview}`,
-        "coding-agent",
-      );
-    } else if (decision.action === "escalate") {
-      ctx.sendChatMessage(
-        `[${taskCtx.label}] Turn finished — needs your attention: ${decision.reasoning}`,
-        "coding-agent",
-      );
+    // Send chat message for small-LLM decisions only.
+    // When Milaidy's pipeline handled it, she already spoke via WS broadcast.
+    if (!decisionFromPipeline) {
+      if (decision.action === "respond") {
+        const instruction = decision.response ?? "";
+        const preview =
+          instruction.length > 120
+            ? `${instruction.slice(0, 120)}...`
+            : instruction;
+        ctx.sendChatMessage(
+          `[${taskCtx.label}] Turn done, continuing: ${preview}`,
+          "coding-agent",
+        );
+      } else if (decision.action === "escalate") {
+        ctx.sendChatMessage(
+          `[${taskCtx.label}] Turn finished — needs your attention: ${decision.reasoning}`,
+          "coding-agent",
+        );
+      }
     }
     // "complete" chat message is handled by executeDecision
 
@@ -496,6 +599,7 @@ export async function handleAutonomousDecision(
   taskCtx: TaskContext,
   promptText: string,
   recentOutput: string,
+  promptType?: string,
 ): Promise<void> {
   // Debounce: skip if decision already in-flight for this session
   if (ctx.inFlightDecisions.has(sessionId)) {
@@ -511,21 +615,65 @@ export async function handleAutonomousDecision(
       output = await fetchRecentOutput(ctx, sessionId);
     }
 
-    let decision = await makeCoordinationDecision(
-      ctx,
-      taskCtx,
+    // Triage: route to small LLM (routine) or Milaidy pipeline (creative).
+    // Track source so we skip duplicate chat messages when Milaidy already spoke.
+    const agentDecisionCb = ctx.getAgentDecisionCallback();
+    let decision: CoordinationLLMResponse | null = null;
+    let decisionFromPipeline = false;
+
+    const triageCtx: TriageContext = {
+      eventType: "blocked",
       promptText,
-      output,
-    );
+      promptType,
+      recentOutput: output,
+      originalTask: taskCtx.originalTask,
+    };
+    const tier = agentDecisionCb
+      ? await classifyEventTier(ctx.runtime, triageCtx, ctx.log)
+      : "routine"; // No pipeline → always small LLM
+
+    if (tier === "routine") {
+      decision = await makeCoordinationDecision(
+        ctx,
+        taskCtx,
+        promptText,
+        output,
+      );
+    } else {
+      // Creative — try Milaidy pipeline, fall back to small LLM
+      if (agentDecisionCb) {
+        const eventMessage = buildBlockedEventMessage(
+          toContextSummary(taskCtx),
+          promptText,
+          output,
+          toDecisionHistory(taskCtx),
+        );
+        try {
+          decision = await agentDecisionCb(eventMessage, sessionId, taskCtx);
+          if (decision) decisionFromPipeline = true;
+        } catch (err) {
+          ctx.log(`Agent decision callback failed: ${err} — falling back to small LLM`);
+        }
+      }
+
+      if (!decision) {
+        decision = await makeCoordinationDecision(
+          ctx,
+          taskCtx,
+          promptText,
+          output,
+        );
+      }
+    }
 
     if (!decision) {
-      // LLM returned invalid response — escalate
+      // All decision paths returned invalid response — escalate
       taskCtx.decisions.push({
         timestamp: Date.now(),
         event: "blocked",
         promptText,
         decision: "escalate",
-        reasoning: "LLM returned invalid coordination response",
+        reasoning: "All decision paths returned invalid coordination response",
       });
       ctx.broadcast({
         type: "escalation",
@@ -585,26 +733,29 @@ export async function handleAutonomousDecision(
       },
     });
 
-    // Send chat message for LLM decisions (always — they're infrequent)
-    if (decision.action === "respond") {
-      const actionDesc = decision.useKeys
-        ? `Sent keys: ${decision.keys?.join(", ")}`
-        : decision.response
-          ? `Responded: ${decision.response.length > 100 ? `${decision.response.slice(0, 100)}...` : decision.response}`
-          : "Responded";
-      const reasonExcerpt =
-        decision.reasoning.length > 150
-          ? `${decision.reasoning.slice(0, 150)}...`
-          : decision.reasoning;
-      ctx.sendChatMessage(
-        `[${taskCtx.label}] ${actionDesc} — ${reasonExcerpt}`,
-        "coding-agent",
-      );
-    } else if (decision.action === "escalate") {
-      ctx.sendChatMessage(
-        `[${taskCtx.label}] Needs your attention: ${decision.reasoning}`,
-        "coding-agent",
-      );
+    // Send chat message for small-LLM decisions only.
+    // When Milaidy's pipeline handled it, she already spoke via WS broadcast.
+    if (!decisionFromPipeline) {
+      if (decision.action === "respond") {
+        const actionDesc = decision.useKeys
+          ? `Sent keys: ${decision.keys?.join(", ")}`
+          : decision.response
+            ? `Responded: ${decision.response.length > 100 ? `${decision.response.slice(0, 100)}...` : decision.response}`
+            : "Responded";
+        const reasonExcerpt =
+          decision.reasoning.length > 150
+            ? `${decision.reasoning.slice(0, 150)}...`
+            : decision.reasoning;
+        ctx.sendChatMessage(
+          `[${taskCtx.label}] ${actionDesc} — ${reasonExcerpt}`,
+          "coding-agent",
+        );
+      } else if (decision.action === "escalate") {
+        ctx.sendChatMessage(
+          `[${taskCtx.label}] Needs your attention: ${decision.reasoning}`,
+          "coding-agent",
+        );
+      }
     }
 
     // Execute
@@ -623,6 +774,7 @@ export async function handleConfirmDecision(
   taskCtx: TaskContext,
   promptText: string,
   recentOutput: string,
+  promptType?: string,
 ): Promise<void> {
   // Debounce
   if (ctx.inFlightDecisions.has(sessionId)) return;
@@ -634,22 +786,65 @@ export async function handleConfirmDecision(
       output = await fetchRecentOutput(ctx, sessionId);
     }
 
-    const decision = await makeCoordinationDecision(
-      ctx,
-      taskCtx,
+    // Triage: route to small LLM (routine) or Milaidy pipeline (creative)
+    const agentDecisionCb = ctx.getAgentDecisionCallback();
+    let decision: CoordinationLLMResponse | null = null;
+    let decisionFromPipeline = false;
+
+    const triageCtx: TriageContext = {
+      eventType: "blocked",
       promptText,
-      output,
-    );
+      promptType,
+      recentOutput: output,
+      originalTask: taskCtx.originalTask,
+    };
+    const tier = agentDecisionCb
+      ? await classifyEventTier(ctx.runtime, triageCtx, ctx.log)
+      : "routine"; // No pipeline → always small LLM
+
+    if (tier === "routine") {
+      decision = await makeCoordinationDecision(
+        ctx,
+        taskCtx,
+        promptText,
+        output,
+      );
+    } else {
+      // Creative — try Milaidy pipeline, fall back to small LLM
+      if (agentDecisionCb) {
+        const eventMessage = buildBlockedEventMessage(
+          toContextSummary(taskCtx),
+          promptText,
+          output,
+          toDecisionHistory(taskCtx),
+        );
+        try {
+          decision = await agentDecisionCb(eventMessage, sessionId, taskCtx);
+          if (decision) decisionFromPipeline = true;
+        } catch (err) {
+          ctx.log(`Agent decision callback failed (confirm): ${err} — falling back to small LLM`);
+        }
+      }
+
+      if (!decision) {
+        decision = await makeCoordinationDecision(
+          ctx,
+          taskCtx,
+          promptText,
+          output,
+        );
+      }
+    }
 
     if (!decision) {
-      // Queue for human with no LLM suggestion
+      // Queue for human with no suggestion
       ctx.pendingDecisions.set(sessionId, {
         sessionId,
         promptText,
         recentOutput: output,
         llmDecision: {
           action: "escalate",
-          reasoning: "LLM returned invalid response — needs human review",
+          reasoning: "All decision paths returned invalid response — needs human review",
         },
         taskContext: taskCtx,
         createdAt: Date.now(),
@@ -666,6 +861,9 @@ export async function handleConfirmDecision(
       });
     }
 
+    // When Milaidy's pipeline made the suggestion, she already spoke via WS broadcast.
+    // Only broadcast the pending_confirmation event for small-LLM suggestions or
+    // always broadcast it (the UI needs it regardless) but skip any chat messages.
     ctx.broadcast({
       type: "pending_confirmation",
       sessionId,
@@ -675,6 +873,7 @@ export async function handleConfirmDecision(
         suggestedAction: decision?.action,
         suggestedResponse: decision?.response,
         reasoning: decision?.reasoning,
+        fromPipeline: decisionFromPipeline,
       },
     });
   } finally {

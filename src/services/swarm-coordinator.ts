@@ -44,6 +44,18 @@ export type ChatMessageCallback = (
 /** Callback injected by server.ts to relay coordinator events to WebSocket clients. */
 export type WsBroadcastCallback = (event: SwarmEvent) => void;
 
+/**
+ * Callback injected by server.ts to route coordinator events through
+ * Milaidy's full ElizaOS pipeline (conversation memory, personality, actions).
+ * Returns a CoordinationLLMResponse parsed from Milaidy's natural language
+ * response, or null if no actionable JSON block was found.
+ */
+export type AgentDecisionCallback = (
+  eventDescription: string,
+  sessionId: string,
+  taskContext: TaskContext,
+) => Promise<CoordinationLLMResponse | null>;
+
 export type SupervisionLevel = "autonomous" | "confirm" | "notify";
 
 export interface TaskContext {
@@ -104,10 +116,14 @@ export interface SwarmCoordinatorContext {
   /** Timestamp of last tool_running chat notification per session — for throttling. */
   readonly lastToolNotification: Map<string, number>;
 
+  /** Whether LLM decisions are paused (user sent a chat message). */
+  readonly isPaused: boolean;
+
   broadcast(event: SwarmEvent): void;
   sendChatMessage(text: string, source?: string): void;
   log(message: string): void;
   getSupervisionLevel(): SupervisionLevel;
+  getAgentDecisionCallback(): AgentDecisionCallback | null;
 }
 
 // ─── Constants ───
@@ -117,6 +133,9 @@ const UNREGISTERED_BUFFER_MS = 2000;
 
 /** How often the idle watchdog scans for idle sessions (ms). */
 const IDLE_SCAN_INTERVAL_MS = 60 * 1000; // 1 minute
+
+/** How long to wait before auto-resuming a paused coordinator (ms). */
+const PAUSE_TIMEOUT_MS = 30_000;
 
 // ─── Service ───
 
@@ -148,6 +167,9 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
   /** Callback to relay coordinator events to WebSocket clients. */
   private wsBroadcast: WsBroadcastCallback | null = null;
 
+  /** Callback to route coordinator events through Milaidy's full pipeline. */
+  private agentDecisionCb: AgentDecisionCallback | null = null;
+
   /** Buffer for events arriving before task registration. */
   private unregisteredBuffer: Map<
     string,
@@ -162,6 +184,15 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 
   /** Timestamp of last tool_running chat notification per session — for throttling. */
   readonly lastToolNotification: Map<string, number> = new Map();
+
+  /** Whether LLM decisions are paused (user sent a chat message). */
+  private _paused = false;
+
+  /** Buffered events during pause — replayed on resume. */
+  private pauseBuffer: Array<{ sessionId: string; event: string; data: unknown }> = [];
+
+  /** Auto-resume timeout handle. */
+  private pauseTimeout: ReturnType<typeof setTimeout> | null = null;
 
   constructor(runtime: IAgentRuntime) {
     this.runtime = runtime;
@@ -179,6 +210,17 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
   setWsBroadcast(cb: WsBroadcastCallback): void {
     this.wsBroadcast = cb;
     this.log("WS broadcast callback wired");
+  }
+
+  /** Inject a callback (from server.ts) to route events through Milaidy's pipeline. */
+  setAgentDecisionCallback(cb: AgentDecisionCallback): void {
+    this.agentDecisionCb = cb;
+    this.log("Agent decision callback wired — events will route through Milaidy");
+  }
+
+  /** Return the agent decision callback (if wired). */
+  getAgentDecisionCallback(): AgentDecisionCallback | null {
+    return this.agentDecisionCb;
   }
 
   /** Null-safe wrapper — sends a message to the user's conversation if callback is set. */
@@ -237,7 +279,60 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
     this.unregisteredBuffer.clear();
     this.lastSeenOutput.clear();
     this.lastToolNotification.clear();
+    this.agentDecisionCb = null;
+    // Clear pause state
+    this._paused = false;
+    if (this.pauseTimeout) {
+      clearTimeout(this.pauseTimeout);
+      this.pauseTimeout = null;
+    }
+    this.pauseBuffer = [];
     this.log("SwarmCoordinator stopped");
+  }
+
+  // ─── Pause / Resume ───
+
+  /** Whether the coordinator is currently paused. */
+  get isPaused(): boolean {
+    return this._paused;
+  }
+
+  /** Pause LLM-based decisions. Auto-responses and broadcasts continue. */
+  pause(): void {
+    if (this._paused) return;
+    this._paused = true;
+    this.log("Coordinator paused — buffering LLM decisions until user message is processed");
+    this.broadcast({ type: "coordinator_paused", sessionId: "", timestamp: Date.now(), data: {} });
+
+    // Safety: auto-resume after timeout
+    this.pauseTimeout = setTimeout(() => {
+      if (this._paused) {
+        this.log("Coordinator auto-resuming after timeout");
+        this.resume();
+      }
+    }, PAUSE_TIMEOUT_MS);
+  }
+
+  /** Resume LLM-based decisions and replay buffered events. */
+  resume(): void {
+    if (!this._paused) return;
+    this._paused = false;
+    if (this.pauseTimeout) {
+      clearTimeout(this.pauseTimeout);
+      this.pauseTimeout = null;
+    }
+
+    this.log(`Coordinator resumed — replaying ${this.pauseBuffer.length} buffered events`);
+    this.broadcast({ type: "coordinator_resumed", sessionId: "", timestamp: Date.now(), data: {} });
+
+    // Replay buffered events
+    const buffered = [...this.pauseBuffer];
+    this.pauseBuffer = [];
+    for (const entry of buffered) {
+      this.handleSessionEvent(entry.sessionId, entry.event, entry.data).catch((err) => {
+        this.log(`Error replaying buffered event: ${err}`);
+      });
+    }
   }
 
   // ─── Task Registration ───
@@ -434,6 +529,28 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
       }
     }
 
+    // Buffer decision-making events when paused (user sent a chat message).
+    // Auto-responses still flow through handleBlocked — only LLM decisions are deferred.
+    if (this._paused && (event === "blocked" || event === "task_complete")) {
+      // Still broadcast for dashboard visibility
+      this.broadcast({
+        type: event === "blocked" ? "blocked_buffered" : "turn_complete_buffered",
+        sessionId,
+        timestamp: Date.now(),
+        data,
+      });
+
+      // Auto-responded blocked events don't need LLM — let them through
+      const eventData = data as { autoResponded?: boolean };
+      if (event === "blocked" && eventData.autoResponded) {
+        // Fall through to normal handling below
+      } else {
+        this.pauseBuffer.push({ sessionId, event, data });
+        this.log(`Buffered "${event}" for ${taskCtx.label} (coordinator paused)`);
+        return;
+      }
+    }
+
     // Update activity timestamp — resets idle watchdog for this session
     taskCtx.lastActivityAt = Date.now();
     taskCtx.idleCheckCount = 0;
@@ -510,12 +627,19 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
           data,
         });
 
-        // Throttle chat notifications: at most one per 30s per session
+        // Throttle chat notifications: at most one per 30s per session.
+        // Suppress during the first 10s after registration — startup status
+        // lines (e.g. "Claude in Chrome enabled") can trigger tool_running
+        // before the agent has actually begun working.
         const toolData = data as {
           toolName?: string;
           description?: string;
         };
         const now = Date.now();
+        const STARTUP_GRACE_MS = 10_000;
+        if (now - taskCtx.registeredAt < STARTUP_GRACE_MS) {
+          break;
+        }
         const lastNotif = this.lastToolNotification.get(sessionId) ?? 0;
         if (now - lastNotif > 30_000) {
           this.lastToolNotification.set(sessionId, now);
@@ -573,6 +697,17 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
   }
 
   async executeDecision(
+    sessionId: string,
+    decision: CoordinationLLMResponse,
+  ): Promise<void> {
+    return execDecision(this, sessionId, decision);
+  }
+
+  /**
+   * Public entry point for external callers (e.g. server.ts) to execute
+   * a coordination decision on a session. Wraps the internal executeDecision.
+   */
+  async executeEventDecision(
     sessionId: string,
     decision: CoordinationLLMResponse,
   ): Promise<void> {

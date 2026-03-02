@@ -172,6 +172,12 @@ export class PTYService {
       traceEntries: this.traceEntries,
       maxTraceEntries: PTYService.MAX_TRACE_ENTRIES,
       log: (msg) => this.log(msg),
+      hasActiveTask: (sessionId) => {
+        const coordinator = this.coordinator;
+        if (!coordinator) return false;
+        const taskCtx = coordinator.getTaskContext(sessionId);
+        return taskCtx?.status === "active";
+      },
     });
     this.manager = result.manager;
     this.usingBunWorker = result.usingBunWorker;

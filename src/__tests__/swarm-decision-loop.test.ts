@@ -32,6 +32,7 @@ function createMockCtx(overrides: Record<string, unknown> = {}) {
     inFlightDecisions: new Set<string>(),
     pendingDecisions: new Map(),
     getSupervisionLevel: () => "autonomous",
+    getAgentDecisionCallback: () => null,
     broadcast: jest.fn(),
     sendChatMessage: jest.fn(),
     log: jest.fn(),

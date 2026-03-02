@@ -85,7 +85,12 @@ export async function handleCoordinatorRoutes(
   // === All Task Contexts ===
   // GET /api/coding-agents/coordinator/status
   if (method === "GET" && subPath === "/status") {
-    const tasks = coordinator.getAllTaskContexts();
+    const allTasks = coordinator.getAllTaskContexts();
+    // Only return active tasks — stopped/completed/error are terminal states
+    // and should not appear in the UI after refresh.
+    const tasks = allTasks.filter(
+      (t) => t.status !== "stopped" && t.status !== "completed" && t.status !== "error",
+    );
     sendJson(res, {
       supervisionLevel: coordinator.getSupervisionLevel(),
       taskCount: tasks.length,
