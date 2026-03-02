@@ -178,6 +178,12 @@ export class PTYService {
         const taskCtx = coordinator.getTaskContext(sessionId);
         return taskCtx?.status === "active";
       },
+      hasTaskActivity: (sessionId) => {
+        const coordinator = this.coordinator;
+        if (!coordinator) return false;
+        const taskCtx = coordinator.getTaskContext(sessionId);
+        return (taskCtx?.decisions.length ?? 0) > 0;
+      },
     });
     this.manager = result.manager;
     this.usingBunWorker = result.usingBunWorker;

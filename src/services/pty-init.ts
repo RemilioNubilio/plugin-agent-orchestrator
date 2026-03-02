@@ -58,6 +58,8 @@ export interface InitContext {
   log: (msg: string) => void;
   /** Check if a session has an active task in the coordinator. */
   hasActiveTask?: (sessionId: string) => boolean;
+  /** Check if a session's task has had any coordinator activity (decisions > 0). */
+  hasTaskActivity?: (sessionId: string) => boolean;
 }
 
 /** Value returned by {@link initializePTYManager}. */
@@ -107,22 +109,22 @@ export async function initializePTYManager(
       );
       ctx.emitEvent(session.id, "ready", { session });
 
-      // If this session has an active task AND has a task-response marker,
-      // the stall classifier detected task completion. Emit task_complete so
+      // If this session has an active task that has had activity (decisions > 0),
+      // the agent returned to idle after working — forward as task_complete so
       // the coordinator can evaluate whether the overall task is done.
-      // Guard on marker existence to avoid premature completion on startup
-      // ready events that fire before any work has been done.
-      if (
-        ctx.hasActiveTask?.(session.id) &&
-        ctx.taskResponseMarkers.has(session.id)
-      ) {
-        const response = captureTaskResponse(
-          session.id,
-          ctx.sessionOutputBuffers,
-          ctx.taskResponseMarkers,
-        );
+      // Guard on hasTaskActivity to avoid premature completion on the initial
+      // startup ready event that fires before any work has been done.
+      // Capture response text if a marker exists; otherwise pass empty string.
+      if (ctx.hasActiveTask?.(session.id) && ctx.hasTaskActivity?.(session.id)) {
+        const response = ctx.taskResponseMarkers.has(session.id)
+          ? captureTaskResponse(
+              session.id,
+              ctx.sessionOutputBuffers,
+              ctx.taskResponseMarkers,
+            )
+          : "";
         ctx.log(
-          `session_ready for active task ${session.id} — forwarding as task_complete (stall classifier path)`,
+          `session_ready for active task ${session.id} — forwarding as task_complete (stall classifier path, response: ${response.length} chars)`,
         );
         ctx.emitEvent(session.id, "task_complete", { session, response });
       }
@@ -279,17 +281,16 @@ export async function initializePTYManager(
   // Set up event forwarding (same stall-classifier workaround as Bun path)
   nodeManager.on("session_ready", (session: SessionHandle) => {
     ctx.emitEvent(session.id, "ready", { session });
-    if (
-      ctx.hasActiveTask?.(session.id) &&
-      ctx.taskResponseMarkers.has(session.id)
-    ) {
-      const response = captureTaskResponse(
-        session.id,
-        ctx.sessionOutputBuffers,
-        ctx.taskResponseMarkers,
-      );
+    if (ctx.hasActiveTask?.(session.id) && ctx.hasTaskActivity?.(session.id)) {
+      const response = ctx.taskResponseMarkers.has(session.id)
+        ? captureTaskResponse(
+            session.id,
+            ctx.sessionOutputBuffers,
+            ctx.taskResponseMarkers,
+          )
+        : "";
       ctx.log(
-        `session_ready for active task ${session.id} — forwarding as task_complete (stall classifier path)`,
+        `session_ready for active task ${session.id} — forwarding as task_complete (stall classifier path, response: ${response.length} chars)`,
       );
       ctx.emitEvent(session.id, "task_complete", { session, response });
     }
