@@ -521,13 +521,14 @@ export async function handleTurnComplete(
     }
 
     if (!decision) {
-      // Both paths failed — fall back to completing (safer than leaving session hanging)
+      // Both paths failed — escalate so a human can decide rather than
+      // prematurely completing unfinished work on a transient LLM failure.
       ctx.log(
-        `Turn-complete for "${taskCtx.label}": all decision paths failed — defaulting to complete`,
+        `Turn-complete for "${taskCtx.label}": all decision paths failed — escalating`,
       );
       decision = {
-        action: "complete",
-        reasoning: "All decision paths returned invalid response — defaulting to complete",
+        action: "escalate",
+        reasoning: "All decision paths returned invalid response — escalating for human review",
       };
     }
 

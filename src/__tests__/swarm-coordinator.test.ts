@@ -206,11 +206,19 @@ describe("SwarmCoordinator", () => {
       });
     });
 
-    it("handles task_complete by updating status", async () => {
-      await coordinator.handleSessionEvent("s-1", "task_complete", {});
+    it("handles task_complete by routing through LLM decision", async () => {
+      // task_complete now goes through handleTurnComplete — mock LLM to say "complete"
+      mockRuntime.useModel.mockResolvedValue(
+        '{"action":"complete","reasoning":"All objectives met"}',
+      );
+
+      await coordinator.handleSessionEvent("s-1", "task_complete", {
+        response: "Done",
+      });
 
       const ctx = coordinator.getTaskContext("s-1");
       expect(ctx.status).toBe("completed");
+      expect(mockPty.stopSession).toHaveBeenCalledWith("s-1");
     });
 
     it("handles error by updating status", async () => {

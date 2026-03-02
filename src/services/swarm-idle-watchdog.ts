@@ -141,9 +141,18 @@ export async function scanIdleSessions(
       );
       // Actually kill the PTY session
       if (ctx.ptyService) {
-        ctx.ptyService.stopSession(taskCtx.sessionId).catch((err) => {
+        try {
+          await ctx.ptyService.stopSession(taskCtx.sessionId);
+        } catch (err) {
           ctx.log(`Idle watchdog: failed to stop session ${taskCtx.sessionId}: ${err}`);
-        });
+          taskCtx.status = "error";
+          ctx.broadcast({
+            type: "error",
+            sessionId: taskCtx.sessionId,
+            timestamp: now,
+            data: { message: `Failed to stop idle session: ${err}` },
+          });
+        }
       }
       // Check if all tasks are now done
       checkAllTasksComplete(ctx);

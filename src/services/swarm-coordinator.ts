@@ -27,6 +27,7 @@ import type { PTYService } from "./pty-service.js";
 import type { CodingAgentType } from "./pty-types.js";
 import type { CoordinationLLMResponse } from "./swarm-coordinator-prompts.js";
 import {
+  checkAllTasksComplete,
   executeDecision as execDecision,
   handleBlocked,
   handleTurnComplete,
@@ -532,23 +533,21 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
     // Buffer decision-making events when paused (user sent a chat message).
     // Auto-responses still flow through handleBlocked — only LLM decisions are deferred.
     if (this._paused && (event === "blocked" || event === "task_complete")) {
-      // Still broadcast for dashboard visibility
-      this.broadcast({
-        type: event === "blocked" ? "blocked_buffered" : "turn_complete_buffered",
-        sessionId,
-        timestamp: Date.now(),
-        data,
-      });
-
       // Auto-responded blocked events don't need LLM — let them through
       const eventData = data as { autoResponded?: boolean };
-      if (event === "blocked" && eventData.autoResponded) {
-        // Fall through to normal handling below
-      } else {
+      if (!(event === "blocked" && eventData.autoResponded)) {
+        // Broadcast buffered state for dashboard visibility
+        this.broadcast({
+          type: event === "blocked" ? "blocked_buffered" : "turn_complete_buffered",
+          sessionId,
+          timestamp: Date.now(),
+          data,
+        });
         this.pauseBuffer.push({ sessionId, event, data });
         this.log(`Buffered "${event}" for ${taskCtx.label} (coordinator paused)`);
         return;
       }
+      // Auto-responded: fall through to normal handling below
     }
 
     // Update activity timestamp — resets idle watchdog for this session
@@ -592,6 +591,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
           `"${taskCtx.label}" hit an error: ${errorMsg}`,
           "coding-agent",
         );
+        checkAllTasksComplete(this);
         break;
       }
 
@@ -604,6 +604,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
           timestamp: Date.now(),
           data,
         });
+        checkAllTasksComplete(this);
         break;
 
       case "ready":
