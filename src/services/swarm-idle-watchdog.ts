@@ -112,7 +112,7 @@ export async function scanIdleSessions(
       `Idle watchdog: "${taskCtx.label}" idle for ${idleMinutes}m (check ${taskCtx.idleCheckCount}/${MAX_IDLE_CHECKS})`,
     );
 
-    if (taskCtx.idleCheckCount > MAX_IDLE_CHECKS) {
+    if (taskCtx.idleCheckCount >= MAX_IDLE_CHECKS) {
       // Force-stop — too many idle checks with no resolution
       ctx.log(
         `Idle watchdog: force-stopping "${taskCtx.label}" after ${MAX_IDLE_CHECKS} checks`,
