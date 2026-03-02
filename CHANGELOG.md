@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.3.1
+
+### Fixes
+
+- **Task completion detection**: `session_ready` → `task_complete` forwarding no longer blocked when `taskResponseMarkers` is consumed by adapter fast-path. Uses `hasTaskActivity` (decisions > 0) instead of marker existence, preventing multi-turn tasks from getting stuck.
+- **Orphaned PTY processes**: `stopSession()` now accepts a `force` flag. Completed tasks, idle watchdog kills, and coding-task-helper completions use `SIGKILL` instead of `SIGTERM`, ensuring child processes exit immediately.
+- **Coordinator prompt guidance**: Turn-complete and event-message prompts now recommend CLI tools (gh, curl, cat) over browser automation for verification, reducing delays from MCP tool permission prompts in headless environments.
+
+### Added
+
+- `hasTaskActivity` callback on `InitContext` — lets `pty-init` check if a session's task has had coordinator interaction (decisions > 0).
+- Tests for `session_ready` → `task_complete` forwarding logic including exact reproduction of the multi-turn consumed-marker bug.
+
+### Chores
+
+- Added `*.tsbuildinfo` to `.gitignore`.
+
+## 0.3.0
+
+### Features
+
+- **3-tier event triage**: Classifies coordinator events as routine (auto-resolved), creative (full Milaidy pipeline), or ambiguous (LLM fallback) using heuristic + LLM classification.
+- **Startup grace period**: `tool_running` events during the first 10 seconds after task registration are suppressed from chat notifications to avoid noisy startup status lines.
+
 ## 0.2.0
 
 ### Features

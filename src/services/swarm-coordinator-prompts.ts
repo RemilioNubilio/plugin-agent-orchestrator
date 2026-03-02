@@ -240,6 +240,8 @@ export function buildTurnCompletePrompt(
     `indicates the work is done (e.g. "Done", "verified", "all checks pass", "Here's what I did", ` +
     `or a clear summary of completed work). Do NOT require exact phrases — use judgment.\n` +
     `- Keep follow-up instructions concise and specific.\n` +
+    `- When asking agents to verify work, prefer CLI tools (gh, curl, cat, git diff, etc.) over ` +
+    `browser automation. Browser tools may not be available in headless environments and can cause delays.\n` +
     `- Default to "respond" — only use "complete" when you're certain ALL work is done.\n\n` +
     `Respond with ONLY a JSON object:\n` +
     `{"action": "respond|complete|escalate|ignore", "response": "...", "useKeys": false, "keys": [], "reasoning": "..."}`
@@ -335,6 +337,7 @@ export function buildTurnCompleteEventMessage(
     `- Verify evidence for EVERY objective before using "complete".\n` +
     `- If code was written but not committed/pushed/PR'd, respond with next step.\n` +
     `- If a PR was just created, respond to review & verify test plan items.\n` +
+    `- When asking agents to verify work, prefer CLI tools (gh, curl, cat, etc.) over browser automation.\n` +
     `- Default to "respond" — only "complete" when certain ALL work is done.\n\n` +
     `Include a JSON action block at the end of your response:\n` +
     "```json\n" +
