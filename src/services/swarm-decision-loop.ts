@@ -243,8 +243,10 @@ export async function executeDecision(
         "coding-agent",
       );
 
-      // Stop the session
-      ctx.ptyService.stopSession(sessionId).catch((err) => {
+      // Force-kill the session — task is done, nothing to save.
+      // SIGKILL ensures the PTY and all child processes exit immediately,
+      // preventing orphaned workspace processes.
+      ctx.ptyService.stopSession(sessionId, /* force */ true).catch((err) => {
         ctx.log(`Failed to stop session after LLM-detected completion: ${err}`);
       });
 
@@ -327,9 +329,9 @@ export async function handleBlocked(
         "coding-agent",
       );
 
-      // Stop the session to prevent further out-of-scope access
+      // Force-kill the session to prevent further out-of-scope access
       taskCtx.status = "error";
-      ctx.ptyService?.stopSession(sessionId).catch((err) => {
+      ctx.ptyService?.stopSession(sessionId, /* force */ true).catch((err) => {
         ctx.log(
           `Failed to stop session after out-of-scope auto-approval: ${err}`,
         );

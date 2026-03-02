@@ -79,6 +79,9 @@ export async function sendKeysToSession(
 
 /**
  * Stop a PTY session and clean up all associated state.
+ *
+ * @param force - When true, sends SIGKILL immediately instead of SIGTERM.
+ *   Use for sessions whose task is already complete — there's nothing to save.
  */
 export async function stopSession(
   ctx: SessionIOContext,
@@ -86,30 +89,49 @@ export async function stopSession(
   sessionMetadata: Map<string, Record<string, unknown>>,
   sessionWorkdirs: Map<string, string>,
   log: (msg: string) => void,
+  force = false,
 ): Promise<void> {
-  const session = ctx.manager.get(sessionId);
-  if (!session) {
-    throw new Error(`Session ${sessionId} not found`);
-  }
+  try {
+    const session = ctx.manager.get(sessionId);
+    if (!session) {
+      throw new Error(`Session ${sessionId} not found`);
+    }
 
-  if (ctx.usingBunWorker) {
-    await (ctx.manager as BunCompatiblePTYManager).kill(sessionId);
-  } else {
-    await (ctx.manager as PTYManager).stop(sessionId);
-  }
-
-  // Clean up output subscriber
-  const unsubscribe = ctx.outputUnsubscribers.get(sessionId);
-  if (unsubscribe) {
-    unsubscribe();
+    if (ctx.usingBunWorker) {
+      if (force) {
+        await (ctx.manager as BunCompatiblePTYManager).kill(
+          sessionId,
+          "SIGKILL",
+        );
+      } else {
+        await (ctx.manager as BunCompatiblePTYManager).kill(sessionId);
+      }
+    } else {
+      if (force) {
+        await (ctx.manager as PTYManager).stop(sessionId, { force: true });
+      } else {
+        await (ctx.manager as PTYManager).stop(sessionId);
+      }
+    }
+  } finally {
+    // Clean up state even if the kill/stop call throws or the session was
+    // already gone — prevents leaked subscribers and stale metadata.
+    try {
+      const unsubscribe = ctx.outputUnsubscribers.get(sessionId);
+      if (unsubscribe) {
+        unsubscribe();
+      }
+    } catch {
+      // Ignore — unsubscribe may fail on a destroyed session
+    }
     ctx.outputUnsubscribers.delete(sessionId);
-  }
 
-  sessionMetadata.delete(sessionId);
-  sessionWorkdirs.delete(sessionId);
-  ctx.sessionOutputBuffers.delete(sessionId);
-  ctx.taskResponseMarkers.delete(sessionId);
-  log(`Stopped session ${sessionId}`);
+    sessionMetadata.delete(sessionId);
+    sessionWorkdirs.delete(sessionId);
+    ctx.sessionOutputBuffers.delete(sessionId);
+    ctx.taskResponseMarkers.delete(sessionId);
+    log(`Stopped session ${sessionId}`);
+  }
 }
 
 /**

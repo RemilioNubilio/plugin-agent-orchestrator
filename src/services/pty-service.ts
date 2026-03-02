@@ -178,6 +178,12 @@ export class PTYService {
         const taskCtx = coordinator.getTaskContext(sessionId);
         return taskCtx?.status === "active";
       },
+      hasTaskActivity: (sessionId) => {
+        const coordinator = this.coordinator;
+        if (!coordinator) return false;
+        const taskCtx = coordinator.getTaskContext(sessionId);
+        return (taskCtx?.decisions.length ?? 0) > 0;
+      },
     });
     this.manager = result.manager;
     this.usingBunWorker = result.usingBunWorker;
@@ -437,7 +443,7 @@ export class PTYService {
     return sendKeysToSessionIO(this.ioContext(), sessionId, keys);
   }
 
-  async stopSession(sessionId: string): Promise<void> {
+  async stopSession(sessionId: string, force = false): Promise<void> {
     if (!this.manager) throw new Error("PTYService not initialized");
     return stopSessionIO(
       this.ioContext(),
@@ -445,6 +451,7 @@ export class PTYService {
       this.sessionMetadata,
       this.sessionWorkdirs,
       (msg) => this.log(msg),
+      force,
     );
   }
 
