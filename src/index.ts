@@ -110,6 +110,7 @@ export type {
 // Re-export services for direct access
 export { getCoordinator, PTYService } from "./services/pty-service.js";
 export type {
+  AgentDecisionCallback,
   ChatMessageCallback,
   CoordinationDecision,
   PendingDecision,
@@ -120,6 +121,10 @@ export type {
 } from "./services/swarm-coordinator.js";
 export { SwarmCoordinator } from "./services/swarm-coordinator.js";
 export type { CoordinationLLMResponse } from "./services/swarm-coordinator-prompts.js";
+export {
+  buildBlockedEventMessage,
+  buildTurnCompleteEventMessage,
+} from "./services/swarm-coordinator-prompts.js";
 export type {
   AuthPromptCallback,
   CodingWorkspaceConfig,

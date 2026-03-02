@@ -32,6 +32,7 @@ function createMockCtx(overrides: Record<string, unknown> = {}) {
     inFlightDecisions: new Set<string>(),
     pendingDecisions: new Map(),
     getSupervisionLevel: () => "autonomous",
+    getAgentDecisionCallback: () => null,
     broadcast: jest.fn(),
     sendChatMessage: jest.fn(),
     log: jest.fn(),
@@ -335,7 +336,7 @@ describe("handleTurnComplete", () => {
     expect(ctx.ptyService.stopSession).toHaveBeenCalledWith("s-1");
   });
 
-  it("defaults to complete on invalid LLM response", async () => {
+  it("defaults to escalate on invalid LLM response", async () => {
     const ctx = createMockCtx();
     ctx.runtime.useModel.mockResolvedValue("I cannot parse this");
     const taskCtx = createTaskCtx();
@@ -346,7 +347,7 @@ describe("handleTurnComplete", () => {
     });
 
     expect(taskCtx.decisions.length).toBe(1);
-    expect(taskCtx.decisions[0].decision).toBe("complete");
+    expect(taskCtx.decisions[0].decision).toBe("escalate");
   });
 
   it("debounces concurrent assessments", async () => {

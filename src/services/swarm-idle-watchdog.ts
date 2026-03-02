@@ -8,7 +8,7 @@
  */
 
 import { ModelType } from "@elizaos/core";
-import { cleanForChat } from "./ansi-utils.js";
+import { cleanForChat, stripAnsi } from "./ansi-utils.js";
 import type {
   SwarmCoordinatorContext,
   TaskContext,
@@ -20,7 +20,7 @@ import {
   parseCoordinationResponse,
   type TaskContextSummary,
 } from "./swarm-coordinator-prompts.js";
-import { executeDecision } from "./swarm-decision-loop.js";
+import { checkAllTasksComplete, executeDecision } from "./swarm-decision-loop.js";
 
 // ─── Constants ───
 
@@ -41,6 +41,38 @@ export async function scanIdleSessions(
   const now = Date.now();
   for (const taskCtx of ctx.tasks.values()) {
     if (taskCtx.status !== "active") continue;
+
+    // Liveness check: if the PTY session no longer exists in the worker
+    // (e.g. parent process was SIGKILL'd and restarted), mark it dead.
+    if (ctx.ptyService) {
+      const session = ctx.ptyService.getSession(taskCtx.sessionId);
+      if (!session) {
+        ctx.log(
+          `Idle watchdog: "${taskCtx.label}" — PTY session no longer exists, marking as stopped`,
+        );
+        taskCtx.status = "stopped";
+        taskCtx.decisions.push({
+          timestamp: now,
+          event: "idle_watchdog",
+          promptText: "PTY session no longer exists",
+          decision: "stopped",
+          reasoning: "Underlying PTY process is gone (likely killed during restart)",
+        });
+        ctx.broadcast({
+          type: "stopped",
+          sessionId: taskCtx.sessionId,
+          timestamp: now,
+          data: { reason: "pty_session_gone" },
+        });
+        ctx.sendChatMessage(
+          `[${taskCtx.label}] Session lost — the agent process is no longer running (likely killed during a restart).`,
+          "coding-agent",
+        );
+        checkAllTasksComplete(ctx);
+        continue;
+      }
+    }
+
     const idleMs = now - taskCtx.lastActivityAt;
     if (idleMs < IDLE_THRESHOLD_MS) continue;
 
@@ -49,12 +81,15 @@ export async function scanIdleSessions(
 
     // Check if PTY output has changed since last scan — if data is flowing,
     // the session is active even without named events (e.g. loading spinners).
+    // Compare stripped output to ignore TUI cursor movements and redraws
+    // that would otherwise fool the watchdog into thinking the session is active.
     if (ctx.ptyService) {
       try {
-        const currentOutput = await ctx.ptyService.getSessionOutput(
+        const rawOutput = await ctx.ptyService.getSessionOutput(
           taskCtx.sessionId,
           20,
         );
+        const currentOutput = stripAnsi(rawOutput).trim();
         const lastSeen = ctx.lastSeenOutput.get(taskCtx.sessionId) ?? "";
         ctx.lastSeenOutput.set(taskCtx.sessionId, currentOutput);
         if (currentOutput !== lastSeen) {
@@ -77,20 +112,21 @@ export async function scanIdleSessions(
       `Idle watchdog: "${taskCtx.label}" idle for ${idleMinutes}m (check ${taskCtx.idleCheckCount}/${MAX_IDLE_CHECKS})`,
     );
 
-    if (taskCtx.idleCheckCount > MAX_IDLE_CHECKS) {
-      // Force-escalate — too many idle checks with no resolution
+    if (taskCtx.idleCheckCount >= MAX_IDLE_CHECKS) {
+      // Force-stop — too many idle checks with no resolution
       ctx.log(
-        `Idle watchdog: force-escalating "${taskCtx.label}" after ${MAX_IDLE_CHECKS} checks`,
+        `Idle watchdog: force-stopping "${taskCtx.label}" after ${MAX_IDLE_CHECKS} checks`,
       );
+      taskCtx.status = "stopped";
       taskCtx.decisions.push({
         timestamp: now,
         event: "idle_watchdog",
         promptText: `Session idle for ${idleMinutes} minutes`,
-        decision: "escalate",
-        reasoning: `Force-escalated after ${MAX_IDLE_CHECKS} idle checks with no activity`,
+        decision: "stopped",
+        reasoning: `Force-stopped after ${MAX_IDLE_CHECKS} idle checks with no activity`,
       });
       ctx.broadcast({
-        type: "escalation",
+        type: "stopped",
         sessionId: taskCtx.sessionId,
         timestamp: now,
         data: {
@@ -100,9 +136,26 @@ export async function scanIdleSessions(
         },
       });
       ctx.sendChatMessage(
-        `[${taskCtx.label}] Session has been idle for ${idleMinutes} minutes with no progress. Needs your attention.`,
+        `[${taskCtx.label}] Session stopped — idle for ${idleMinutes} minutes with no progress.`,
         "coding-agent",
       );
+      // Actually kill the PTY session
+      if (ctx.ptyService) {
+        try {
+          await ctx.ptyService.stopSession(taskCtx.sessionId);
+        } catch (err) {
+          ctx.log(`Idle watchdog: failed to stop session ${taskCtx.sessionId}: ${err}`);
+          taskCtx.status = "error";
+          ctx.broadcast({
+            type: "error",
+            sessionId: taskCtx.sessionId,
+            timestamp: now,
+            data: { message: `Failed to stop idle session: ${err}` },
+          });
+        }
+      }
+      // Check if all tasks are now done
+      checkAllTasksComplete(ctx);
       continue;
     }
 

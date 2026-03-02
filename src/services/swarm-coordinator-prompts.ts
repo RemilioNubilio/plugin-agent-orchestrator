@@ -231,16 +231,115 @@ export function buildTurnCompletePrompt(
     `- IMPORTANT: If the working directory is a git repository clone (not a scratch dir), the agent ` +
     `MUST commit its changes, push them, and create a pull request before the task can be "complete". ` +
     `If the output only shows code edits with no git commit or PR, respond with "Now commit your changes, push, and create a pull request".\n` +
-    `- CRITICAL: Creating a PR is NEVER the final step. After you see "Created pull request" or a PR URL ` +
-    `in the output, you MUST respond with "Review your PR, run each test plan item to verify it works, ` +
-    `update the PR to check off each item, then confirm all items pass". NEVER mark as "complete" on the ` +
-    `same turn that a PR was created — always send this follow-up first.\n` +
-    `- Only mark as "complete" AFTER the agent has confirmed it verified the test plan items ` +
-    `(look for output like "all items pass", "verified", "checked off", or similar confirmation).\n` +
+    `- IMPORTANT: Creating a PR is NOT the final step. If this is the turn where the PR was created ` +
+    `(i.e. "Created pull request" or a PR URL appears for the FIRST time and no previous decision ` +
+    `already sent a review follow-up), respond with "Review your PR, run each test plan item to verify ` +
+    `it works, update the PR to check off each item, then confirm all items pass".\n` +
+    `- If a previous decision ALREADY sent a review/verification follow-up (check the decision history), ` +
+    `and the agent has now responded with its review results, you MAY mark "complete" if the agent ` +
+    `indicates the work is done (e.g. "Done", "verified", "all checks pass", "Here's what I did", ` +
+    `or a clear summary of completed work). Do NOT require exact phrases — use judgment.\n` +
     `- Keep follow-up instructions concise and specific.\n` +
     `- Default to "respond" — only use "complete" when you're certain ALL work is done.\n\n` +
     `Respond with ONLY a JSON object:\n` +
     `{"action": "respond|complete|escalate|ignore", "response": "...", "useKeys": false, "keys": [], "reasoning": "..."}`
+  );
+}
+
+// ─── Event Messages for Milaidy Pipeline ───
+
+/**
+ * Build a natural language event message describing a blocked agent, intended
+ * to be processed by Milaidy's full ElizaOS pipeline (with conversation memory,
+ * personality, and actions). Unlike buildCoordinationPrompt(), this omits the
+ * "You are Milady" preamble (she already IS Milady in the pipeline) and asks
+ * for a fenced JSON action block at the end of her response.
+ */
+export function buildBlockedEventMessage(
+  taskCtx: TaskContextSummary,
+  promptText: string,
+  recentOutput: string,
+  decisionHistory: DecisionHistoryEntry[],
+): string {
+  const historySection =
+    decisionHistory.length > 0
+      ? `\nPrevious decisions:\n${decisionHistory
+          .slice(-5)
+          .map(
+            (d, i) =>
+              `  ${i + 1}. [${d.event}] "${d.promptText}" → ${d.action}${d.response ? ` ("${d.response}")` : ""} — ${d.reasoning}`,
+          )
+          .join("\n")}\n`
+      : "";
+
+  return (
+    `[Coding Agent Event] A ${taskCtx.agentType} agent ("${taskCtx.label}") is blocked and waiting for input.\n\n` +
+    `Task: "${taskCtx.originalTask}"\n` +
+    `Workdir: ${taskCtx.workdir}\n` +
+    `Repo: ${taskCtx.repo ?? "none (scratch directory)"}\n` +
+    historySection +
+    `\nRecent terminal output:\n---\n${recentOutput.slice(-3000)}\n---\n\n` +
+    `Blocking prompt: "${promptText}"\n\n` +
+    `Decide how to handle this. Options:\n` +
+    `- "respond" — send text or keys to unblock the agent\n` +
+    `- "complete" — the task is fully done\n` +
+    `- "escalate" — you need the user's input\n` +
+    `- "ignore" — not actually blocking\n\n` +
+    `Guidelines:\n` +
+    `- For tool approvals / Y/n that align with the task, respond "y" or keys:["enter"].\n` +
+    `- If the prompt asks for info NOT in the original task, escalate.\n` +
+    `- Decline access to paths outside ${taskCtx.workdir}.\n` +
+    `- If a PR was just created, respond to review & verify test plan items before completing.\n` +
+    `- When in doubt, escalate.\n\n` +
+    `Include a JSON action block at the end of your response:\n` +
+    "```json\n" +
+    `{"action": "respond|complete|escalate|ignore", "response": "...", "useKeys": false, "keys": [], "reasoning": "..."}\n` +
+    "```"
+  );
+}
+
+/**
+ * Build a natural language event message describing a turn completion, intended
+ * to be processed by Milaidy's full ElizaOS pipeline.
+ */
+export function buildTurnCompleteEventMessage(
+  taskCtx: TaskContextSummary,
+  turnOutput: string,
+  decisionHistory: DecisionHistoryEntry[],
+): string {
+  const historySection =
+    decisionHistory.length > 0
+      ? `\nPrevious decisions:\n${decisionHistory
+          .slice(-5)
+          .map(
+            (d, i) =>
+              `  ${i + 1}. [${d.event}] "${d.promptText}" → ${d.action}${d.response ? ` ("${d.response}")` : ""} — ${d.reasoning}`,
+          )
+          .join("\n")}\n`
+      : "";
+
+  return (
+    `[Coding Agent Event] A ${taskCtx.agentType} agent ("${taskCtx.label}") just finished a turn and is idle.\n\n` +
+    `Task: "${taskCtx.originalTask}"\n` +
+    `Workdir: ${taskCtx.workdir}\n` +
+    `Repo: ${taskCtx.repo ?? "none (scratch directory)"}\n` +
+    historySection +
+    `\nTurn output:\n---\n${turnOutput.slice(-3000)}\n---\n\n` +
+    `Decide if the overall task is done or if the agent needs more work.\n\n` +
+    `Options:\n` +
+    `- "respond" — send a follow-up instruction (DEFAULT for intermediate steps)\n` +
+    `- "complete" — ALL task objectives met (code written, committed, PR created & verified)\n` +
+    `- "escalate" — something looks wrong, ask the user\n` +
+    `- "ignore" — should not normally be used here\n\n` +
+    `Guidelines:\n` +
+    `- Verify evidence for EVERY objective before using "complete".\n` +
+    `- If code was written but not committed/pushed/PR'd, respond with next step.\n` +
+    `- If a PR was just created, respond to review & verify test plan items.\n` +
+    `- Default to "respond" — only "complete" when certain ALL work is done.\n\n` +
+    `Include a JSON action block at the end of your response:\n` +
+    "```json\n" +
+    `{"action": "respond|complete|escalate|ignore", "response": "...", "useKeys": false, "keys": [], "reasoning": "..."}\n` +
+    "```"
   );
 }
 
