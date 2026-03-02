@@ -62,6 +62,33 @@ export interface InitContext {
   hasTaskActivity?: (sessionId: string) => boolean;
 }
 
+/**
+ * If a session has an active task with activity (decisions > 0), forward the
+ * session_ready event as task_complete so the coordinator evaluates completion.
+ *
+ * Shared by both the Bun worker and native Node event paths to avoid
+ * duplicating the same guard / capture / emit logic.
+ */
+function forwardReadyAsTaskComplete(
+  ctx: InitContext,
+  session: { id: string },
+): void {
+  if (!ctx.hasActiveTask?.(session.id) || !ctx.hasTaskActivity?.(session.id)) {
+    return;
+  }
+  const response = ctx.taskResponseMarkers.has(session.id)
+    ? captureTaskResponse(
+        session.id,
+        ctx.sessionOutputBuffers,
+        ctx.taskResponseMarkers,
+      )
+    : "";
+  ctx.log(
+    `session_ready for active task ${session.id} — forwarding as task_complete (stall classifier path, response: ${response.length} chars)`,
+  );
+  ctx.emitEvent(session.id, "task_complete", { session, response });
+}
+
 /** Value returned by {@link initializePTYManager}. */
 export interface InitResult {
   manager: PTYManager | BunCompatiblePTYManager;
@@ -108,26 +135,7 @@ export async function initializePTYManager(
         `session_ready event received for ${session.id} (type: ${session.type}, status: ${session.status})`,
       );
       ctx.emitEvent(session.id, "ready", { session });
-
-      // If this session has an active task that has had activity (decisions > 0),
-      // the agent returned to idle after working — forward as task_complete so
-      // the coordinator can evaluate whether the overall task is done.
-      // Guard on hasTaskActivity to avoid premature completion on the initial
-      // startup ready event that fires before any work has been done.
-      // Capture response text if a marker exists; otherwise pass empty string.
-      if (ctx.hasActiveTask?.(session.id) && ctx.hasTaskActivity?.(session.id)) {
-        const response = ctx.taskResponseMarkers.has(session.id)
-          ? captureTaskResponse(
-              session.id,
-              ctx.sessionOutputBuffers,
-              ctx.taskResponseMarkers,
-            )
-          : "";
-        ctx.log(
-          `session_ready for active task ${session.id} — forwarding as task_complete (stall classifier path, response: ${response.length} chars)`,
-        );
-        ctx.emitEvent(session.id, "task_complete", { session, response });
-      }
+      forwardReadyAsTaskComplete(ctx, session);
     });
 
     bunManager.on("session_exit", (id: string, code: number) => {
@@ -281,19 +289,7 @@ export async function initializePTYManager(
   // Set up event forwarding (same stall-classifier workaround as Bun path)
   nodeManager.on("session_ready", (session: SessionHandle) => {
     ctx.emitEvent(session.id, "ready", { session });
-    if (ctx.hasActiveTask?.(session.id) && ctx.hasTaskActivity?.(session.id)) {
-      const response = ctx.taskResponseMarkers.has(session.id)
-        ? captureTaskResponse(
-            session.id,
-            ctx.sessionOutputBuffers,
-            ctx.taskResponseMarkers,
-          )
-        : "";
-      ctx.log(
-        `session_ready for active task ${session.id} — forwarding as task_complete (stall classifier path, response: ${response.length} chars)`,
-      );
-      ctx.emitEvent(session.id, "task_complete", { session, response });
-    }
+    forwardReadyAsTaskComplete(ctx, session);
   });
 
   nodeManager.on(

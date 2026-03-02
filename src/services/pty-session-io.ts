@@ -96,32 +96,38 @@ export async function stopSession(
     throw new Error(`Session ${sessionId} not found`);
   }
 
-  if (ctx.usingBunWorker) {
-    if (force) {
-      await (ctx.manager as BunCompatiblePTYManager).kill(sessionId, "SIGKILL");
+  try {
+    if (ctx.usingBunWorker) {
+      if (force) {
+        await (ctx.manager as BunCompatiblePTYManager).kill(
+          sessionId,
+          "SIGKILL",
+        );
+      } else {
+        await (ctx.manager as BunCompatiblePTYManager).kill(sessionId);
+      }
     } else {
-      await (ctx.manager as BunCompatiblePTYManager).kill(sessionId);
+      if (force) {
+        await (ctx.manager as PTYManager).stop(sessionId, { force: true });
+      } else {
+        await (ctx.manager as PTYManager).stop(sessionId);
+      }
     }
-  } else {
-    if (force) {
-      await (ctx.manager as PTYManager).stop(sessionId, { force: true });
-    } else {
-      await (ctx.manager as PTYManager).stop(sessionId);
+  } finally {
+    // Clean up state even if the kill/stop call throws — prevents leaked
+    // subscribers and stale metadata for sessions that are already gone.
+    const unsubscribe = ctx.outputUnsubscribers.get(sessionId);
+    if (unsubscribe) {
+      unsubscribe();
+      ctx.outputUnsubscribers.delete(sessionId);
     }
-  }
 
-  // Clean up output subscriber
-  const unsubscribe = ctx.outputUnsubscribers.get(sessionId);
-  if (unsubscribe) {
-    unsubscribe();
-    ctx.outputUnsubscribers.delete(sessionId);
+    sessionMetadata.delete(sessionId);
+    sessionWorkdirs.delete(sessionId);
+    ctx.sessionOutputBuffers.delete(sessionId);
+    ctx.taskResponseMarkers.delete(sessionId);
+    log(`Stopped session ${sessionId}`);
   }
-
-  sessionMetadata.delete(sessionId);
-  sessionWorkdirs.delete(sessionId);
-  ctx.sessionOutputBuffers.delete(sessionId);
-  ctx.taskResponseMarkers.delete(sessionId);
-  log(`Stopped session ${sessionId}`);
 }
 
 /**

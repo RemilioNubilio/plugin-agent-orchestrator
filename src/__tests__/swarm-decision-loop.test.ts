@@ -173,7 +173,7 @@ describe("handleBlocked", () => {
 
     // Session should be stopped
     expect(taskCtx.status).toBe("error");
-    expect(ctx.ptyService.stopSession).toHaveBeenCalledWith("s-1");
+    expect(ctx.ptyService.stopSession).toHaveBeenCalledWith("s-1", true);
 
     // Should have sent warning chat message
     expect(ctx.sendChatMessage).toHaveBeenCalledWith(
