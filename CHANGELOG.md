@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.2
+
+### Fixes
+
+- **stopSession cleanup hardening**: Session existence check moved inside `try` so `finally` cleanup runs even when the manager already evicted the session (race with exit events). `unsubscribe()` guarded with inner `try/catch` so a throw from `.off()` on a destroyed PTY doesn't skip remaining state cleanup.
+- **Out-of-scope force-kill**: Auto-approved out-of-scope access paths now use `force: true` when stopping the session, matching the behavior of other completion paths.
+
+### Refactored
+
+- **Deduplicated pty-init forwarding**: Extracted `forwardReadyAsTaskComplete()` helper, replacing duplicated `session_ready` → `task_complete` logic in both Bun and Node event paths.
+
 ## 0.3.1
 
 ### Fixes
