@@ -159,15 +159,16 @@ export function buildTriagePrompt(ctx: TriageContext): string {
  * Parse the LLM's triage response. Returns null on failure.
  */
 export function parseTriageResponse(llmOutput: string): TriageTier | null {
-  const match = llmOutput.match(/\{[\s\S]*\}/);
-  if (!match) return null;
-  try {
-    const parsed = JSON.parse(match[0]);
-    if (parsed.tier === "routine" || parsed.tier === "creative") {
-      return parsed.tier;
+  const matches = llmOutput.matchAll(/\{[\s\S]*?\}/g);
+  for (const match of matches) {
+    try {
+      const parsed = JSON.parse(match[0]);
+      if (parsed.tier === "routine" || parsed.tier === "creative") {
+        return parsed.tier;
+      }
+    } catch {
+      // Try next match
     }
-  } catch {
-    // Invalid JSON
   }
   return null;
 }
