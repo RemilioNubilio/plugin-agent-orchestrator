@@ -139,10 +139,10 @@ export async function scanIdleSessions(
         `[${taskCtx.label}] Session stopped — idle for ${idleMinutes} minutes with no progress.`,
         "coding-agent",
       );
-      // Actually kill the PTY session
+      // Force-kill the PTY session — idle timeout means nothing to save.
       if (ctx.ptyService) {
         try {
-          await ctx.ptyService.stopSession(taskCtx.sessionId);
+          await ctx.ptyService.stopSession(taskCtx.sessionId, /* force */ true);
         } catch (err) {
           ctx.log(`Idle watchdog: failed to stop session ${taskCtx.sessionId}: ${err}`);
           taskCtx.status = "error";

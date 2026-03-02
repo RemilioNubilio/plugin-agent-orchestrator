@@ -218,7 +218,7 @@ describe("SwarmCoordinator", () => {
 
       const ctx = coordinator.getTaskContext("s-1");
       expect(ctx.status).toBe("completed");
-      expect(mockPty.stopSession).toHaveBeenCalledWith("s-1");
+      expect(mockPty.stopSession).toHaveBeenCalledWith("s-1", true);
     });
 
     it("handles error by updating status", async () => {

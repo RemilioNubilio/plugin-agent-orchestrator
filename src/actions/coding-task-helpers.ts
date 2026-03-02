@@ -103,8 +103,8 @@ export function registerSessionEvents(
               : `Agent "${label}" completed the task.`,
           });
         }
-        // Auto-stop the session after task completion.
-        ptyService.stopSession(sessionId).catch((err) => {
+        // Force-kill the session after task completion — nothing to save.
+        ptyService.stopSession(sessionId, /* force */ true).catch((err) => {
           logger.warn(
             `[START_CODING_TASK] Failed to stop session for "${label}" after task complete: ${err}`,
           );

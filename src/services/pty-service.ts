@@ -443,7 +443,7 @@ export class PTYService {
     return sendKeysToSessionIO(this.ioContext(), sessionId, keys);
   }
 
-  async stopSession(sessionId: string): Promise<void> {
+  async stopSession(sessionId: string, force = false): Promise<void> {
     if (!this.manager) throw new Error("PTYService not initialized");
     return stopSessionIO(
       this.ioContext(),
@@ -451,6 +451,7 @@ export class PTYService {
       this.sessionMetadata,
       this.sessionWorkdirs,
       (msg) => this.log(msg),
+      force,
     );
   }
 

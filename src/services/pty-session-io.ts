@@ -79,6 +79,9 @@ export async function sendKeysToSession(
 
 /**
  * Stop a PTY session and clean up all associated state.
+ *
+ * @param force - When true, sends SIGKILL immediately instead of SIGTERM.
+ *   Use for sessions whose task is already complete — there's nothing to save.
  */
 export async function stopSession(
   ctx: SessionIOContext,
@@ -86,6 +89,7 @@ export async function stopSession(
   sessionMetadata: Map<string, Record<string, unknown>>,
   sessionWorkdirs: Map<string, string>,
   log: (msg: string) => void,
+  force = false,
 ): Promise<void> {
   const session = ctx.manager.get(sessionId);
   if (!session) {
@@ -93,9 +97,17 @@ export async function stopSession(
   }
 
   if (ctx.usingBunWorker) {
-    await (ctx.manager as BunCompatiblePTYManager).kill(sessionId);
+    if (force) {
+      await (ctx.manager as BunCompatiblePTYManager).kill(sessionId, "SIGKILL");
+    } else {
+      await (ctx.manager as BunCompatiblePTYManager).kill(sessionId);
+    }
   } else {
-    await (ctx.manager as PTYManager).stop(sessionId);
+    if (force) {
+      await (ctx.manager as PTYManager).stop(sessionId, { force: true });
+    } else {
+      await (ctx.manager as PTYManager).stop(sessionId);
+    }
   }
 
   // Clean up output subscriber

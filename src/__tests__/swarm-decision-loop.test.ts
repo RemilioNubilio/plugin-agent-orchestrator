@@ -293,7 +293,7 @@ describe("executeDecision", () => {
     expect(ctx.broadcast).toHaveBeenCalledWith(
       expect.objectContaining({ type: "task_complete" }),
     );
-    expect(ctx.ptyService.stopSession).toHaveBeenCalledWith("s-1");
+    expect(ctx.ptyService.stopSession).toHaveBeenCalledWith("s-1", true);
   });
 });
 
@@ -333,7 +333,7 @@ describe("handleTurnComplete", () => {
     });
 
     expect(taskCtx.status).toBe("completed");
-    expect(ctx.ptyService.stopSession).toHaveBeenCalledWith("s-1");
+    expect(ctx.ptyService.stopSession).toHaveBeenCalledWith("s-1", true);
   });
 
   it("defaults to escalate on invalid LLM response", async () => {
