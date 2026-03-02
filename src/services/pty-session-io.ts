@@ -91,12 +91,12 @@ export async function stopSession(
   log: (msg: string) => void,
   force = false,
 ): Promise<void> {
-  const session = ctx.manager.get(sessionId);
-  if (!session) {
-    throw new Error(`Session ${sessionId} not found`);
-  }
-
   try {
+    const session = ctx.manager.get(sessionId);
+    if (!session) {
+      throw new Error(`Session ${sessionId} not found`);
+    }
+
     if (ctx.usingBunWorker) {
       if (force) {
         await (ctx.manager as BunCompatiblePTYManager).kill(
@@ -114,13 +114,17 @@ export async function stopSession(
       }
     }
   } finally {
-    // Clean up state even if the kill/stop call throws — prevents leaked
-    // subscribers and stale metadata for sessions that are already gone.
-    const unsubscribe = ctx.outputUnsubscribers.get(sessionId);
-    if (unsubscribe) {
-      unsubscribe();
-      ctx.outputUnsubscribers.delete(sessionId);
+    // Clean up state even if the kill/stop call throws or the session was
+    // already gone — prevents leaked subscribers and stale metadata.
+    try {
+      const unsubscribe = ctx.outputUnsubscribers.get(sessionId);
+      if (unsubscribe) {
+        unsubscribe();
+      }
+    } catch {
+      // Ignore — unsubscribe may fail on a destroyed session
     }
+    ctx.outputUnsubscribers.delete(sessionId);
 
     sessionMetadata.delete(sessionId);
     sessionWorkdirs.delete(sessionId);
