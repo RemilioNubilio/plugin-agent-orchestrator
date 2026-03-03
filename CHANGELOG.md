@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.3
+
+### Fixes
+
+- **Duplicate SwarmCoordinator start**: ElizaOS may call `PTYService.start()` more than once during runtime initialization. Added a guard that checks if a coordinator is already registered on the runtime's services map before creating a new one, preventing duplicate "SwarmCoordinator started" log spam.
+
 ## 0.3.2
 
 ### Fixes
