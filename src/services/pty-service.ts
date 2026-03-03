@@ -131,21 +131,30 @@ export class PTYService {
     // Wire the SwarmCoordinator — done here instead of plugin init()
     // because ElizaOS calls Service.start() reliably but may not call
     // plugin.init() depending on the registration path.
-    try {
-      const coordinator = new SwarmCoordinator(runtime);
-      coordinator.start(service);
-      service.coordinator = coordinator;
+    // Guard: the framework may call start() more than once — skip if
+    // a coordinator is already registered on this runtime.
+    const servicesMap = runtime.services as Map<string, Service[]> | undefined;
+    const existing = servicesMap?.get?.("SWARM_COORDINATOR");
+    if (existing && existing.length > 0) {
+      service.coordinator = existing[0] as unknown as SwarmCoordinator;
+      logger.info("[PTYService] SwarmCoordinator already registered, skipping duplicate start");
+    } else {
+      try {
+        const coordinator = new SwarmCoordinator(runtime);
+        coordinator.start(service);
+        service.coordinator = coordinator;
 
-      // Register the coordinator as a discoverable runtime service so
-      // server.ts can find it via runtime.getService("SWARM_COORDINATOR")
-      // without a hard import from this plugin package.
-      // We bypass registerService() (which would call start() again) and
-      // write directly to the services map that getService() reads from.
-      (runtime.services as Map<string, Service[]>).set("SWARM_COORDINATOR", [coordinator as unknown as Service]);
+        // Register the coordinator as a discoverable runtime service so
+        // server.ts can find it via runtime.getService("SWARM_COORDINATOR")
+        // without a hard import from this plugin package.
+        // We bypass registerService() (which would call start() again) and
+        // write directly to the services map that getService() reads from.
+        servicesMap?.set?.("SWARM_COORDINATOR", [coordinator as unknown as Service]);
 
-      logger.info("[PTYService] SwarmCoordinator wired and started");
-    } catch (err) {
-      logger.error(`[PTYService] Failed to wire SwarmCoordinator: ${err}`);
+        logger.info("[PTYService] SwarmCoordinator wired and started");
+      } catch (err) {
+        logger.error(`[PTYService] Failed to wire SwarmCoordinator: ${err}`);
+      }
     }
 
     return service;
