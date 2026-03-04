@@ -15,6 +15,7 @@ import { setupDeferredTaskDelivery } from "../services/pty-spawn.js";
 
 type ListenerFn = (...args: unknown[]) => void;
 
+/** Create a mock PTY manager that captures event listener registrations. */
 function createMockManager() {
   const listeners = new Map<string, ListenerFn[]>();
   return {
@@ -42,6 +43,7 @@ function createMockManager() {
 // Mock context
 // ---------------------------------------------------------------------------
 
+/** Create a mock SpawnContext wired to the given mock manager. */
 function createMockCtx(
   manager: ReturnType<typeof createMockManager>,
 ): SpawnContext {
