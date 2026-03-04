@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.4
+
+### Fixes
+
+- **Ready-event timeout fallback**: If `session_ready` never fires (e.g., CLI update changes prompt pattern), deferred task delivery now forces after 30s instead of hanging indefinitely. Timeout is cleared on normal delivery to prevent double sends.
+
 ## 0.3.3
 
 ### Fixes

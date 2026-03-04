@@ -158,10 +158,13 @@ export function setupDeferredTaskDelivery(
     }
   };
 
+  const READY_TIMEOUT_MS = 30_000;
   let taskSent = false;
+  let readyTimeout: ReturnType<typeof setTimeout> | undefined;
   const sendTask = () => {
     if (taskSent) return;
     taskSent = true;
+    if (readyTimeout) clearTimeout(readyTimeout);
     // Delay to let TUI finish rendering after ready detection.
     // Without this, Claude Code's TUI can swallow the Enter key
     // if it arrives during a render cycle.
@@ -188,6 +191,14 @@ export function setupDeferredTaskDelivery(
     } else {
       (ctx.manager as PTYManager).on("session_ready", onReady);
     }
+    readyTimeout = setTimeout(() => {
+      if (!taskSent) {
+        ctx.log(
+          `Session ${sid} — ready event not received within ${READY_TIMEOUT_MS}ms, forcing task delivery`,
+        );
+        sendTask();
+      }
+    }, READY_TIMEOUT_MS);
   }
 }
 
