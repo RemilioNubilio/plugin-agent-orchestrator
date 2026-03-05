@@ -57,7 +57,10 @@ import type {
   SpawnSessionOptions,
 } from "./pty-types.js";
 import { isPiAgentType, toPiCommand } from "./pty-types.js";
-import { classifyStallOutput } from "./stall-classifier.js";
+import {
+  classifyAndDecideForCoordinator,
+  classifyStallOutput,
+} from "./stall-classifier.js";
 import { SwarmCoordinator } from "./swarm-coordinator.js";
 
 export type {
@@ -582,6 +585,50 @@ export class PTYService {
   ): Promise<StallClassification | null> {
     const meta = this.sessionMetadata.get(sessionId);
     const agentType = (meta?.agentType as string) ?? "unknown";
+
+    // For coordinator-managed sessions in autonomous mode: use combined
+    // classify+decide in a single LLM call. The suggestedResponse is kept
+    // intact so pty-manager auto-responds, and the coordinator receives
+    // autoResponded: true — skipping the second LLM call in handleBlocked().
+    if (
+      meta?.coordinatorManaged &&
+      this.coordinator?.getSupervisionLevel() === "autonomous"
+    ) {
+      const taskCtx = this.coordinator.getTaskContext(sessionId);
+      if (taskCtx) {
+        return classifyAndDecideForCoordinator({
+          sessionId,
+          recentOutput,
+          agentType,
+          buffers: this.sessionOutputBuffers,
+          traceEntries: this.traceEntries,
+          runtime: this.runtime,
+          manager: this.manager,
+          metricsTracker: this.metricsTracker,
+          debugSnapshots: this.serviceConfig.debug === true,
+          log: (msg: string) => this.log(msg),
+          taskContext: {
+            sessionId: taskCtx.sessionId,
+            agentType: taskCtx.agentType,
+            label: taskCtx.label,
+            originalTask: taskCtx.originalTask,
+            workdir: taskCtx.workdir,
+            repo: taskCtx.repo,
+          },
+          decisionHistory: taskCtx.decisions
+            .filter((d) => d.decision !== "auto_resolved")
+            .slice(-5)
+            .map((d) => ({
+              event: d.event,
+              promptText: d.promptText,
+              action: d.decision,
+              response: d.response,
+              reasoning: d.reasoning,
+            })),
+        });
+      }
+    }
+
     const classification = await classifyStallOutput({
       sessionId,
       recentOutput,
@@ -595,10 +642,9 @@ export class PTYService {
       log: (msg: string) => this.log(msg),
     });
 
-    // When the SwarmCoordinator manages this session, strip suggestedResponse
-    // so the PTY worker doesn't auto-respond. The coordinator's LLM decision
-    // loop will handle blocked prompts instead — it has full task context and
-    // can make smarter choices than the stall classifier's generic suggestion.
+    // When the SwarmCoordinator manages this session (non-autonomous mode),
+    // strip suggestedResponse so the PTY worker doesn't auto-respond.
+    // The coordinator's LLM decision loop will handle blocked prompts instead.
     if (classification && meta?.coordinatorManaged && classification.suggestedResponse) {
       this.log(
         `Suppressing stall auto-response for coordinator-managed session ${sessionId} ` +

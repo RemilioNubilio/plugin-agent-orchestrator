@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.6
+
+### Fixes
+
+- **Type exports**: Build now fails on tsc declaration errors instead of silently swallowing them (`.quiet()` removed). Fixed `CoordinationDecision.decision` type to include `"stopped"`. `dist/index.d.ts` is now reliably generated with all public type exports.
+- **Task_complete dropped during in-flight decisions**: `handleTurnComplete` now buffers task_complete events in `pendingTurnComplete` when an in-flight decision is running, instead of silently dropping them. `handleAutonomousDecision` and `handleConfirmDecision` drain buffered events after releasing the lock, preventing sessions from hanging after agents finish work.
+- **Fixed-mode agent selection in multi-agent**: In `handleMultiAgent`, fixed mode now ignores LLM-chosen agent type prefixes (e.g. `gemini:task`) — all agents use the configured default. Only ranked mode allows per-subtask overrides.
+
+### Optimized
+
+- **Single LLM call for coordinator stalls**: For coordinator-managed sessions in autonomous mode, stall classification and response decision are combined into one LLM call (`classifyAndDecideForCoordinator`). Previously, the stall classifier made an LLM call to classify and generate a `suggestedResponse`, which was then stripped — followed by a second LLM call in the coordinator to re-analyze the same output. The combined prompt includes task context, workdir protection, and decision history, saving ~1-2s per stall event.
+
 ## 0.3.4
 
 ### Fixes

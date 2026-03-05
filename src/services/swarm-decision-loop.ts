@@ -63,6 +63,26 @@ function toDecisionHistory(taskCtx: TaskContext): DecisionHistoryEntry[] {
     }));
 }
 
+/**
+ * Drain a buffered task_complete event for a session after an in-flight
+ * decision finishes. Prevents task_complete from being silently dropped
+ * when it arrives during a slow handleBlocked/handleAutonomous LLM call.
+ */
+async function drainPendingTurnComplete(
+  ctx: SwarmCoordinatorContext,
+  sessionId: string,
+): Promise<void> {
+  if (!ctx.pendingTurnComplete.has(sessionId)) return;
+  const pendingData = ctx.pendingTurnComplete.get(sessionId);
+  ctx.pendingTurnComplete.delete(sessionId);
+
+  const taskCtx = ctx.tasks.get(sessionId);
+  if (!taskCtx || taskCtx.status !== "active") return;
+
+  ctx.log(`Draining buffered turn-complete for "${taskCtx.label}"`);
+  await handleTurnComplete(ctx, sessionId, taskCtx, pendingData);
+}
+
 /** Format a decision's response for recording. */
 function formatDecisionResponse(
   decision: CoordinationLLMResponse,
@@ -440,9 +460,12 @@ export async function handleTurnComplete(
   taskCtx: TaskContext,
   data: unknown,
 ): Promise<void> {
-  // Debounce — skip if already assessing this session
+  // If another decision (e.g. handleBlocked) is running for this session,
+  // buffer the task_complete event so it's processed when the lock releases.
+  // Without this, task_complete events are silently lost and sessions hang.
   if (ctx.inFlightDecisions.has(sessionId)) {
-    ctx.log(`Skipping turn-complete assessment for ${sessionId} (in-flight)`);
+    ctx.log(`Buffering turn-complete for ${sessionId} (in-flight decision running)`);
+    ctx.pendingTurnComplete.set(sessionId, data);
     return;
   }
 
@@ -588,6 +611,7 @@ export async function handleTurnComplete(
     await executeDecision(ctx, sessionId, decision);
   } finally {
     ctx.inFlightDecisions.delete(sessionId);
+    await drainPendingTurnComplete(ctx, sessionId);
   }
 }
 
@@ -765,6 +789,7 @@ export async function handleAutonomousDecision(
     await executeDecision(ctx, sessionId, decision);
   } finally {
     ctx.inFlightDecisions.delete(sessionId);
+    await drainPendingTurnComplete(ctx, sessionId);
   }
 }
 
@@ -881,5 +906,6 @@ export async function handleConfirmDecision(
     });
   } finally {
     ctx.inFlightDecisions.delete(sessionId);
+    await drainPendingTurnComplete(ctx, sessionId);
   }
 }

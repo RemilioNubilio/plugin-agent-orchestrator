@@ -81,7 +81,7 @@ export interface CoordinationDecision {
   timestamp: number;
   event: string;
   promptText: string;
-  decision: "respond" | "escalate" | "ignore" | "complete" | "auto_resolved";
+  decision: "respond" | "escalate" | "ignore" | "complete" | "auto_resolved" | "stopped";
   response?: string;
   reasoning: string;
 }
@@ -112,6 +112,8 @@ export interface SwarmCoordinatorContext {
   readonly tasks: Map<string, TaskContext>;
   readonly inFlightDecisions: Set<string>;
   readonly pendingDecisions: Map<string, PendingDecision>;
+  /** Buffered task_complete events that arrived while an in-flight decision was running. */
+  readonly pendingTurnComplete: Map<string, unknown>;
   /** Last-seen output snapshot per session — used by idle watchdog. */
   readonly lastSeenOutput: Map<string, string>;
   /** Timestamp of last tool_running chat notification per session — for throttling. */
@@ -161,6 +163,9 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 
   /** In-flight decision lock — prevents parallel LLM calls for same session. */
   readonly inFlightDecisions: Set<string> = new Set();
+
+  /** Buffered task_complete events that arrived while an in-flight decision was running. */
+  readonly pendingTurnComplete: Map<string, unknown> = new Map();
 
   /** Callback to send chat messages to the user's conversation UI. */
   private chatCallback: ChatMessageCallback | null = null;
@@ -277,6 +282,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
     this.tasks.clear();
     this.pendingDecisions.clear();
     this.inFlightDecisions.clear();
+    this.pendingTurnComplete.clear();
     this.unregisteredBuffer.clear();
     this.lastSeenOutput.clear();
     this.lastToolNotification.clear();

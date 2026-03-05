@@ -26,6 +26,7 @@ import {
   toPiCommand,
 } from "../services/pty-types.js";
 import type { CodingWorkspaceService } from "../services/workspace-service.js";
+import type { AgentSelectionStrategy } from "../services/agent-selection.js";
 import {
   createScratchDir,
   generateLabel,
@@ -48,6 +49,7 @@ export interface CodingTaskContext {
   repo: string | undefined;
   defaultAgentType: CodingAgentType;
   rawAgentType: string;
+  agentSelectionStrategy: AgentSelectionStrategy;
   memoryContent: string | undefined;
   approvalPreset: string | undefined;
   explicitLabel: string | undefined;
@@ -132,13 +134,19 @@ export async function handleMultiAgent(
   }> = [];
 
   for (const [i, spec] of agentSpecs.entries()) {
-    // Parse optional "agentType:task" prefix
+    // Parse optional "agentType:task" prefix.
+    // In fixed mode, ignore LLM-chosen prefixes — all agents use the
+    // configured default. Only ranked mode allows per-subtask overrides.
     let specAgentType = defaultAgentType;
     let specPiRequested = isPiAgentType(rawAgentType);
     let specRequestedType = rawAgentType;
     let specTask = spec;
     const colonIdx = spec.indexOf(":");
-    if (colonIdx > 0 && colonIdx < 20) {
+    if (
+      ctx.agentSelectionStrategy !== "fixed" &&
+      colonIdx > 0 &&
+      colonIdx < 20
+    ) {
       const prefix = spec.slice(0, colonIdx).trim().toLowerCase();
       const knownTypes = [
         "claude",
@@ -161,6 +169,17 @@ export async function handleMultiAgent(
         specRequestedType = prefix;
         specPiRequested = isPiAgentType(prefix);
         specAgentType = normalizeAgentType(prefix);
+        specTask = spec.slice(colonIdx + 1).trim();
+      }
+    } else if (ctx.agentSelectionStrategy === "fixed" && colonIdx > 0 && colonIdx < 20) {
+      // Strip the prefix from the task text but keep the default agent type
+      const prefix = spec.slice(0, colonIdx).trim().toLowerCase();
+      const knownTypes = [
+        "claude", "claude-code", "claudecode", "codex", "openai",
+        "gemini", "google", "aider", "pi", "pi-ai", "piai",
+        "pi-coding-agent", "picodingagent", "shell", "bash",
+      ];
+      if (knownTypes.includes(prefix)) {
         specTask = spec.slice(colonIdx + 1).trim();
       }
     }

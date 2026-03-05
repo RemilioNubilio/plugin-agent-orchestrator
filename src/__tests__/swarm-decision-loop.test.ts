@@ -31,6 +31,7 @@ function createMockCtx(overrides: Record<string, unknown> = {}) {
     tasks: new Map(),
     inFlightDecisions: new Set<string>(),
     pendingDecisions: new Map(),
+    pendingTurnComplete: new Map(),
     getSupervisionLevel: () => "autonomous",
     getAgentDecisionCallback: () => null,
     broadcast: jest.fn(),
