@@ -395,6 +395,12 @@ export class PTYService {
       toSessionInfo: (s: SessionHandle | WorkerSessionHandle, w?: string) =>
         this.toSessionInfo(s, w),
       log: (msg: string) => this.log(msg),
+      markTaskDelivered: (sessionId: string) => {
+        const coordinator = this.coordinator;
+        if (!coordinator) return;
+        const taskCtx = coordinator.getTaskContext(sessionId);
+        if (taskCtx) taskCtx.taskDelivered = true;
+      },
     };
 
     // Buffer output for Bun worker path (no logs() method available)
