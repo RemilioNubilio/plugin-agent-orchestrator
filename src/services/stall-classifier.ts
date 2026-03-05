@@ -16,6 +16,10 @@ import {
 } from "pty-manager";
 import type { AgentMetricsTracker } from "./agent-metrics.js";
 import { stripAnsi } from "./ansi-utils.js";
+import type {
+  TaskContextSummary,
+  DecisionHistoryEntry,
+} from "./swarm-coordinator-prompts.js";
 
 /** Everything the classifier needs, passed in from PTYService. */
 export interface StallClassifierContext {
@@ -238,6 +242,189 @@ export async function classifyStallOutput(
     return classification;
   } catch (err) {
     log(`Stall classification failed: ${err}`);
+    return null;
+  }
+}
+
+// ─── Combined Classify + Decide (for coordinator-managed autonomous sessions) ───
+
+/** Context for the combined classify-and-decide call. */
+export interface CoordinatorClassifyContext extends StallClassifierContext {
+  taskContext: TaskContextSummary;
+  decisionHistory?: DecisionHistoryEntry[];
+}
+
+/**
+ * Build a combined prompt that classifies the stall AND decides how to respond,
+ * merging stall classification with coordinator decision guidelines.
+ *
+ * Used for coordinator-managed sessions in autonomous mode to eliminate the
+ * redundant second LLM call in the coordinator's handleBlocked path.
+ */
+export function buildCombinedClassifyDecidePrompt(
+  agentType: string,
+  sessionId: string,
+  output: string,
+  taskContext: TaskContextSummary,
+  decisionHistory: DecisionHistoryEntry[],
+): string {
+  const historySection =
+    decisionHistory.length > 0
+      ? `\nPrevious decisions for this session:\n${decisionHistory
+          .slice(-5)
+          .map(
+            (d, i) =>
+              `  ${i + 1}. [${d.event}] prompt="${d.promptText}" → ${d.action}${d.response ? ` ("${d.response}")` : ""} — ${d.reasoning}`,
+          )
+          .join("\n")}\n`
+      : "";
+
+  return (
+    `You are Milady, an AI orchestrator managing coding agent sessions. ` +
+    `A ${agentType} coding agent (session: ${sessionId}) appears to have stalled — ` +
+    `it has stopped producing output while in a busy state.\n\n` +
+    `Original task: "${taskContext.originalTask}"\n` +
+    `Working directory: ${taskContext.workdir}\n` +
+    `Repository: ${taskContext.repo ?? "none (scratch directory)"}\n` +
+    historySection +
+    `\nHere is the recent terminal output:\n` +
+    `---\n${output.slice(-1500)}\n---\n\n` +
+    `Classify what's happening AND decide how to respond. Read the output carefully.\n\n` +
+    `Classification states:\n\n` +
+    `1. "task_complete" — The agent FINISHED its task and returned to its idle prompt. ` +
+    `Strong indicators: a summary of completed work, timing info, ` +
+    `or the agent's main prompt symbol (❯) appearing AFTER completion output.\n\n` +
+    `2. "waiting_for_input" — The agent is MID-TASK and blocked on a specific question or permission prompt. ` +
+    `Examples: Y/n confirmation, file permission dialogs, tool approval prompts, interactive menus.\n\n` +
+    `3. "still_working" — The agent is actively processing (API call, compilation, thinking). ` +
+    `No prompt or completion summary visible.\n\n` +
+    `4. "error" — The agent hit an error state (crash, unrecoverable error, stack trace).\n\n` +
+    `5. "tool_running" — The agent is using an external tool (browser automation, MCP tool, etc.).\n\n` +
+    `If "waiting_for_input", you must also decide how to respond. Guidelines:\n` +
+    `- IMPORTANT: If the prompt asks to approve access to files or directories OUTSIDE the working ` +
+    `directory (${taskContext.workdir}), DECLINE the request. Respond with "n" and tell the agent: ` +
+    `"That path is outside your workspace. Use ${taskContext.workdir} instead."\n` +
+    `- For tool approval prompts (file writes, shell commands), respond "y" or use "keys:enter".\n` +
+    `- For Y/n confirmations that align with the original task, respond "y".\n` +
+    `- For TUI menus, use "keys:enter" for default or "keys:down,enter" for non-default.\n` +
+    `- If the prompt asks for information NOT in the original task, set suggestedResponse to null ` +
+    `(this will escalate to the human).\n` +
+    `- If a PR was just created, respond to review & verify test plan items before completing.\n\n` +
+    `Respond with ONLY a JSON object:\n` +
+    `{"state": "...", "prompt": "...", "suggestedResponse": "..."}`
+  );
+}
+
+/**
+ * Combined classify-and-decide for coordinator-managed autonomous sessions.
+ *
+ * Performs classification AND coordinator-quality response decision in a single
+ * LLM call. The suggestedResponse is kept intact (not stripped), so pty-manager
+ * auto-responds and the coordinator receives autoResponded: true — skipping
+ * the second LLM call in handleBlocked().
+ */
+export async function classifyAndDecideForCoordinator(
+  ctx: CoordinatorClassifyContext,
+): Promise<StallClassification | null> {
+  const {
+    sessionId,
+    recentOutput,
+    agentType,
+    buffers,
+    traceEntries,
+    runtime,
+    manager,
+    metricsTracker,
+    taskContext,
+    decisionHistory = [],
+    log,
+  } = ctx;
+
+  metricsTracker.incrementStalls(agentType);
+
+  // Buffer fallback — same logic as classifyStallOutput
+  let effectiveOutput = recentOutput;
+  if (!recentOutput || recentOutput.trim().length < 200) {
+    const ourBuffer = buffers.get(sessionId);
+    if (ourBuffer && ourBuffer.length > 0) {
+      const rawTail = ourBuffer.slice(-100).join("\n");
+      const stripped = stripAnsi(rawTail);
+      if (stripped.length > effectiveOutput.length) {
+        effectiveOutput = stripped;
+        log(
+          `Using own buffer for combined classify+decide (${effectiveOutput.length} chars after stripping, pty-manager had ${recentOutput.length})`,
+        );
+      }
+    }
+  }
+
+  const systemPrompt = buildCombinedClassifyDecidePrompt(
+    agentType,
+    sessionId,
+    effectiveOutput,
+    taskContext,
+    decisionHistory,
+  );
+
+  if (ctx.debugSnapshots) {
+    await writeStallSnapshot(
+      sessionId,
+      agentType,
+      recentOutput,
+      effectiveOutput,
+      buffers,
+      traceEntries,
+      log,
+    );
+  }
+
+  try {
+    log(
+      `Stall detected for coordinator-managed ${sessionId}, combined classify+decide...`,
+    );
+    const result = await runtime.useModel(ModelType.TEXT_SMALL, {
+      prompt: systemPrompt,
+    });
+
+    const jsonMatch = result.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      log(`Combined classify+decide: no JSON in LLM response`);
+      return null;
+    }
+
+    const parsed = JSON.parse(jsonMatch[0]);
+    const validStates: string[] = [
+      "waiting_for_input",
+      "still_working",
+      "task_complete",
+      "error",
+      "tool_running",
+    ];
+    if (!validStates.includes(parsed.state)) {
+      log(`Combined classify+decide: invalid state "${parsed.state}"`);
+      return null;
+    }
+
+    const mappedState: StallClassification["state"] =
+      parsed.state === "tool_running" ? "still_working" : parsed.state;
+    const classification: StallClassification = {
+      state: mappedState,
+      prompt: parsed.prompt,
+      suggestedResponse: parsed.suggestedResponse,
+    };
+    log(
+      `Combined classify+decide for ${sessionId}: ${classification.state}${classification.suggestedResponse ? ` → "${classification.suggestedResponse}"` : ""}`,
+    );
+    if (classification.state === "task_complete") {
+      const session = manager?.get(sessionId);
+      const durationMs = session?.startedAt
+        ? Date.now() - new Date(session.startedAt).getTime()
+        : 0;
+      metricsTracker.recordCompletion(agentType, "classifier", durationMs);
+    }
+    return classification;
+  } catch (err) {
+    log(`Combined classify+decide failed: ${err}`);
     return null;
   }
 }

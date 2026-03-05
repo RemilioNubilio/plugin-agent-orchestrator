@@ -23,7 +23,7 @@ async function build() {
 
     console.log("Starting build tasks...");
 
-    const [buildResult] = await Promise.all([
+    const [buildResult, declResult] = await Promise.all([
       (async () => {
         console.log("📦 Bundling with Bun...");
         const result = await Bun.build({
@@ -65,17 +65,22 @@ async function build() {
       (async () => {
         console.log("📝 Generating TypeScript declarations...");
         try {
-          await $`bunx tsc --emitDeclarationOnly --incremental --project ./tsconfig.build.json`.quiet();
+          await $`bunx tsc --emitDeclarationOnly --incremental --project ./tsconfig.build.json`;
           console.log("✓ TypeScript declarations generated");
           return { success: true };
-        } catch {
-          console.warn("⚠ Failed to generate TypeScript declarations");
+        } catch (e) {
+          console.error("✗ TypeScript declaration generation failed");
           return { success: false };
         }
       })(),
     ]);
 
     if (!buildResult.success) {
+      return false;
+    }
+
+    if (!declResult.success) {
+      console.error("✗ Build aborted: TypeScript declarations could not be generated");
       return false;
     }
 

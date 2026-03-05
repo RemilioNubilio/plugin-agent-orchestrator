@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.5
+
+### Fixes
+
+- **Type exports**: Build now fails on tsc declaration errors instead of silently swallowing them (`.quiet()` removed). Fixed `CoordinationDecision.decision` type to include `"stopped"`. `dist/index.d.ts` is now reliably generated with all public type exports.
+
+### Optimized
+
+- **Single LLM call for coordinator stalls**: For coordinator-managed sessions in autonomous mode, stall classification and response decision are combined into one LLM call (`classifyAndDecideForCoordinator`). Previously, the stall classifier made an LLM call to classify and generate a `suggestedResponse`, which was then stripped — followed by a second LLM call in the coordinator to re-analyze the same output. The combined prompt includes task context, workdir protection, and decision history, saving ~1-2s per stall event.
+
 ## 0.3.4
 
 ### Fixes

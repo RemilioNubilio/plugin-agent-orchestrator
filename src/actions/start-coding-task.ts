@@ -194,6 +194,7 @@ export const startCodingTaskAction: Action = {
       repo,
       defaultAgentType,
       rawAgentType,
+      agentSelectionStrategy: ptyService.agentSelectionStrategy,
       memoryContent,
       approvalPreset,
       explicitLabel,
