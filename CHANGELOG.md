@@ -5,6 +5,7 @@
 ### Fixes
 
 - **`posix_spawnp failed` on fresh install**: `ensure-node-pty.mjs` postinstall now detects node-pty >=1.0 prebuilt binaries (`prebuilds/<platform>-<arch>/`) instead of only checking the legacy `build/Release/` path. Also `chmod +x` the `spawn-helper` executable, which `bun install` strips of execute permissions when extracting tarballs.
+- **Agents stuck at "ready" after completing work**: `forwardReadyAsTaskComplete` required `decisions.length > 0` to forward `session_ready` as `task_complete`. Agents that finish without blocking prompts had zero decisions, so completion was silently dropped. Added `taskDelivered` flag set after the initial startup ready event so subsequent ready events correctly trigger completion.
 
 ## 0.3.7
 

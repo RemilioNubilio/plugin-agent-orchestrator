@@ -62,6 +62,7 @@ function createMockCtx(
     pushDefaultRules: jest.fn().mockResolvedValue(undefined),
     toSessionInfo: jest.fn() as unknown as SpawnContext["toSessionInfo"],
     log: jest.fn(),
+    markTaskDelivered: jest.fn(),
   } as unknown as SpawnContext;
 }
 

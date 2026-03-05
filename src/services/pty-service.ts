@@ -194,7 +194,17 @@ export class PTYService {
         const coordinator = this.coordinator;
         if (!coordinator) return false;
         const taskCtx = coordinator.getTaskContext(sessionId);
-        return (taskCtx?.decisions.length ?? 0) > 0;
+        if (!taskCtx) return false;
+        // Task has activity if the initial task was delivered (agent started
+        // working) OR coordinator made decisions. The taskDelivered flag
+        // covers agents that finish without hitting any blocking prompts.
+        return taskCtx.taskDelivered || taskCtx.decisions.length > 0;
+      },
+      markTaskDelivered: (sessionId) => {
+        const coordinator = this.coordinator;
+        if (!coordinator) return;
+        const taskCtx = coordinator.getTaskContext(sessionId);
+        if (taskCtx) taskCtx.taskDelivered = true;
       },
     });
     this.manager = result.manager;
@@ -385,6 +395,12 @@ export class PTYService {
       toSessionInfo: (s: SessionHandle | WorkerSessionHandle, w?: string) =>
         this.toSessionInfo(s, w),
       log: (msg: string) => this.log(msg),
+      markTaskDelivered: (sessionId: string) => {
+        const coordinator = this.coordinator;
+        if (!coordinator) return;
+        const taskCtx = coordinator.getTaskContext(sessionId);
+        if (taskCtx) taskCtx.taskDelivered = true;
+      },
     };
 
     // Buffer output for Bun worker path (no logs() method available)

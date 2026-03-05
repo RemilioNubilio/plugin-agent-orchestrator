@@ -76,6 +76,8 @@ export interface SpawnContext {
     workdir?: string,
   ) => SessionInfo;
   log: (msg: string) => void;
+  /** Mark a session's task as delivered in the coordinator. */
+  markTaskDelivered: (sessionId: string) => void;
 }
 
 /**
@@ -165,6 +167,11 @@ export function setupDeferredTaskDelivery(
     if (taskSent) return;
     taskSent = true;
     if (readyTimeout) clearTimeout(readyTimeout);
+    // Mark task as delivered so forwardReadyAsTaskComplete allows
+    // subsequent session_ready events to trigger completion.
+    // The session_ready handler in pty-init also calls markTaskDelivered
+    // as a secondary safeguard for the normal (non-timeout) path.
+    ctx.markTaskDelivered(sid);
     // Delay to let TUI finish rendering after ready detection.
     // Without this, Claude Code's TUI can swallow the Enter key
     // if it arrives during a render cycle.

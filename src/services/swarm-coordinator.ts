@@ -75,6 +75,8 @@ export interface TaskContext {
   lastActivityAt: number;
   /** How many idle checks have been performed on this session. */
   idleCheckCount: number;
+  /** True once the initial task has been delivered to the agent. */
+  taskDelivered: boolean;
 }
 
 export interface CoordinationDecision {
@@ -367,6 +369,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
       registeredAt: Date.now(),
       lastActivityAt: Date.now(),
       idleCheckCount: 0,
+      taskDelivered: false,
     });
 
     this.broadcast({
