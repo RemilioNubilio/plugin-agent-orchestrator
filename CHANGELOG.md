@@ -1,10 +1,12 @@
 # Changelog
 
-## 0.3.5
+## 0.3.6
 
 ### Fixes
 
 - **Type exports**: Build now fails on tsc declaration errors instead of silently swallowing them (`.quiet()` removed). Fixed `CoordinationDecision.decision` type to include `"stopped"`. `dist/index.d.ts` is now reliably generated with all public type exports.
+- **Task_complete dropped during in-flight decisions**: `handleTurnComplete` now buffers task_complete events in `pendingTurnComplete` when an in-flight decision is running, instead of silently dropping them. `handleAutonomousDecision` and `handleConfirmDecision` drain buffered events after releasing the lock, preventing sessions from hanging after agents finish work.
+- **Fixed-mode agent selection in multi-agent**: In `handleMultiAgent`, fixed mode now ignores LLM-chosen agent type prefixes (e.g. `gemini:task`) — all agents use the configured default. Only ranked mode allows per-subtask overrides.
 
 ### Optimized
 
