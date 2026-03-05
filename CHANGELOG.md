@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.8
+
+### Fixes
+
+- **`posix_spawnp failed` on fresh install**: `ensure-node-pty.mjs` postinstall now detects node-pty >=1.0 prebuilt binaries (`prebuilds/<platform>-<arch>/`) instead of only checking the legacy `build/Release/` path. Also `chmod +x` the `spawn-helper` executable, which `bun install` strips of execute permissions when extracting tarballs.
+
 ## 0.3.7
 
 ### Fixes
