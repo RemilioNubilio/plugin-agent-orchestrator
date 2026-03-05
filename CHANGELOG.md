@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.7
+
+### Fixes
+
+- **Type declarations missing from published package**: Build script now cleans `tsconfig.build.tsbuildinfo` alongside `dist/`, preventing tsc incremental mode from skipping declaration emit after a clean. Logged tsc error details for CI triage.
+- **Out-of-scope safety guard in combined classifier**: Added deterministic pre-return guard in `classifyAndDecideForCoordinator` that overrides LLM-approved out-of-workspace access before it reaches pty-manager auto-respond.
+- **Drain buffered turn-complete in all finally blocks**: `handleTurnComplete` now also drains `pendingTurnComplete` on exit, not just `handleAutonomousDecision`/`handleConfirmDecision`. Fixed `drainPendingTurnComplete` to use `.has()` instead of truthiness check.
+
 ## 0.3.6
 
 ### Fixes
