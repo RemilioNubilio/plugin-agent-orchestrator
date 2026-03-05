@@ -69,7 +69,7 @@ async function build() {
           console.log("✓ TypeScript declarations generated");
           return { success: true };
         } catch (e) {
-          console.error("✗ TypeScript declaration generation failed");
+          console.error("✗ TypeScript declaration generation failed", e);
           return { success: false };
         }
       })(),

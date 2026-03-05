@@ -72,8 +72,8 @@ async function drainPendingTurnComplete(
   ctx: SwarmCoordinatorContext,
   sessionId: string,
 ): Promise<void> {
+  if (!ctx.pendingTurnComplete.has(sessionId)) return;
   const pendingData = ctx.pendingTurnComplete.get(sessionId);
-  if (!pendingData) return;
   ctx.pendingTurnComplete.delete(sessionId);
 
   const taskCtx = ctx.tasks.get(sessionId);
@@ -611,8 +611,7 @@ export async function handleTurnComplete(
     await executeDecision(ctx, sessionId, decision);
   } finally {
     ctx.inFlightDecisions.delete(sessionId);
-    // Don't drain here — handleTurnComplete itself may have been the drain target.
-    // Draining is done by handleAutonomousDecision/handleBlocked callers.
+    await drainPendingTurnComplete(ctx, sessionId);
   }
 }
 

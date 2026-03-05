@@ -407,6 +407,21 @@ export async function classifyAndDecideForCoordinator(
 
     const mappedState: StallClassification["state"] =
       parsed.state === "tool_running" ? "still_working" : parsed.state;
+
+    // Deterministic safety guard: if the LLM approved access to a path
+    // outside the workspace, override with a decline. This runs before
+    // pty-manager auto-responds, so the unsafe approval never reaches the agent.
+    if (mappedState === "waiting_for_input" && parsed.suggestedResponse) {
+      const promptText = typeof parsed.prompt === "string" ? parsed.prompt : "";
+      const responseText = parsed.suggestedResponse.trim().toLowerCase();
+      const approving = ["y", "yes", "keys:enter", "keys:down,enter"].includes(responseText);
+      const hasAbsPath = /(?:^|[\s"'`])\/[^\s"'`]+/.test(promptText);
+      if (approving && hasAbsPath && !promptText.includes(taskContext.workdir)) {
+        log(`Combined classify+decide: overriding out-of-scope approval for ${sessionId}`);
+        parsed.suggestedResponse = `n — That path is outside your workspace. Use ${taskContext.workdir} instead.`;
+      }
+    }
+
     const classification: StallClassification = {
       state: mappedState,
       prompt: parsed.prompt,
