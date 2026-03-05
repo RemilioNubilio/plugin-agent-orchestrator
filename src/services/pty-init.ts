@@ -58,12 +58,14 @@ export interface InitContext {
   log: (msg: string) => void;
   /** Check if a session has an active task in the coordinator. */
   hasActiveTask?: (sessionId: string) => boolean;
-  /** Check if a session's task has had any coordinator activity (decisions > 0). */
+  /** Check if a session's task has started work (task delivered or decisions made). */
   hasTaskActivity?: (sessionId: string) => boolean;
+  /** Mark a session's task as delivered (initial ready event processed). */
+  markTaskDelivered?: (sessionId: string) => void;
 }
 
 /**
- * If a session has an active task with activity (decisions > 0), forward the
+ * If a session has an active task that has started work, forward the
  * session_ready event as task_complete so the coordinator evaluates completion.
  *
  * Shared by both the Bun worker and native Node event paths to avoid
@@ -136,6 +138,10 @@ export async function initializePTYManager(
       );
       ctx.emitEvent(session.id, "ready", { session });
       forwardReadyAsTaskComplete(ctx, session);
+      // Mark task as delivered AFTER the forward check so the first ready
+      // event (startup) is not treated as completion. Subsequent ready events
+      // will see taskDelivered=true and forward as task_complete.
+      ctx.markTaskDelivered?.(session.id);
     });
 
     bunManager.on("session_exit", (id: string, code: number) => {
@@ -290,6 +296,7 @@ export async function initializePTYManager(
   nodeManager.on("session_ready", (session: SessionHandle) => {
     ctx.emitEvent(session.id, "ready", { session });
     forwardReadyAsTaskComplete(ctx, session);
+    ctx.markTaskDelivered?.(session.id);
   });
 
   nodeManager.on(
