@@ -12,6 +12,10 @@ async function cleanBuild(outdir = "dist") {
     await rm(outdir, { recursive: true, force: true });
     console.log(`✓ Cleaned ${outdir} directory`);
   }
+  // Remove tsc incremental cache so declarations are re-emitted after dist/ is wiped
+  if (existsSync("tsconfig.build.tsbuildinfo")) {
+    await rm("tsconfig.build.tsbuildinfo", { force: true });
+  }
 }
 
 async function build() {
