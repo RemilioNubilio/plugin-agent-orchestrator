@@ -393,15 +393,12 @@ export async function handleBlocked(
       },
     });
 
-    // Throttled chat message: 1st, 2nd, then every 5th
+    // Log auto-approvals server-side only — don't persist to chat.
     const count = taskCtx.autoResolvedCount;
     if (count <= 2 || count % 5 === 0) {
       const excerpt =
         promptText.length > 120 ? `${promptText.slice(0, 120)}...` : promptText;
-      ctx.sendChatMessage(
-        `[${taskCtx.label}] Approved: ${excerpt}`,
-        "coding-agent",
-      );
+      ctx.log(`[${taskCtx.label}] Approved: ${excerpt}`);
     }
     return;
   }
@@ -568,10 +565,7 @@ export async function handleTurnComplete(
           instruction.length > 120
             ? `${instruction.slice(0, 120)}...`
             : instruction;
-        ctx.sendChatMessage(
-          `[${taskCtx.label}] Turn done, continuing: ${preview}`,
-          "coding-agent",
-        );
+        ctx.log(`[${taskCtx.label}] Turn done, continuing: ${preview}`);
       } else if (decision.action === "escalate") {
         ctx.sendChatMessage(
           `[${taskCtx.label}] Turn finished — needs your attention: ${decision.reasoning}`,
@@ -750,10 +744,7 @@ export async function handleAutonomousDecision(
           decision.reasoning.length > 150
             ? `${decision.reasoning.slice(0, 150)}...`
             : decision.reasoning;
-        ctx.sendChatMessage(
-          `[${taskCtx.label}] ${actionDesc} — ${reasonExcerpt}`,
-          "coding-agent",
-        );
+        ctx.log(`[${taskCtx.label}] ${actionDesc} — ${reasonExcerpt}`);
       } else if (decision.action === "escalate") {
         ctx.sendChatMessage(
           `[${taskCtx.label}] Needs your attention: ${decision.reasoning}`,

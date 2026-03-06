@@ -681,9 +681,8 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
             }
           }
 
-          this.sendChatMessage(
-            `[${taskCtx.label}] Running ${toolDesc}.${urlSuffix} The agent is working outside the terminal — I'll let it finish.`,
-            "coding-agent",
+          this.log(
+            `[${taskCtx.label}] Running ${toolDesc}.${urlSuffix} The agent is working outside the terminal.`,
           );
         }
         break;
