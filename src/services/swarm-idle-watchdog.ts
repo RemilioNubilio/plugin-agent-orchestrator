@@ -268,10 +268,7 @@ export async function handleIdleCheck(
       const actionDesc = decision.useKeys
         ? `Sent keys: ${decision.keys?.join(", ")}`
         : `Nudged: ${decision.response ?? ""}`;
-      ctx.sendChatMessage(
-        `[${taskCtx.label}] Idle for ${idleMinutes}m — ${actionDesc}`,
-        "coding-agent",
-      );
+      ctx.log(`[${taskCtx.label}] Idle for ${idleMinutes}m — ${actionDesc}`);
     } else if (decision.action === "escalate") {
       ctx.sendChatMessage(
         `[${taskCtx.label}] Idle for ${idleMinutes}m — needs your attention: ${decision.reasoning}`,

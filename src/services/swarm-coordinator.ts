@@ -638,14 +638,21 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
           data,
         });
 
+        // Hook-sourced tool_running events fire for every tool call.
+        // Only broadcast to SSE (for activity box) — skip chat messages.
+        const toolData = data as {
+          toolName?: string;
+          description?: string;
+          source?: string;
+        };
+        if (toolData.source === "hook") {
+          break;
+        }
+
         // Throttle chat notifications: at most one per 30s per session.
         // Suppress during the first 10s after registration — startup status
         // lines (e.g. "Claude in Chrome enabled") can trigger tool_running
         // before the agent has actually begun working.
-        const toolData = data as {
-          toolName?: string;
-          description?: string;
-        };
         const now = Date.now();
         const STARTUP_GRACE_MS = 10_000;
         if (now - taskCtx.registeredAt < STARTUP_GRACE_MS) {
@@ -674,9 +681,8 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
             }
           }
 
-          this.sendChatMessage(
-            `[${taskCtx.label}] Running ${toolDesc}.${urlSuffix} The agent is working outside the terminal — I'll let it finish.`,
-            "coding-agent",
+          this.log(
+            `[${taskCtx.label}] Running ${toolDesc}.${urlSuffix} The agent is working outside the terminal.`,
           );
         }
         break;

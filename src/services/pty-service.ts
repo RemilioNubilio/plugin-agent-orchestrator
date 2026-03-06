@@ -330,7 +330,7 @@ export class PTYService {
       }
     }
 
-    // Inject allowedDirectories into Claude settings to restrict auto-approval scope
+    // Inject allowedDirectories and HTTP hooks into Claude settings
     if (resolvedAgentType === "claude") {
       try {
         const settingsPath = join(workdir, ".claude", "settings.json");
@@ -344,6 +344,21 @@ export class PTYService {
           (settings.permissions as Record<string, unknown>) ?? {};
         permissions.allowedDirectories = [workdir];
         settings.permissions = permissions;
+
+        // Inject HTTP hooks for deterministic state detection
+        const serverPort =
+          (this.runtime.getSetting("SERVER_PORT") as string | undefined) ??
+          "2138";
+        const adapter = this.getAdapter("claude");
+        const hookProtocol = adapter.getHookTelemetryProtocol({
+          httpUrl: `http://localhost:${serverPort}/api/coding-agents/hooks`,
+          sessionId,
+        });
+        if (hookProtocol) {
+          settings.hooks = hookProtocol.settingsHooks;
+          this.log(`Injecting HTTP hooks for session ${sessionId}`);
+        }
+
         await mkdir(dirname(settingsPath), { recursive: true });
         await writeFile(
           settingsPath,
@@ -352,7 +367,7 @@ export class PTYService {
         );
         this.log(`Wrote allowedDirectories [${workdir}] to ${settingsPath}`);
       } catch (err) {
-        this.log(`Failed to write allowedDirectories: ${err}`);
+        this.log(`Failed to write Claude settings: ${err}`);
       }
     }
 
@@ -583,6 +598,58 @@ export class PTYService {
     return session?.status === "authenticating";
   }
 
+  /**
+   * Find a PTY session ID by its working directory.
+   * Used by the HTTP hooks endpoint to correlate Claude's cwd with our session.
+   */
+  findSessionIdByCwd(cwd: string): string | undefined {
+    for (const [sessionId, workdir] of this.sessionWorkdirs) {
+      if (workdir === cwd) return sessionId;
+    }
+    return undefined;
+  }
+
+  /**
+   * Handle an incoming hook event from Claude Code's HTTP hooks.
+   * Translates hook events into PTY service events.
+   */
+  handleHookEvent(
+    sessionId: string,
+    event: string,
+    data: Record<string, unknown>,
+  ): void {
+    // Log high-frequency events (tool_running, permission) at debug level;
+    // completion events at info level.
+    const summary = event === "tool_running"
+      ? `tool=${(data as { toolName?: string }).toolName ?? "?"}`
+      : event === "permission_approved"
+        ? `tool=${(data as { tool?: string }).tool ?? "?"}`
+        : JSON.stringify(data);
+    if (event === "tool_running" || event === "permission_approved") {
+      logger.debug(`[PTYService] Hook event for ${sessionId}: ${event} ${summary}`);
+    } else {
+      this.log(`Hook event for ${sessionId}: ${event} ${summary}`);
+    }
+
+    switch (event) {
+      case "tool_running":
+        this.emitEvent(sessionId, "tool_running", data);
+        break;
+      case "task_complete":
+        this.emitEvent(sessionId, "task_complete", data);
+        break;
+      case "permission_approved":
+        // Permission was auto-approved via PermissionRequest hook.
+        // No PTY event needed — the hook response already allowed it.
+        break;
+      case "notification":
+        this.emitEvent(sessionId, "message", data);
+        break;
+      default:
+        break;
+    }
+  }
+
   async checkAvailableAgents(
     types?: AdapterType[],
   ): Promise<PreflightResult[]> {
@@ -783,8 +850,6 @@ export class PTYService {
   }
 
   private log(message: string): void {
-    if (this.serviceConfig.debug) {
-      logger.debug(`[PTYService] ${message}`);
-    }
+    logger.debug(`[PTYService] ${message}`);
   }
 }
