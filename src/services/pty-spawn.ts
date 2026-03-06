@@ -239,7 +239,12 @@ export function buildSpawnConfig(
     type: options.agentType,
     workdir,
     inheritProcessEnv: false,
-    env: { ...buildSanitizedBaseEnv(), ...options.env, ...modelEnv },
+    env: {
+      ...buildSanitizedBaseEnv(),
+      ...options.env,
+      ...modelEnv,
+      PARALLAX_SESSION_ID: sessionId,
+    },
     ...(options.skipAdapterAutoResponse
       ? { skipAdapterAutoResponse: true }
       : {}),

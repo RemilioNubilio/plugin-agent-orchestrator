@@ -8,6 +8,8 @@
  * @module services/pty-session-io
  */
 
+import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import type {
   BunCompatiblePTYManager,
   PTYManager,
@@ -126,12 +128,41 @@ export async function stopSession(
     }
     ctx.outputUnsubscribers.delete(sessionId);
 
+    // Remove injected hooks from .claude/settings.json so they don't
+    // leak to other Claude instances using the same workdir.
+    const workdir = sessionWorkdirs.get(sessionId);
+    if (workdir) {
+      cleanupClaudeHooks(workdir, log);
+    }
+
     sessionMetadata.delete(sessionId);
     sessionWorkdirs.delete(sessionId);
     ctx.sessionOutputBuffers.delete(sessionId);
     ctx.taskResponseMarkers.delete(sessionId);
     log(`Stopped session ${sessionId}`);
   }
+}
+
+/**
+ * Remove injected HTTP hooks from a workspace's .claude/settings.json.
+ * Best-effort — errors are logged but not thrown.
+ */
+function cleanupClaudeHooks(
+  workdir: string,
+  log: (msg: string) => void,
+): void {
+  const settingsPath = join(workdir, ".claude", "settings.json");
+  readFile(settingsPath, "utf-8")
+    .then((raw) => {
+      const settings = JSON.parse(raw) as Record<string, unknown>;
+      if (!settings.hooks) return; // nothing to clean
+      delete settings.hooks;
+      return writeFile(settingsPath, JSON.stringify(settings, null, 2), "utf-8");
+    })
+    .then(() => log(`Cleaned up hooks from ${settingsPath}`))
+    .catch(() => {
+      // File may not exist or may already be clean — ignore
+    });
 }
 
 /**

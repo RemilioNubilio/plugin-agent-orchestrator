@@ -32,6 +32,20 @@ import {
 
 // ─── Constants ───
 
+/** Timeout for agent decision pipeline callback (ms). */
+const DECISION_CB_TIMEOUT_MS = 30_000;
+
+/** Wrap a promise with a timeout. Rejects with an error if not resolved in time. */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    promise.then(
+      (val) => { clearTimeout(timer); resolve(val); },
+      (err) => { clearTimeout(timer); reject(err); },
+    );
+  });
+}
+
 /** Maximum consecutive auto-responses before escalating to a human. */
 const MAX_AUTO_RESPONSES = 10;
 
@@ -483,66 +497,25 @@ export async function handleTurnComplete(
       turnOutput = cleanForChat(raw);
     }
 
-    // Triage: route to small LLM (routine) or Milaidy pipeline (creative)
-    const agentDecisionCb = ctx.getAgentDecisionCallback();
+    // Turn completions always use the fast small-LLM path.
+    // The assessment is a structured complete/continue/escalate decision
+    // that doesn't benefit from the full Milaidy pipeline, and routing
+    // through it risks hangs that block the inFlightDecisions lock.
     let decision: CoordinationLLMResponse | null = null;
-    let decisionFromPipeline = false;
+    const decisionFromPipeline = false;
 
-    const triageCtx: TriageContext = {
-      eventType: "turn_complete",
-      promptText: "",
-      recentOutput: turnOutput,
-      originalTask: taskCtx.originalTask,
-    };
-    const tier = agentDecisionCb
-      ? await classifyEventTier(ctx.runtime, triageCtx, ctx.log)
-      : "routine"; // No pipeline → always small LLM
-
-    if (tier === "routine") {
-      const prompt = buildTurnCompletePrompt(
-        toContextSummary(taskCtx),
-        turnOutput,
-        toDecisionHistory(taskCtx),
-      );
-      try {
-        const result = await ctx.runtime.useModel(ModelType.TEXT_SMALL, {
-          prompt,
-        });
-        decision = parseCoordinationResponse(result);
-      } catch (err) {
-        ctx.log(`Turn-complete LLM call failed: ${err}`);
-      }
-    } else {
-      // Creative — try Milaidy pipeline, fall back to small LLM
-      if (agentDecisionCb) {
-        const eventMessage = buildTurnCompleteEventMessage(
-          toContextSummary(taskCtx),
-          turnOutput,
-          toDecisionHistory(taskCtx),
-        );
-        try {
-          decision = await agentDecisionCb(eventMessage, sessionId, taskCtx);
-          if (decision) decisionFromPipeline = true;
-        } catch (err) {
-          ctx.log(`Agent decision callback failed for turn-complete: ${err} — falling back to small LLM`);
-        }
-      }
-
-      if (!decision) {
-        const prompt = buildTurnCompletePrompt(
-          toContextSummary(taskCtx),
-          turnOutput,
-          toDecisionHistory(taskCtx),
-        );
-        try {
-          const result = await ctx.runtime.useModel(ModelType.TEXT_SMALL, {
-            prompt,
-          });
-          decision = parseCoordinationResponse(result);
-        } catch (err) {
-          ctx.log(`Turn-complete LLM fallback call failed: ${err}`);
-        }
-      }
+    const prompt = buildTurnCompletePrompt(
+      toContextSummary(taskCtx),
+      turnOutput,
+      toDecisionHistory(taskCtx),
+    );
+    try {
+      const result = await ctx.runtime.useModel(ModelType.TEXT_SMALL, {
+        prompt,
+      });
+      decision = parseCoordinationResponse(result);
+    } catch (err) {
+      ctx.log(`Turn-complete LLM call failed: ${err}`);
     }
 
     if (!decision) {
@@ -676,7 +649,11 @@ export async function handleAutonomousDecision(
           toDecisionHistory(taskCtx),
         );
         try {
-          decision = await agentDecisionCb(eventMessage, sessionId, taskCtx);
+          decision = await withTimeout(
+            agentDecisionCb(eventMessage, sessionId, taskCtx),
+            DECISION_CB_TIMEOUT_MS,
+            "agentDecisionCb",
+          );
           if (decision) decisionFromPipeline = true;
         } catch (err) {
           ctx.log(`Agent decision callback failed: ${err} — falling back to small LLM`);
@@ -847,7 +824,11 @@ export async function handleConfirmDecision(
           toDecisionHistory(taskCtx),
         );
         try {
-          decision = await agentDecisionCb(eventMessage, sessionId, taskCtx);
+          decision = await withTimeout(
+            agentDecisionCb(eventMessage, sessionId, taskCtx),
+            DECISION_CB_TIMEOUT_MS,
+            "agentDecisionCb",
+          );
           if (decision) decisionFromPipeline = true;
         } catch (err) {
           ctx.log(`Agent decision callback failed (confirm): ${err} — falling back to small LLM`);

@@ -14,6 +14,7 @@ import type { SwarmCoordinator } from "../services/swarm-coordinator.js";
 import type { CodingWorkspaceService } from "../services/workspace-service.js";
 import { handleAgentRoutes } from "./agent-routes.js";
 import { handleCoordinatorRoutes } from "./coordinator-routes.js";
+import { handleHookRoutes } from "./hook-routes.js";
 import { handleIssueRoutes } from "./issue-routes.js";
 import { handleWorkspaceRoutes } from "./workspace-routes.js";
 
@@ -91,6 +92,11 @@ export async function handleCodingAgentRoutes(
   pathname: string,
   ctx: RouteContext,
 ): Promise<boolean> {
+  // Delegate to hook routes first — hooks need fast responses
+  if (await handleHookRoutes(req, res, pathname, ctx)) {
+    return true;
+  }
+
   // Delegate to coordinator routes (before agent routes — more specific prefix)
   if (await handleCoordinatorRoutes(req, res, pathname, ctx)) {
     return true;
