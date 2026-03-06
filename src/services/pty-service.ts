@@ -618,9 +618,18 @@ export class PTYService {
     event: string,
     data: Record<string, unknown>,
   ): void {
-    this.log(
-      `Hook event for ${sessionId}: ${event} ${JSON.stringify(data)}`,
-    );
+    // Log high-frequency events (tool_running, permission) at debug level;
+    // completion events at info level.
+    const summary = event === "tool_running"
+      ? `tool=${(data as { toolName?: string }).toolName ?? "?"}`
+      : event === "permission_approved"
+        ? `tool=${(data as { tool?: string }).tool ?? "?"}`
+        : JSON.stringify(data);
+    if (event === "tool_running" || event === "permission_approved") {
+      logger.debug(`[PTYService] Hook event for ${sessionId}: ${event} ${summary}`);
+    } else {
+      this.log(`Hook event for ${sessionId}: ${event} ${summary}`);
+    }
 
     switch (event) {
       case "tool_running":
@@ -841,6 +850,6 @@ export class PTYService {
   }
 
   private log(message: string): void {
-    logger.info(`[PTYService] ${message}`);
+    logger.debug(`[PTYService] ${message}`);
   }
 }

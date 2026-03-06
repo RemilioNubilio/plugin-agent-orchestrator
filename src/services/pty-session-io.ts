@@ -132,7 +132,11 @@ export async function stopSession(
     // leak to other Claude instances using the same workdir.
     const workdir = sessionWorkdirs.get(sessionId);
     if (workdir) {
-      cleanupClaudeHooks(workdir, log);
+      try {
+        await cleanupClaudeHooks(workdir, log);
+      } catch {
+        // Best-effort — don't block shutdown
+      }
     }
 
     sessionMetadata.delete(sessionId);
@@ -147,22 +151,21 @@ export async function stopSession(
  * Remove injected HTTP hooks from a workspace's .claude/settings.json.
  * Best-effort — errors are logged but not thrown.
  */
-function cleanupClaudeHooks(
+async function cleanupClaudeHooks(
   workdir: string,
   log: (msg: string) => void,
-): void {
+): Promise<void> {
   const settingsPath = join(workdir, ".claude", "settings.json");
-  readFile(settingsPath, "utf-8")
-    .then((raw) => {
-      const settings = JSON.parse(raw) as Record<string, unknown>;
-      if (!settings.hooks) return; // nothing to clean
-      delete settings.hooks;
-      return writeFile(settingsPath, JSON.stringify(settings, null, 2), "utf-8");
-    })
-    .then(() => log(`Cleaned up hooks from ${settingsPath}`))
-    .catch(() => {
-      // File may not exist or may already be clean — ignore
-    });
+  try {
+    const raw = await readFile(settingsPath, "utf-8");
+    const settings = JSON.parse(raw) as Record<string, unknown>;
+    if (!settings.hooks) return; // nothing to clean
+    delete settings.hooks;
+    await writeFile(settingsPath, JSON.stringify(settings, null, 2), "utf-8");
+    log(`Cleaned up hooks from ${settingsPath}`);
+  } catch {
+    // File may not exist or may already be clean — ignore
+  }
 }
 
 /**
