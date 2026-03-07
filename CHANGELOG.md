@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.10
+
+### Features
+
+- **Shared swarm context**: Multi-agent swarms now generate a shared context brief (via LLM) before agents start, ensuring consistent style, conventions, and constraints across parallel agents.
+- **Inter-agent decision visibility**: Agents receive decisions made by sibling agents via `sharedDecisions` array, tracked per-agent with `lastSeenDecisionIndex` to avoid re-injecting stale context.
+- **Swarm-complete callback**: Callers can register a `swarmCompleteCallback` to be notified when all agents in a swarm finish, enabling post-swarm actions.
+
+### Fixed
+
+- **Hook route improvements**: Expanded HTTP hook endpoint to handle `permission_approved`, `tool_running`, and `task_complete` events with proper session lookup and state forwarding via `notifyHookEvent`.
+- **Noisy session IO filtering**: Improved event message handling to suppress repetitive status updates from flooding chat history.
+- **Test mocks updated**: Swarm decision loop test mocks now include `getSwarmCompleteCallback`, `sharedDecisions`, `getSwarmContext`, and `lastSeenDecisionIndex`.
+
+### Deps
+
+- Bump `pty-manager` peer dependency from `1.9.5` → `1.9.6` (hook event notification support, blocking prompt dedup fix).
+
 ## 0.3.8
 
 ### Fixes

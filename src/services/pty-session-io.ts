@@ -128,12 +128,12 @@ export async function stopSession(
     }
     ctx.outputUnsubscribers.delete(sessionId);
 
-    // Remove injected hooks from .claude/settings.json so they don't
-    // leak to other Claude instances using the same workdir.
+    // Remove injected hooks from agent settings so they don't
+    // leak to other CLI instances using the same workdir.
     const workdir = sessionWorkdirs.get(sessionId);
     if (workdir) {
       try {
-        await cleanupClaudeHooks(workdir, log);
+        await cleanupAgentHooks(workdir, log);
       } catch {
         // Best-effort — don't block shutdown
       }
@@ -148,23 +148,33 @@ export async function stopSession(
 }
 
 /**
- * Remove injected HTTP hooks from a workspace's .claude/settings.json.
+ * Remove injected hooks from a workspace's agent settings files.
+ * Cleans both .claude/settings.json and .gemini/settings.json.
  * Best-effort — errors are logged but not thrown.
  */
-async function cleanupClaudeHooks(
+async function cleanupAgentHooks(
   workdir: string,
   log: (msg: string) => void,
 ): Promise<void> {
-  const settingsPath = join(workdir, ".claude", "settings.json");
-  try {
-    const raw = await readFile(settingsPath, "utf-8");
-    const settings = JSON.parse(raw) as Record<string, unknown>;
-    if (!settings.hooks) return; // nothing to clean
-    delete settings.hooks;
-    await writeFile(settingsPath, JSON.stringify(settings, null, 2), "utf-8");
-    log(`Cleaned up hooks from ${settingsPath}`);
-  } catch {
-    // File may not exist or may already be clean — ignore
+  const settingsPaths = [
+    join(workdir, ".claude", "settings.json"),
+    join(workdir, ".gemini", "settings.json"),
+  ];
+  for (const settingsPath of settingsPaths) {
+    try {
+      const raw = await readFile(settingsPath, "utf-8");
+      const settings = JSON.parse(raw) as Record<string, unknown>;
+      if (!settings.hooks) continue;
+      delete settings.hooks;
+      await writeFile(
+        settingsPath,
+        JSON.stringify(settings, null, 2),
+        "utf-8",
+      );
+      log(`Cleaned up hooks from ${settingsPath}`);
+    } catch {
+      // File may not exist or may already be clean — ignore
+    }
   }
 }
 

@@ -27,6 +27,65 @@ export interface DecisionHistoryEntry {
   reasoning: string;
 }
 
+/** Summary of a sibling task in the same swarm — for cross-task context. */
+export interface SiblingTaskSummary {
+  label: string;
+  agentType: string;
+  originalTask: string;
+  status: string;
+}
+
+/** A significant creative or architectural decision made by an agent in the swarm. */
+export interface SharedDecision {
+  /** Which agent made this decision. */
+  agentLabel: string;
+  /** Brief description of the decision. */
+  summary: string;
+  /** When it was recorded. */
+  timestamp: number;
+}
+
+/**
+ * Build a context section describing sibling tasks in the same swarm.
+ * Helps the coordinator make decisions with awareness of the broader project.
+ */
+function buildSiblingSection(siblings?: SiblingTaskSummary[]): string {
+  if (!siblings || siblings.length === 0) return "";
+  return (
+    `\nOther agents in this swarm:\n` +
+    siblings
+      .map(
+        (s) =>
+          `  - [${s.status}] "${s.label}" (${s.agentType}): ${s.originalTask}`,
+      )
+      .join("\n") +
+    `\nUse this context when the agent asks creative or architectural questions — ` +
+    `your answer should be consistent with what sibling agents are working on.\n`
+  );
+}
+
+/**
+ * Build a context section describing significant decisions made by other agents.
+ * Helps maintain consistency across the swarm regardless of task type.
+ */
+function buildSharedDecisionsSection(decisions?: SharedDecision[]): string {
+  if (!decisions || decisions.length === 0) return "";
+  return (
+    `\nKey decisions made by other agents in this swarm:\n` +
+    decisions
+      .slice(-10)
+      .map((d) => `  - [${d.agentLabel}] ${d.summary}`)
+      .join("\n") +
+    `\nAlign with these decisions for consistency — don't contradict them unless the task requires it.\n`
+  );
+}
+
+/** Build a project context section from the swarm planning phase. */
+function buildSwarmContextSection(swarmContext?: string): string {
+  if (!swarmContext) return "";
+  return `\nProject context (from planning phase):\n${swarmContext}\n`;
+}
+
 /** Parsed LLM response for a coordination decision. */
 export interface CoordinationLLMResponse {
   action: "respond" | "escalate" | "ignore" | "complete";
@@ -38,6 +97,8 @@ export interface CoordinationLLMResponse {
   keys?: string[];
   /** LLM's reasoning for the decision. */
   reasoning: string;
+  /** Brief summary of a significant creative/architectural decision the agent made, if any. */
+  keyDecision?: string;
 }
 
 /**
@@ -48,6 +109,9 @@ export function buildCoordinationPrompt(
   promptText: string,
   recentOutput: string,
   decisionHistory: DecisionHistoryEntry[],
+  siblingTasks?: SiblingTaskSummary[],
+  sharedDecisions?: SharedDecision[],
+  swarmContext?: string,
 ): string {
   const historySection =
     decisionHistory.length > 0
@@ -67,6 +131,9 @@ export function buildCoordinationPrompt(
     `Original task: "${taskCtx.originalTask}"\n` +
     `Working directory: ${taskCtx.workdir}\n` +
     `Repository: ${taskCtx.repo ?? "none (scratch directory)"}\n` +
+    buildSwarmContextSection(swarmContext) +
+    buildSiblingSection(siblingTasks) +
+    buildSharedDecisionsSection(sharedDecisions) +
     historySection +
     `\nRecent terminal output (last 50 lines):\n` +
     `---\n${recentOutput.slice(-3000)}\n---\n\n` +
@@ -102,9 +169,13 @@ export function buildCoordinationPrompt(
     `- If the agent is asking for information that was NOT provided in the original task ` +
     `(e.g. which repository to use, project requirements, credentials), ESCALATE. ` +
     `The coordinator does not have this information — the human must provide it.\n` +
-    `- When in doubt, escalate — it's better to ask the human than to make a wrong choice.\n\n` +
+    `- When in doubt, escalate — it's better to ask the human than to make a wrong choice.\n` +
+    `- If the agent's output reveals a significant decision that sibling agents should know about ` +
+    `(e.g. chose a library, designed an API shape, picked a UI pattern, established a writing style, ` +
+    `narrowed a research scope, made any choice that affects the shared project), ` +
+    `include "keyDecision" with a brief one-line summary. Skip this for routine tool approvals.\n\n` +
     `Respond with ONLY a JSON object:\n` +
-    `{"action": "respond|complete|escalate|ignore", "response": "...", "useKeys": false, "keys": [], "reasoning": "..."}`
+    `{"action": "respond|complete|escalate|ignore", "response": "...", "useKeys": false, "keys": [], "reasoning": "...", "keyDecision": "..."}`
   );
 }
 
@@ -119,6 +190,9 @@ export function buildIdleCheckPrompt(
   idleCheckNumber: number,
   maxIdleChecks: number,
   decisionHistory: DecisionHistoryEntry[],
+  siblingTasks?: SiblingTaskSummary[],
+  sharedDecisions?: SharedDecision[],
+  swarmContext?: string,
 ): string {
   const historySection =
     decisionHistory.length > 0
@@ -139,6 +213,9 @@ export function buildIdleCheckPrompt(
     `Working directory: ${taskCtx.workdir}\n` +
     `Repository: ${taskCtx.repo ?? "none (scratch directory)"}\n` +
     `Idle check: ${idleCheckNumber} of ${maxIdleChecks} (session will be force-escalated after ${maxIdleChecks})\n` +
+    buildSwarmContextSection(swarmContext) +
+    buildSiblingSection(siblingTasks) +
+    buildSharedDecisionsSection(sharedDecisions) +
     historySection +
     `\nRecent terminal output (last 50 lines):\n` +
     `---\n${recentOutput.slice(-3000)}\n---\n\n` +
@@ -164,9 +241,11 @@ export function buildIdleCheckPrompt(
     `- If the output ends with a command prompt ($ or >) and ALL task objectives are confirmed met, use "complete".\n` +
     `- If the output shows an error or the agent seems stuck in a loop, escalate.\n` +
     `- If the agent is clearly mid-operation (build output, test runner, git operations), use "ignore".\n` +
-    `- On check ${idleCheckNumber} of ${maxIdleChecks} — if unsure, lean toward "respond" with a nudge rather than "complete".\n\n` +
+    `- On check ${idleCheckNumber} of ${maxIdleChecks} — if unsure, lean toward "respond" with a nudge rather than "complete".\n` +
+    `- If the agent's output reveals a significant creative or architectural decision, ` +
+    `include "keyDecision" with a brief one-line summary.\n\n` +
     `Respond with ONLY a JSON object:\n` +
-    `{"action": "respond|complete|escalate|ignore", "response": "...", "useKeys": false, "keys": [], "reasoning": "..."}`
+    `{"action": "respond|complete|escalate|ignore", "response": "...", "useKeys": false, "keys": [], "reasoning": "...", "keyDecision": "..."}`
   );
 }
 
@@ -182,6 +261,9 @@ export function buildTurnCompletePrompt(
   taskCtx: TaskContextSummary,
   turnOutput: string,
   decisionHistory: DecisionHistoryEntry[],
+  siblingTasks?: SiblingTaskSummary[],
+  sharedDecisions?: SharedDecision[],
+  swarmContext?: string,
 ): string {
   const historySection =
     decisionHistory.length > 0
@@ -201,6 +283,9 @@ export function buildTurnCompletePrompt(
     `Original task: "${taskCtx.originalTask}"\n` +
     `Working directory: ${taskCtx.workdir}\n` +
     `Repository: ${taskCtx.repo ?? "none (scratch directory)"}\n` +
+    buildSwarmContextSection(swarmContext) +
+    buildSiblingSection(siblingTasks) +
+    buildSharedDecisionsSection(sharedDecisions) +
     historySection +
     `\nOutput from this turn:\n` +
     `---\n${turnOutput.slice(-3000)}\n---\n\n` +
@@ -242,9 +327,13 @@ export function buildTurnCompletePrompt(
     `- Keep follow-up instructions concise and specific.\n` +
     `- When asking agents to verify work, prefer CLI tools (gh, curl, cat, git diff, etc.) over ` +
     `browser automation. Browser tools may not be available in headless environments and can cause delays.\n` +
-    `- Default to "respond" — only use "complete" when you're certain ALL work is done.\n\n` +
+    `- Default to "respond" — only use "complete" when you're certain ALL work is done.\n` +
+    `- If the agent's output reveals a significant decision that sibling agents should know about ` +
+    `(e.g. chose a library, designed an API shape, picked a UI pattern, established a writing style, ` +
+    `narrowed a research scope, made any choice that affects the shared project), ` +
+    `include "keyDecision" with a brief one-line summary. Skip this for routine tool approvals.\n\n` +
     `Respond with ONLY a JSON object:\n` +
-    `{"action": "respond|complete|escalate|ignore", "response": "...", "useKeys": false, "keys": [], "reasoning": "..."}`
+    `{"action": "respond|complete|escalate|ignore", "response": "...", "useKeys": false, "keys": [], "reasoning": "...", "keyDecision": "..."}`
   );
 }
 
@@ -262,6 +351,9 @@ export function buildBlockedEventMessage(
   promptText: string,
   recentOutput: string,
   decisionHistory: DecisionHistoryEntry[],
+  siblingTasks?: SiblingTaskSummary[],
+  sharedDecisions?: SharedDecision[],
+  swarmContext?: string,
 ): string {
   const historySection =
     decisionHistory.length > 0
@@ -279,6 +371,9 @@ export function buildBlockedEventMessage(
     `Task: "${taskCtx.originalTask}"\n` +
     `Workdir: ${taskCtx.workdir}\n` +
     `Repo: ${taskCtx.repo ?? "none (scratch directory)"}\n` +
+    buildSwarmContextSection(swarmContext) +
+    buildSiblingSection(siblingTasks) +
+    buildSharedDecisionsSection(sharedDecisions) +
     historySection +
     `\nRecent terminal output:\n---\n${recentOutput.slice(-3000)}\n---\n\n` +
     `Blocking prompt: "${promptText}"\n\n` +
@@ -293,9 +388,10 @@ export function buildBlockedEventMessage(
     `- Decline access to paths outside ${taskCtx.workdir}.\n` +
     `- If a PR was just created, respond to review & verify test plan items before completing.\n` +
     `- When in doubt, escalate.\n\n` +
+    `If the agent's output reveals a significant decision that sibling agents should know about, include "keyDecision" with a brief summary.\n\n` +
     `Include a JSON action block at the end of your response:\n` +
     "```json\n" +
-    `{"action": "respond|complete|escalate|ignore", "response": "...", "useKeys": false, "keys": [], "reasoning": "..."}\n` +
+    `{"action": "respond|complete|escalate|ignore", "response": "...", "useKeys": false, "keys": [], "reasoning": "...", "keyDecision": "..."}\n` +
     "```"
   );
 }
@@ -308,6 +404,9 @@ export function buildTurnCompleteEventMessage(
   taskCtx: TaskContextSummary,
   turnOutput: string,
   decisionHistory: DecisionHistoryEntry[],
+  siblingTasks?: SiblingTaskSummary[],
+  sharedDecisions?: SharedDecision[],
+  swarmContext?: string,
 ): string {
   const historySection =
     decisionHistory.length > 0
@@ -325,6 +424,9 @@ export function buildTurnCompleteEventMessage(
     `Task: "${taskCtx.originalTask}"\n` +
     `Workdir: ${taskCtx.workdir}\n` +
     `Repo: ${taskCtx.repo ?? "none (scratch directory)"}\n` +
+    buildSwarmContextSection(swarmContext) +
+    buildSiblingSection(siblingTasks) +
+    buildSharedDecisionsSection(sharedDecisions) +
     historySection +
     `\nTurn output:\n---\n${turnOutput.slice(-3000)}\n---\n\n` +
     `Decide if the overall task is done or if the agent needs more work.\n\n` +
@@ -338,10 +440,11 @@ export function buildTurnCompleteEventMessage(
     `- If code was written but not committed/pushed/PR'd, respond with next step.\n` +
     `- If a PR was just created, respond to review & verify test plan items.\n` +
     `- When asking agents to verify work, prefer CLI tools (gh, curl, cat, etc.) over browser automation.\n` +
-    `- Default to "respond" — only "complete" when certain ALL work is done.\n\n` +
+    `- Default to "respond" — only "complete" when certain ALL work is done.\n` +
+    `- If the agent's output reveals a significant creative or architectural decision, include "keyDecision" with a brief summary.\n\n` +
     `Include a JSON action block at the end of your response:\n` +
     "```json\n" +
-    `{"action": "respond|complete|escalate|ignore", "response": "...", "useKeys": false, "keys": [], "reasoning": "..."}\n` +
+    `{"action": "respond|complete|escalate|ignore", "response": "...", "useKeys": false, "keys": [], "reasoning": "...", "keyDecision": "..."}\n` +
     "```"
   );
 }
@@ -377,6 +480,10 @@ export function parseCoordinationResponse(
         // respond action but no response or keys — invalid
         return null;
       }
+    }
+
+    if (typeof parsed.keyDecision === "string" && parsed.keyDecision.trim()) {
+      result.keyDecision = parsed.keyDecision.trim();
     }
 
     return result;
