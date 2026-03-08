@@ -220,14 +220,6 @@ export function isOutOfScopeAccess(
   });
 }
 
-/** Track whether we've already fired the swarm_complete event to prevent double-firing. */
-let swarmCompleteNotified = false;
-
-/** Reset the swarm-complete guard — called when a new swarm starts. */
-export function resetSwarmCompleteGuard(): void {
-  swarmCompleteNotified = false;
-}
-
 /**
  * Check if all registered tasks have reached a terminal state.
  * If so, send a swarm-wide summary message to the chat.
@@ -245,12 +237,12 @@ export function checkAllTasksComplete(ctx: SwarmCoordinatorContext): void {
     return;
   }
 
-  // Guard: only fire once per swarm
-  if (swarmCompleteNotified) {
+  // Guard: only fire once per swarm (reset by coordinator on stop/new swarm)
+  if (ctx.swarmCompleteNotified) {
     ctx.log("checkAllTasksComplete: already notified — skipping");
     return;
   }
-  swarmCompleteNotified = true;
+  ctx.swarmCompleteNotified = true;
 
   const completed = tasks.filter((t) => t.status === "completed");
   const stopped = tasks.filter((t) => t.status === "stopped");

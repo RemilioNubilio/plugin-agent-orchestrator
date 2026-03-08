@@ -31,7 +31,6 @@ import {
   executeDecision as execDecision,
   handleBlocked,
   handleTurnComplete,
-  resetSwarmCompleteGuard,
 } from "./swarm-decision-loop.js";
 import { scanIdleSessions } from "./swarm-idle-watchdog.js";
 
@@ -154,6 +153,15 @@ export interface SwarmCoordinatorContext {
   /** Get the shared context brief from the planning phase. */
   getSwarmContext(): string;
 
+  /**
+   * Guard flag: whether the swarm_complete event has already been fired
+   * for the current swarm lifecycle. Set to `true` by `checkAllTasksComplete()`
+   * when all tasks reach terminal state. Reset to `false` by:
+   * - `stop()` — full coordinator teardown
+   * - `registerTask()` — when detecting a new swarm (all previous tasks terminal)
+   */
+  swarmCompleteNotified: boolean;
+
   broadcast(event: SwarmEvent): void;
   sendChatMessage(text: string, source?: string): void;
   log(message: string): void;
@@ -235,6 +243,9 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 
   /** Shared context brief generated during swarm planning phase. */
   private _swarmContext = "";
+
+  /** @see SwarmCoordinatorContext.swarmCompleteNotified */
+  swarmCompleteNotified = false;
 
   /** Buffered events during pause — replayed on resume. */
   private pauseBuffer: Array<{ sessionId: string; event: string; data: unknown }> = [];
@@ -353,7 +364,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
     this.agentDecisionCb = null;
     this.sharedDecisions.length = 0;
     this._swarmContext = "";
-    resetSwarmCompleteGuard();
+    this.swarmCompleteNotified = false;
     // Clear pause state
     this._paused = false;
     if (this.pauseTimeout) {
@@ -428,7 +439,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
       (t) => t.status === "completed" || t.status === "stopped" || t.status === "error",
     );
     if (allPreviousTerminal) {
-      resetSwarmCompleteGuard();
+      this.swarmCompleteNotified = false;
       // Clear stale tasks and shared context from previous swarm
       if (this.tasks.size > 0) {
         this.tasks.clear();
