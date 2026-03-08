@@ -172,8 +172,13 @@ async function cleanupAgentHooks(
         "utf-8",
       );
       log(`Cleaned up hooks from ${settingsPath}`);
-    } catch {
-      // File may not exist or may already be clean — ignore
+    } catch (err: unknown) {
+      // ENOENT (file doesn't exist) is expected — silently ignore.
+      // Other errors (parse failure, permission denied) are logged.
+      const code = (err as { code?: string }).code;
+      if (code !== "ENOENT") {
+        log(`Failed to clean up hooks from ${settingsPath}: ${err}`);
+      }
     }
   }
 }

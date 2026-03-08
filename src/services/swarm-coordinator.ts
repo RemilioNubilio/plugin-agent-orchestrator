@@ -351,6 +351,8 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
     this.lastSeenOutput.clear();
     this.lastToolNotification.clear();
     this.agentDecisionCb = null;
+    this.sharedDecisions.length = 0;
+    this._swarmContext = "";
     resetSwarmCompleteGuard();
     // Clear pause state
     this._paused = false;
@@ -419,9 +421,21 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
       repo?: string;
     },
   ): void {
-    // Reset the swarm-complete guard when the first task of a new swarm is registered
-    if (this.tasks.size === 0) {
+    // Reset swarm state when the first task of a new swarm is registered.
+    // Check for terminal-only tasks (all previous tasks in completed/stopped/error)
+    // rather than empty map, so reuse without stop() works.
+    const allPreviousTerminal = this.tasks.size === 0 || Array.from(this.tasks.values()).every(
+      (t) => t.status === "completed" || t.status === "stopped" || t.status === "error",
+    );
+    if (allPreviousTerminal) {
       resetSwarmCompleteGuard();
+      // Clear stale tasks and shared context from previous swarm
+      if (this.tasks.size > 0) {
+        this.tasks.clear();
+        this.sharedDecisions.length = 0;
+        this._swarmContext = "";
+        this.log("Cleared stale swarm state for new swarm");
+      }
     }
 
     this.tasks.set(sessionId, {
@@ -675,9 +689,9 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
       }
 
       case "stopped":
-        // Don't downgrade "completed" to "stopped" — the async stopSession
-        // fires after executeDecision already marked the task as completed.
-        if (taskCtx.status !== "completed") {
+        // Don't downgrade "completed" or "error" to "stopped" — the async
+        // stopSession fires after executeDecision already marked the task.
+        if (taskCtx.status !== "completed" && taskCtx.status !== "error") {
           taskCtx.status = "stopped";
         }
         this.inFlightDecisions.delete(sessionId);

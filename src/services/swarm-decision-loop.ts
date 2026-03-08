@@ -121,13 +121,25 @@ function enrichWithSharedDecisions(
   }
 
   const unseen = allDecisions.slice(lastSeen);
-  taskCtx.lastSeenDecisionIndex = allDecisions.length;
 
   const contextBlock = unseen
     .map((d) => `[${d.agentLabel}] ${d.summary}`)
     .join("; ");
 
+  // NOTE: index is NOT updated here — the caller must call
+  // commitSharedDecisionIndex() after the send succeeds.
   return `${response}\n\n(Context from other agents: ${contextBlock})`;
+}
+
+/** Advance the shared-decisions high-water mark for a session after a successful send. */
+function commitSharedDecisionIndex(
+  ctx: SwarmCoordinatorContext,
+  sessionId: string,
+): void {
+  const taskCtx = ctx.tasks.get(sessionId);
+  if (taskCtx) {
+    taskCtx.lastSeenDecisionIndex = ctx.sharedDecisions.length;
+  }
 }
 
 /** Record a key decision from an LLM response into the shared decisions list. */
@@ -272,6 +284,13 @@ export function checkAllTasksComplete(ctx: SwarmCoordinatorContext): void {
   // Fire swarm complete callback for synthesis — if wired, the host
   // (milaidy) will use this to generate a synthesized overview.
   const swarmCompleteCb = ctx.getSwarmCompleteCallback();
+  const sendFallbackSummary = () => {
+    ctx.sendChatMessage(
+      `All ${tasks.length} coding agents finished (${parts.join(", ")}). Review their work when you're ready.`,
+      "coding-agent",
+    );
+  };
+
   if (swarmCompleteCb) {
     ctx.log("checkAllTasksComplete: swarm complete callback is wired — calling synthesis");
     const taskSummaries = tasks.map((t) => ({
@@ -289,15 +308,12 @@ export function checkAllTasksComplete(ctx: SwarmCoordinatorContext): void {
       stopped: stopped.length,
       errored: errored.length,
     }).catch((err) => {
-      ctx.log(`Swarm complete callback failed: ${err}`);
+      ctx.log(`Swarm complete callback failed: ${err} — falling back to generic summary`);
+      sendFallbackSummary();
     });
   } else {
     ctx.log("checkAllTasksComplete: no synthesis callback — sending generic message");
-    // No synthesis callback — fall back to generic message
-    ctx.sendChatMessage(
-      `All ${tasks.length} coding agents finished (${parts.join(", ")}). Review their work when you're ready.`,
-      "coding-agent",
-    );
+    sendFallbackSummary();
   }
 }
 
@@ -365,6 +381,9 @@ export async function executeDecision(
         // Proactive injection: append unseen shared decisions to text responses
         const enriched = enrichWithSharedDecisions(ctx, sessionId, decision.response);
         await ctx.ptyService.sendToSession(sessionId, enriched);
+        // Only advance the high-water mark after send succeeds — if the send
+        // fails, the decisions will be retried on the next enrichment.
+        commitSharedDecisionIndex(ctx, sessionId);
       }
       break;
 

@@ -347,14 +347,16 @@ export class PTYService {
         permissions.allowedDirectories = [workdir];
         settings.permissions = permissions;
 
-        // Inject HTTP hooks for deterministic state detection
+        // Inject HTTP hooks for deterministic state detection.
+        // Merge with existing hooks to preserve workspace-owned hook entries.
         const adapter = this.getAdapter("claude");
         const hookProtocol = adapter.getHookTelemetryProtocol({
           httpUrl: hookUrl,
           sessionId,
         });
         if (hookProtocol) {
-          settings.hooks = hookProtocol.settingsHooks;
+          const existingHooks = (settings.hooks ?? {}) as Record<string, unknown>;
+          settings.hooks = { ...existingHooks, ...hookProtocol.settingsHooks };
           this.log(`Injecting HTTP hooks for session ${sessionId}`);
         }
 
@@ -380,14 +382,16 @@ export class PTYService {
           // File may not exist yet
         }
 
-        // Inject command hooks that curl the orchestrator endpoint
+        // Inject command hooks that curl the orchestrator endpoint.
+        // Merge with existing hooks to preserve workspace-owned hook entries.
         const adapter = this.getAdapter("gemini");
         const hookProtocol = adapter.getHookTelemetryProtocol({
           httpUrl: hookUrl,
           sessionId,
         });
         if (hookProtocol) {
-          settings.hooks = hookProtocol.settingsHooks;
+          const existingHooks = (settings.hooks ?? {}) as Record<string, unknown>;
+          settings.hooks = { ...existingHooks, ...hookProtocol.settingsHooks };
           this.log(`Injecting Gemini CLI hooks for session ${sessionId}`);
         }
 
@@ -686,6 +690,11 @@ export class PTYService {
         break;
       case "notification":
         this.emitEvent(sessionId, "message", data);
+        break;
+      case "session_end":
+        // CLI session is ending — treat as a stopped event so the coordinator
+        // and frontend see the session transition to terminal state.
+        this.emitEvent(sessionId, "stopped", { ...data, reason: "session_end" });
         break;
       default:
         break;

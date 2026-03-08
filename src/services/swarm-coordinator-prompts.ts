@@ -483,7 +483,7 @@ export function parseCoordinationResponse(
     }
 
     if (typeof parsed.keyDecision === "string" && parsed.keyDecision.trim()) {
-      result.keyDecision = parsed.keyDecision.trim();
+      result.keyDecision = parsed.keyDecision.trim().slice(0, 240);
     }
 
     return result;
