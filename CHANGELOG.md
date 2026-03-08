@@ -14,8 +14,8 @@
 - **Hook injection merging**: Hook config injection into `.claude/settings.json` and `.gemini/settings.json` now merges with existing workspace hooks instead of overwriting them.
 - **Swarm lifecycle scoping**: Swarm context, shared decisions, and completion guard reset between swarms. `registerTask()` detects new swarms by checking if all previous tasks are terminal.
 - **Swarm-complete guard ownership**: Moved `swarmCompleteNotified` from module-level state in `swarm-decision-loop.ts` to an instance field on `SwarmCoordinator`, eliminating hidden cross-module lifecycle coupling.
-- **Shared decision index safety**: `lastSeenDecisionIndex` only advances after successful `sendToSession`, preventing skipped decisions on send failure.
-- **Swarm-complete callback resilience**: Callback rejection now falls back to a generic summary instead of silently dropping the completion event.
+- **Shared decision index safety**: `lastSeenDecisionIndex` only advances after successful `sendToSession` using a snapshotted index, preventing both skipped decisions on send failure and over-advancing when new decisions arrive during the async send.
+- **Swarm-complete callback resilience**: Callback wrapped in `Promise.resolve().then()` with a 30s timeout to catch sync throws and hangs; rejection falls back to a generic summary instead of silently dropping the completion event.
 - **Stopped event preserves error status**: The `"stopped"` event handler no longer overwrites `"error"` status on tasks that failed.
 - **Session end event forwarding**: Added `session_end` hook event mapping to emit a `"stopped"` event.
 - **Noisy session IO filtering**: Improved event message handling to suppress repetitive status updates from flooding chat history.
