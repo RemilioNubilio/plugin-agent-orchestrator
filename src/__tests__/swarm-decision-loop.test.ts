@@ -34,6 +34,9 @@ function createMockCtx(overrides: Record<string, unknown> = {}) {
     pendingTurnComplete: new Map(),
     getSupervisionLevel: () => "autonomous",
     getAgentDecisionCallback: () => null,
+    getSwarmCompleteCallback: () => null,
+    sharedDecisions: [],
+    getSwarmContext: () => "",
     broadcast: jest.fn(),
     sendChatMessage: jest.fn(),
     log: jest.fn(),
@@ -54,6 +57,7 @@ function createTaskCtx(overrides: Record<string, unknown> = {}) {
     registeredAt: Date.now(),
     lastActivityAt: Date.now(),
     idleCheckCount: 0,
+    lastSeenDecisionIndex: 0,
     ...overrides,
   };
 }

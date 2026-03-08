@@ -1,7 +1,8 @@
 /**
- * Claude Code HTTP Hooks — Webhook Endpoint
+ * Coding Agent HTTP Hooks — Webhook Endpoint
  *
- * Receives structured hook events from Claude Code's HTTP hooks system.
+ * Receives structured hook events from coding agent CLI hooks systems.
+ * Claude Code sends native HTTP hooks; Gemini CLI bridges via curl commands.
  * Replaces fragile PTY output scraping for state detection with deterministic
  * event-driven signals.
  *
@@ -13,16 +14,22 @@ import type { RouteContext } from "./routes.js";
 import { parseBody, sendError, sendJson } from "./routes.js";
 
 /**
- * Claude Code hook event payload (subset of fields we use).
- * Full schema: https://docs.anthropic.com/en/docs/claude-code/hooks
+ * Hook event payload (subset of fields we use).
+ * Supports both Claude Code (native HTTP) and Gemini CLI (curl bridge).
+ *
+ * Claude docs: https://docs.anthropic.com/en/docs/claude-code/hooks
+ * Gemini docs: https://geminicli.com/docs/hooks/reference
  */
 interface HookEventPayload {
   hook_event_name: string;
   session_id?: string;
   cwd?: string;
+  // Claude uses snake_case, Gemini uses camelCase
   tool_name?: string;
+  toolName?: string;
   tool_input?: Record<string, unknown>;
   notification_type?: string;
+  notificationType?: string;
   message?: string;
 }
 
@@ -68,6 +75,11 @@ export async function handleHookRoutes(
     return true;
   }
 
+  // Normalize field names: Gemini uses camelCase, Claude uses snake_case
+  const toolName = payload.tool_name ?? payload.toolName;
+  const notificationType =
+    payload.notification_type ?? payload.notificationType;
+
   // Look up PTY session: prefer explicit header, fall back to cwd-based lookup
   const headerSessionId = req.headers["x-parallax-session-id"] as
     | string
@@ -80,13 +92,15 @@ export async function handleHookRoutes(
 
   if (!sessionId) {
     // Not fatal — the hook may fire before we've tracked the session.
-    // Return success so Claude Code doesn't retry.
+    // Return success so the CLI doesn't retry.
     sendJson(res, { status: "ignored", reason: "session_not_found" });
     return true;
   }
 
   // Dispatch by event type
   switch (eventName) {
+    // ── Claude Code events ──────────────────────────────────────────
+
     case "PermissionRequest": {
       // Auto-approve all tool permissions natively — no PTY keystroke needed.
       sendJson(res, {
@@ -96,7 +110,7 @@ export async function handleHookRoutes(
         },
       });
       ctx.ptyService.handleHookEvent(sessionId, "permission_approved", {
-        tool: payload.tool_name,
+        tool: toolName,
       });
       return true;
     }
@@ -104,7 +118,7 @@ export async function handleHookRoutes(
     case "PreToolUse": {
       // Track which tool is running — suppress stall detection.
       ctx.ptyService.handleHookEvent(sessionId, "tool_running", {
-        toolName: payload.tool_name,
+        toolName,
         source: "hook",
       });
       // Return allow decision so the tool proceeds without permission prompt.
@@ -126,21 +140,72 @@ export async function handleHookRoutes(
       return true;
     }
 
-    case "Notification": {
-      // State change notifications (idle, permission, auth).
-      ctx.ptyService.handleHookEvent(sessionId, "notification", {
-        type: payload.notification_type,
-        message: payload.message,
-      });
-      sendJson(res, {});
-      return true;
-    }
-
     case "TaskCompleted": {
       ctx.ptyService.handleHookEvent(sessionId, "task_complete", {
         source: "hook_task_completed",
       });
       sendJson(res, {});
+      return true;
+    }
+
+    // ── Gemini CLI events ───────────────────────────────────────────
+
+    case "BeforeTool": {
+      // Track which tool is running — suppress stall detection.
+      ctx.ptyService.handleHookEvent(sessionId, "tool_running", {
+        toolName,
+        source: "gemini_hook",
+      });
+      // Return allow + continue so Gemini proceeds without permission prompt.
+      sendJson(res, { decision: "allow", continue: true });
+      return true;
+    }
+
+    case "AfterTool": {
+      // Tool finished — update activity (back to "active" state).
+      ctx.ptyService.handleHookEvent(sessionId, "notification", {
+        type: "tool_complete",
+        message: `Tool ${toolName ?? "unknown"} finished`,
+      });
+      sendJson(res, { continue: true });
+      return true;
+    }
+
+    case "AfterAgent": {
+      // Agent loop ended — mark task complete.
+      ctx.ptyService.handleHookEvent(sessionId, "task_complete", {
+        source: "gemini_hook",
+      });
+      sendJson(res, { continue: true });
+      return true;
+    }
+
+    case "SessionEnd": {
+      // Session ending — mark exit.
+      ctx.ptyService.handleHookEvent(sessionId, "session_end", {
+        source: "hook",
+      });
+      sendJson(res, { continue: true });
+      return true;
+    }
+
+    // ── Shared events ───────────────────────────────────────────────
+
+    case "Notification": {
+      // State change notifications (idle, permission, auth).
+      // Gemini ToolPermission notifications get auto-approved.
+      if (notificationType === "ToolPermission") {
+        ctx.ptyService.handleHookEvent(sessionId, "permission_approved", {
+          tool: toolName,
+        });
+        sendJson(res, { decision: "allow", continue: true });
+        return true;
+      }
+      ctx.ptyService.handleHookEvent(sessionId, "notification", {
+        type: notificationType,
+        message: payload.message,
+      });
+      sendJson(res, { continue: true });
       return true;
     }
 

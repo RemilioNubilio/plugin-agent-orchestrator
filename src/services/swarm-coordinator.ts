@@ -25,7 +25,7 @@ import { logger } from "@elizaos/core";
 import { extractDevServerUrl } from "./ansi-utils.js";
 import type { PTYService } from "./pty-service.js";
 import type { CodingAgentType } from "./pty-types.js";
-import type { CoordinationLLMResponse } from "./swarm-coordinator-prompts.js";
+import type { CoordinationLLMResponse, SharedDecision } from "./swarm-coordinator-prompts.js";
 import {
   checkAllTasksComplete,
   executeDecision as execDecision,
@@ -57,6 +57,25 @@ export type AgentDecisionCallback = (
   taskContext: TaskContext,
 ) => Promise<CoordinationLLMResponse | null>;
 
+/** Per-task summary included in the swarm complete payload. */
+export interface TaskCompletionSummary {
+  sessionId: string;
+  label: string;
+  agentType: string;
+  originalTask: string;
+  status: string;
+  completionSummary: string;
+}
+
+/** Callback fired when all tasks in a swarm reach terminal state. */
+export type SwarmCompleteCallback = (payload: {
+  tasks: TaskCompletionSummary[];
+  total: number;
+  completed: number;
+  stopped: number;
+  errored: number;
+}) => Promise<void>;
+
 export type SupervisionLevel = "autonomous" | "confirm" | "notify";
 
 export interface TaskContext {
@@ -77,6 +96,10 @@ export interface TaskContext {
   idleCheckCount: number;
   /** True once the initial task has been delivered to the agent. */
   taskDelivered: boolean;
+  /** Summary of what the agent accomplished, populated on completion. */
+  completionSummary?: string;
+  /** Index into sharedDecisions[] — tracks which decisions this agent has already seen. */
+  lastSeenDecisionIndex: number;
 }
 
 export interface CoordinationDecision {
@@ -124,11 +147,27 @@ export interface SwarmCoordinatorContext {
   /** Whether LLM decisions are paused (user sent a chat message). */
   readonly isPaused: boolean;
 
+  /** Significant decisions shared across the swarm. */
+  readonly sharedDecisions: SharedDecision[];
+
+  /** Get the shared context brief from the planning phase. */
+  getSwarmContext(): string;
+
+  /**
+   * Guard flag: whether the swarm_complete event has already been fired
+   * for the current swarm lifecycle. Set to `true` by `checkAllTasksComplete()`
+   * when all tasks reach terminal state. Reset to `false` by:
+   * - `stop()` — full coordinator teardown
+   * - `registerTask()` — when detecting a new swarm (all previous tasks terminal)
+   */
+  swarmCompleteNotified: boolean;
+
   broadcast(event: SwarmEvent): void;
   sendChatMessage(text: string, source?: string): void;
   log(message: string): void;
   getSupervisionLevel(): SupervisionLevel;
   getAgentDecisionCallback(): AgentDecisionCallback | null;
+  getSwarmCompleteCallback(): SwarmCompleteCallback | null;
 }
 
 // ─── Constants ───
@@ -178,6 +217,9 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
   /** Callback to route coordinator events through Milaidy's full pipeline. */
   private agentDecisionCb: AgentDecisionCallback | null = null;
 
+  /** Callback fired when all swarm tasks complete — for synthesis. */
+  private swarmCompleteCb: SwarmCompleteCallback | null = null;
+
   /** Buffer for events arriving before task registration. */
   private unregisteredBuffer: Map<
     string,
@@ -195,6 +237,15 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 
   /** Whether LLM decisions are paused (user sent a chat message). */
   private _paused = false;
+
+  /** Significant decisions shared across the swarm (Layer 2). */
+  readonly sharedDecisions: SharedDecision[] = [];
+
+  /** Shared context brief generated during swarm planning phase. */
+  private _swarmContext = "";
+
+  /** @see SwarmCoordinatorContext.swarmCompleteNotified */
+  swarmCompleteNotified = false;
 
   /** Buffered events during pause — replayed on resume. */
   private pauseBuffer: Array<{ sessionId: string; event: string; data: unknown }> = [];
@@ -218,6 +269,28 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
   setWsBroadcast(cb: WsBroadcastCallback): void {
     this.wsBroadcast = cb;
     this.log("WS broadcast callback wired");
+  }
+
+  /** Inject a callback fired when all swarm tasks reach terminal state. */
+  setSwarmCompleteCallback(cb: SwarmCompleteCallback): void {
+    this.swarmCompleteCb = cb;
+    this.log("Swarm complete callback wired");
+  }
+
+  /** Return the swarm complete callback (if wired). */
+  getSwarmCompleteCallback(): SwarmCompleteCallback | null {
+    return this.swarmCompleteCb;
+  }
+
+  /** Set the shared context brief for this swarm. */
+  setSwarmContext(context: string): void {
+    this._swarmContext = context;
+    this.log(`Swarm context set (${context.length} chars)`);
+  }
+
+  /** Return the swarm planning context (if set). */
+  getSwarmContext(): string {
+    return this._swarmContext;
   }
 
   /** Inject a callback (from server.ts) to route events through Milaidy's pipeline. */
@@ -289,6 +362,9 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
     this.lastSeenOutput.clear();
     this.lastToolNotification.clear();
     this.agentDecisionCb = null;
+    this.sharedDecisions.length = 0;
+    this._swarmContext = "";
+    this.swarmCompleteNotified = false;
     // Clear pause state
     this._paused = false;
     if (this.pauseTimeout) {
@@ -356,6 +432,23 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
       repo?: string;
     },
   ): void {
+    // Reset swarm state when the first task of a new swarm is registered.
+    // Check for terminal-only tasks (all previous tasks in completed/stopped/error)
+    // rather than empty map, so reuse without stop() works.
+    const allPreviousTerminal = this.tasks.size === 0 || Array.from(this.tasks.values()).every(
+      (t) => t.status === "completed" || t.status === "stopped" || t.status === "error",
+    );
+    if (allPreviousTerminal) {
+      this.swarmCompleteNotified = false;
+      // Clear stale tasks and shared context from previous swarm
+      if (this.tasks.size > 0) {
+        this.tasks.clear();
+        this.sharedDecisions.length = 0;
+        this._swarmContext = "";
+        this.log("Cleared stale swarm state for new swarm");
+      }
+    }
+
     this.tasks.set(sessionId, {
       sessionId,
       agentType: context.agentType,
@@ -370,6 +463,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
       lastActivityAt: Date.now(),
       idleCheckCount: 0,
       taskDelivered: false,
+      lastSeenDecisionIndex: 0,
     });
 
     this.broadcast({
@@ -606,7 +700,11 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
       }
 
       case "stopped":
-        taskCtx.status = "stopped";
+        // Don't downgrade "completed" or "error" to "stopped" — the async
+        // stopSession fires after executeDecision already marked the task.
+        if (taskCtx.status !== "completed" && taskCtx.status !== "error") {
+          taskCtx.status = "stopped";
+        }
         this.inFlightDecisions.delete(sessionId);
         this.broadcast({
           type: "stopped",

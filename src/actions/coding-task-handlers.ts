@@ -13,6 +13,7 @@ import {
   type IAgentRuntime,
   logger,
   type Memory,
+  ModelType,
   type State,
 } from "@elizaos/core";
 import type { AgentCredentials, ApprovalPreset } from "coding-agent-adapters";
@@ -35,6 +36,70 @@ import {
 
 /** Maximum number of agents that can be spawned in a single multi-agent call */
 const MAX_CONCURRENT_AGENTS = 8;
+
+/** Known agent type prefixes used in "agentType:task" spec format. */
+const KNOWN_AGENT_PREFIXES = [
+  "claude", "claude-code", "claudecode", "codex", "openai",
+  "gemini", "google", "aider", "pi", "pi-ai", "piai",
+  "pi-coding-agent", "picodingagent", "shell", "bash",
+] as const;
+
+/**
+ * Strip an agent-type prefix from a spec string (e.g. "claude:Fix the bug" → "Fix the bug").
+ * Returns the original string if no known prefix is found.
+ */
+function stripAgentPrefix(spec: string): string {
+  const colonIdx = spec.indexOf(":");
+  if (colonIdx <= 0 || colonIdx >= 20) return spec;
+  const prefix = spec.slice(0, colonIdx).trim().toLowerCase();
+  if ((KNOWN_AGENT_PREFIXES as readonly string[]).includes(prefix)) {
+    return spec.slice(colonIdx + 1).trim();
+  }
+  return spec;
+}
+
+/**
+ * Generate a shared context brief for a swarm of agents.
+ * The LLM produces shared guidance (style, conventions, constraints) from
+ * the user's request and subtask list. Task-type agnostic — works for coding,
+ * research, writing, or any multi-agent workflow.
+ */
+async function generateSwarmContext(
+  runtime: IAgentRuntime,
+  subtasks: string[],
+  userRequest: string,
+): Promise<string> {
+  const taskList = subtasks
+    .map((t, i) => `  ${i + 1}. ${t}`)
+    .join("\n");
+
+  const prompt =
+    `You are an AI orchestrator about to launch ${subtasks.length} parallel agents. ` +
+    `Before they start, produce a brief shared context document so all agents stay aligned.\n\n` +
+    `User's request: "${userRequest}"\n\n` +
+    `Subtasks being assigned:\n${taskList}\n\n` +
+    `Generate a concise shared context brief (3-8 bullet points) covering:\n` +
+    `- Project intent and overall goal\n` +
+    `- Key constraints or preferences from the user's request\n` +
+    `- Conventions all agents should follow (naming, style, patterns, tone)\n` +
+    `- How subtasks relate to each other (dependencies, shared interfaces, etc.)\n` +
+    `- Any decisions that should be consistent across all agents\n\n` +
+    `Only include what's relevant — skip categories that don't apply. ` +
+    `Be specific and actionable, not generic. Keep it under 200 words.\n\n` +
+    `Output ONLY the bullet points, no preamble.`;
+
+  try {
+    const result = await runtime.useModel(ModelType.TEXT_SMALL, {
+      prompt,
+      maxTokens: 400,
+      temperature: 0.3,
+    });
+    return result?.trim() || "";
+  } catch (err) {
+    logger.warn(`Swarm context generation failed: ${err}`);
+    return "";
+  }
+}
 
 /** Shared context passed to both multi-agent and single-agent handlers */
 export interface CodingTaskContext {
@@ -122,6 +187,20 @@ export async function handleMultiAgent(
     });
   }
 
+  // Planning phase: generate shared context brief for multi-agent coordination.
+  // Strip agent-type prefixes from specs to get clean subtask descriptions.
+  const cleanSubtasks = agentSpecs.map(stripAgentPrefix);
+  const userRequest = (message.content as { text?: string })?.text ?? agentsParam;
+  const swarmContext = agentSpecs.length > 1
+    ? await generateSwarmContext(runtime, cleanSubtasks, userRequest)
+    : "";
+
+  // Store swarm context on coordinator for use in decision prompts
+  if (swarmContext) {
+    const coordinator = getCoordinator(runtime);
+    coordinator?.setSwarmContext(swarmContext);
+  }
+
   const results: Array<{
     sessionId: string;
     agentType: string;
@@ -148,24 +227,7 @@ export async function handleMultiAgent(
       colonIdx < 20
     ) {
       const prefix = spec.slice(0, colonIdx).trim().toLowerCase();
-      const knownTypes = [
-        "claude",
-        "claude-code",
-        "claudecode",
-        "codex",
-        "openai",
-        "gemini",
-        "google",
-        "aider",
-        "pi",
-        "pi-ai",
-        "piai",
-        "pi-coding-agent",
-        "picodingagent",
-        "shell",
-        "bash",
-      ];
-      if (knownTypes.includes(prefix)) {
+      if ((KNOWN_AGENT_PREFIXES as readonly string[]).includes(prefix)) {
         specRequestedType = prefix;
         specPiRequested = isPiAgentType(prefix);
         specAgentType = normalizeAgentType(prefix);
@@ -173,15 +235,7 @@ export async function handleMultiAgent(
       }
     } else if (ctx.agentSelectionStrategy === "fixed" && colonIdx > 0 && colonIdx < 20) {
       // Strip the prefix from the task text but keep the default agent type
-      const prefix = spec.slice(0, colonIdx).trim().toLowerCase();
-      const knownTypes = [
-        "claude", "claude-code", "claudecode", "codex", "openai",
-        "gemini", "google", "aider", "pi", "pi-ai", "piai",
-        "pi-coding-agent", "picodingagent", "shell", "bash",
-      ];
-      if (knownTypes.includes(prefix)) {
-        specTask = spec.slice(colonIdx + 1).trim();
-      }
+      specTask = stripAgentPrefix(spec);
     }
 
     // Generate label for this specific agent
@@ -226,8 +280,11 @@ export async function handleMultiAgent(
       // Check if coordinator is active — route blocking prompts through it
       const coordinator = getCoordinator(runtime);
 
-      // Spawn the agent
-      const initialTask = specPiRequested ? toPiCommand(specTask) : specTask;
+      // Spawn the agent — prepend shared context brief if available
+      const taskWithContext = swarmContext
+        ? `${specTask}\n\n--- Shared Context (from project planning) ---\n${swarmContext}\n--- End Shared Context ---`
+        : specTask;
+      const initialTask = specPiRequested ? toPiCommand(taskWithContext) : taskWithContext;
       const displayType = specPiRequested ? "pi" : specAgentType;
       const session: SessionInfo = await ptyService.spawnSession({
         name: `coding-${Date.now()}-${i}`,

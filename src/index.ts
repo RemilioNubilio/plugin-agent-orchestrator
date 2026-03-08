@@ -115,12 +115,14 @@ export type {
   CoordinationDecision,
   PendingDecision,
   SupervisionLevel,
+  SwarmCompleteCallback,
   SwarmEvent,
+  TaskCompletionSummary,
   TaskContext,
   WsBroadcastCallback,
 } from "./services/swarm-coordinator.js";
 export { SwarmCoordinator } from "./services/swarm-coordinator.js";
-export type { CoordinationLLMResponse } from "./services/swarm-coordinator-prompts.js";
+export type { CoordinationLLMResponse, SharedDecision } from "./services/swarm-coordinator-prompts.js";
 export {
   buildBlockedEventMessage,
   buildTurnCompleteEventMessage,

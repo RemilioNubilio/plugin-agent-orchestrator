@@ -23,6 +23,8 @@ import {
   type CoordinationLLMResponse,
   type DecisionHistoryEntry,
   parseCoordinationResponse,
+  type SharedDecision,
+  type SiblingTaskSummary,
   type TaskContextSummary,
 } from "./swarm-coordinator-prompts.js";
 import {
@@ -75,6 +77,88 @@ function toDecisionHistory(taskCtx: TaskContext): DecisionHistoryEntry[] {
       response: d.response,
       reasoning: d.reasoning,
     }));
+}
+
+/** Collect sibling task summaries for cross-task context (excludes the current session). */
+function collectSiblings(
+  ctx: SwarmCoordinatorContext,
+  currentSessionId: string,
+): SiblingTaskSummary[] {
+  const siblings: SiblingTaskSummary[] = [];
+  for (const [sid, task] of ctx.tasks) {
+    if (sid === currentSessionId) continue;
+    siblings.push({
+      label: task.label,
+      agentType: task.agentType,
+      originalTask: task.originalTask,
+      status: task.status,
+    });
+  }
+  return siblings;
+}
+
+/**
+ * Enrich a text response with any shared decisions the agent hasn't seen yet.
+ * Returns the enriched response and the snapshot index to commit after send.
+ * Short responses (like "y", "n", single-word approvals) are left untouched
+ * to avoid confusing TUI prompts.
+ */
+function enrichWithSharedDecisions(
+  ctx: SwarmCoordinatorContext,
+  sessionId: string,
+  response: string,
+): { response: string; snapshotIndex?: number } {
+  const taskCtx = ctx.tasks.get(sessionId);
+  if (!taskCtx) return { response };
+
+  const allDecisions = ctx.sharedDecisions;
+  const lastSeen = taskCtx.lastSeenDecisionIndex;
+  // Snapshot the current length so we don't skip decisions appended during send.
+  const snapshotEnd = allDecisions.length;
+  if (lastSeen >= snapshotEnd) return { response };
+
+  // Don't inject context into short responses (approvals, single words)
+  if (response.length < 20) {
+    return { response };
+  }
+
+  const unseen = allDecisions.slice(lastSeen, snapshotEnd);
+
+  const contextBlock = unseen
+    .map((d) => `[${d.agentLabel}] ${d.summary}`)
+    .join("; ");
+
+  return {
+    response: `${response}\n\n(Context from other agents: ${contextBlock})`,
+    snapshotIndex: snapshotEnd,
+  };
+}
+
+/** Advance the shared-decisions high-water mark for a session after a successful send. */
+function commitSharedDecisionIndex(
+  ctx: SwarmCoordinatorContext,
+  sessionId: string,
+  snapshotIndex: number,
+): void {
+  const taskCtx = ctx.tasks.get(sessionId);
+  if (taskCtx) {
+    taskCtx.lastSeenDecisionIndex = snapshotIndex;
+  }
+}
+
+/** Record a key decision from an LLM response into the shared decisions list. */
+function recordKeyDecision(
+  ctx: SwarmCoordinatorContext,
+  agentLabel: string,
+  decision: CoordinationLLMResponse,
+): void {
+  if (!decision.keyDecision) return;
+  ctx.sharedDecisions.push({
+    agentLabel,
+    summary: decision.keyDecision,
+    timestamp: Date.now(),
+  });
+  ctx.log(`Shared decision from "${agentLabel}": ${decision.keyDecision}`);
 }
 
 /**
@@ -150,7 +234,19 @@ export function checkAllTasksComplete(ctx: SwarmCoordinatorContext): void {
 
   const terminalStates = new Set(["completed", "stopped", "error"]);
   const allDone = tasks.every((t) => terminalStates.has(t.status));
-  if (!allDone) return;
+
+  if (!allDone) {
+    const statuses = tasks.map((t) => `${t.label}=${t.status}`).join(", ");
+    ctx.log(`checkAllTasksComplete: not all done yet — ${statuses}`);
+    return;
+  }
+
+  // Guard: only fire once per swarm (reset by coordinator on stop/new swarm)
+  if (ctx.swarmCompleteNotified) {
+    ctx.log("checkAllTasksComplete: already notified — skipping");
+    return;
+  }
+  ctx.swarmCompleteNotified = true;
 
   const completed = tasks.filter((t) => t.status === "completed");
   const stopped = tasks.filter((t) => t.status === "stopped");
@@ -167,10 +263,7 @@ export function checkAllTasksComplete(ctx: SwarmCoordinatorContext): void {
     parts.push(`${errored.length} errored`);
   }
 
-  ctx.sendChatMessage(
-    `All ${tasks.length} coding agents finished (${parts.join(", ")}). Review their work when you're ready.`,
-    "coding-agent",
-  );
+  ctx.log(`checkAllTasksComplete: all ${tasks.length} tasks terminal (${parts.join(", ")}) — firing swarm_complete`);
 
   ctx.broadcast({
     type: "swarm_complete",
@@ -183,6 +276,49 @@ export function checkAllTasksComplete(ctx: SwarmCoordinatorContext): void {
       errored: errored.length,
     },
   });
+
+  // Fire swarm complete callback for synthesis — if wired, the host
+  // (milaidy) will use this to generate a synthesized overview.
+  const swarmCompleteCb = ctx.getSwarmCompleteCallback();
+  const sendFallbackSummary = () => {
+    ctx.sendChatMessage(
+      `All ${tasks.length} coding agents finished (${parts.join(", ")}). Review their work when you're ready.`,
+      "coding-agent",
+    );
+  };
+
+  if (swarmCompleteCb) {
+    ctx.log("checkAllTasksComplete: swarm complete callback is wired — calling synthesis");
+    const taskSummaries = tasks.map((t) => ({
+      sessionId: t.sessionId,
+      label: t.label,
+      agentType: t.agentType,
+      originalTask: t.originalTask,
+      status: t.status,
+      completionSummary: t.completionSummary ?? "",
+    }));
+    // Wrap in Promise.resolve().then() to catch sync throws, and race against
+    // a timeout to guard against callbacks that never settle.
+    void withTimeout(
+      Promise.resolve().then(() =>
+        swarmCompleteCb({
+          tasks: taskSummaries,
+          total: tasks.length,
+          completed: completed.length,
+          stopped: stopped.length,
+          errored: errored.length,
+        }),
+      ),
+      DECISION_CB_TIMEOUT_MS,
+      "swarmCompleteCb",
+    ).catch((err) => {
+      ctx.log(`Swarm complete callback failed: ${err} — falling back to generic summary`);
+      sendFallbackSummary();
+    });
+  } else {
+    ctx.log("checkAllTasksComplete: no synthesis callback — sending generic message");
+    sendFallbackSummary();
+  }
 }
 
 /** Fetch recent PTY output, returning empty string on failure. */
@@ -215,6 +351,9 @@ export async function makeCoordinationDecision(
     promptText,
     recentOutput,
     toDecisionHistory(taskCtx),
+    collectSiblings(ctx, taskCtx.sessionId),
+    ctx.sharedDecisions,
+    ctx.getSwarmContext(),
   );
 
   try {
@@ -243,7 +382,16 @@ export async function executeDecision(
       if (decision.useKeys && decision.keys) {
         await ctx.ptyService.sendKeysToSession(sessionId, decision.keys);
       } else if (decision.response !== undefined) {
-        await ctx.ptyService.sendToSession(sessionId, decision.response);
+        // Proactive injection: append unseen shared decisions to text responses
+        const { response: enriched, snapshotIndex } = enrichWithSharedDecisions(
+          ctx, sessionId, decision.response,
+        );
+        await ctx.ptyService.sendToSession(sessionId, enriched);
+        // Only advance the high-water mark after send succeeds — if the send
+        // fails, the decisions will be retried on the next enrichment.
+        if (snapshotIndex !== undefined) {
+          commitSharedDecisionIndex(ctx, sessionId, snapshotIndex);
+        }
       }
       break;
 
@@ -268,6 +416,11 @@ export async function executeDecision(
         summary = extractCompletionSummary(rawOutput);
       } catch {
         /* ignore */
+      }
+
+      // Store summary on task context for swarm-wide synthesis
+      if (taskCtx) {
+        taskCtx.completionSummary = summary || decision.reasoning || "";
       }
 
       ctx.sendChatMessage(
@@ -505,6 +658,9 @@ export async function handleTurnComplete(
       toContextSummary(taskCtx),
       turnOutput,
       toDecisionHistory(taskCtx),
+      collectSiblings(ctx, sessionId),
+      ctx.sharedDecisions,
+      ctx.getSwarmContext(),
     );
     try {
       const result = await ctx.runtime.useModel(ModelType.TEXT_SMALL, {
@@ -545,6 +701,9 @@ export async function handleTurnComplete(
       response: formatDecisionResponse(decision),
       reasoning: decision.reasoning,
     });
+
+    // Layer 2: capture significant decisions for cross-agent sharing
+    recordKeyDecision(ctx, taskCtx.label, decision);
 
     ctx.broadcast({
       type: "turn_assessment",
@@ -641,6 +800,9 @@ export async function handleAutonomousDecision(
           promptText,
           output,
           toDecisionHistory(taskCtx),
+          collectSiblings(ctx, sessionId),
+          ctx.sharedDecisions,
+          ctx.getSwarmContext(),
         );
         try {
           decision = await withTimeout(
@@ -713,6 +875,9 @@ export async function handleAutonomousDecision(
       response: formatDecisionResponse(decision),
       reasoning: decision.reasoning,
     });
+
+    // Layer 2: capture significant decisions for cross-agent sharing
+    recordKeyDecision(ctx, taskCtx.label, decision);
 
     // Reset auto-resolved count on manual decision
     taskCtx.autoResolvedCount = 0;
@@ -813,6 +978,9 @@ export async function handleConfirmDecision(
           promptText,
           output,
           toDecisionHistory(taskCtx),
+          collectSiblings(ctx, sessionId),
+          ctx.sharedDecisions,
+          ctx.getSwarmContext(),
         );
         try {
           decision = await withTimeout(

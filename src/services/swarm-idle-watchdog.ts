@@ -18,6 +18,8 @@ import {
   type CoordinationLLMResponse,
   type DecisionHistoryEntry,
   parseCoordinationResponse,
+  type SharedDecision,
+  type SiblingTaskSummary,
   type TaskContextSummary,
 } from "./swarm-coordinator-prompts.js";
 import { checkAllTasksComplete, executeDecision } from "./swarm-decision-loop.js";
@@ -204,6 +206,17 @@ export async function handleIdleCheck(
         reasoning: d.reasoning,
       }));
 
+    const siblings: SiblingTaskSummary[] = [];
+    for (const [sid, task] of ctx.tasks) {
+      if (sid === sessionId) continue;
+      siblings.push({
+        label: task.label,
+        agentType: task.agentType,
+        originalTask: task.originalTask,
+        status: task.status,
+      });
+    }
+
     const prompt = buildIdleCheckPrompt(
       contextSummary,
       recentOutput,
@@ -211,6 +224,9 @@ export async function handleIdleCheck(
       taskCtx.idleCheckCount,
       MAX_IDLE_CHECKS,
       decisionHistory,
+      siblings,
+      ctx.sharedDecisions,
+      ctx.getSwarmContext(),
     );
 
     let decision: CoordinationLLMResponse | null = null;

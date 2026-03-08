@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.3.10
+
+### Features
+
+- **Shared swarm context**: Multi-agent swarms now generate a shared context brief (via LLM) before agents start, ensuring consistent style, conventions, and constraints across parallel agents.
+- **Inter-agent decision visibility**: Agents receive decisions made by sibling agents via `sharedDecisions` array, tracked per-agent with `lastSeenDecisionIndex` to avoid re-injecting stale context.
+- **Swarm-complete callback**: Callers can register a `swarmCompleteCallback` to be notified when all agents in a swarm finish, enabling post-swarm actions.
+
+### Fixed
+
+- **Hook route improvements**: Expanded HTTP hook endpoint to handle `permission_approved`, `tool_running`, and `task_complete` events with proper session lookup and state forwarding via `notifyHookEvent`.
+- **Hook injection merging**: Hook config injection into `.claude/settings.json` and `.gemini/settings.json` now merges with existing workspace hooks instead of overwriting them.
+- **Swarm lifecycle scoping**: Swarm context, shared decisions, and completion guard reset between swarms. `registerTask()` detects new swarms by checking if all previous tasks are terminal.
+- **Swarm-complete guard ownership**: Moved `swarmCompleteNotified` from module-level state in `swarm-decision-loop.ts` to an instance field on `SwarmCoordinator`, eliminating hidden cross-module lifecycle coupling.
+- **Shared decision index safety**: `lastSeenDecisionIndex` only advances after successful `sendToSession` using a snapshotted index, preventing both skipped decisions on send failure and over-advancing when new decisions arrive during the async send.
+- **Swarm-complete callback resilience**: Callback wrapped in `Promise.resolve().then()` with a 30s timeout to catch sync throws and hangs; rejection falls back to a generic summary instead of silently dropping the completion event.
+- **Stopped event preserves error status**: The `"stopped"` event handler no longer overwrites `"error"` status on tasks that failed.
+- **Session end event forwarding**: Added `session_end` hook event mapping to emit a `"stopped"` event.
+- **Noisy session IO filtering**: Improved event message handling to suppress repetitive status updates from flooding chat history.
+- **Agent prefix parsing**: Extracted `KNOWN_AGENT_PREFIXES` constant and `stripAgentPrefix()` helper, replacing 3 duplicated inline parsing blocks.
+- **Hook cleanup logging**: `cleanupAgentHooks` now logs non-ENOENT errors instead of silently swallowing them.
+- **Key decision length cap**: `keyDecision` field clamped to 240 characters to prevent oversized context injection.
+- **Test mocks updated**: Swarm decision loop test mocks now include `getSwarmCompleteCallback`, `sharedDecisions`, `getSwarmContext`, and `lastSeenDecisionIndex`.
+
+### Deps
+
+- Bump `pty-manager` peer dependency from `1.9.5` → `1.9.6` (hook event notification support, blocking prompt dedup fix).
+
 ## 0.3.8
 
 ### Fixes

@@ -330,7 +330,9 @@ export class PTYService {
       }
     }
 
-    // Inject allowedDirectories and HTTP hooks into Claude settings
+    // Inject agent-specific settings and HTTP hooks
+    const hookUrl = `http://localhost:${(this.runtime.getSetting("SERVER_PORT") as string | undefined) ?? "2138"}/api/coding-agents/hooks`;
+
     if (resolvedAgentType === "claude") {
       try {
         const settingsPath = join(workdir, ".claude", "settings.json");
@@ -345,17 +347,16 @@ export class PTYService {
         permissions.allowedDirectories = [workdir];
         settings.permissions = permissions;
 
-        // Inject HTTP hooks for deterministic state detection
-        const serverPort =
-          (this.runtime.getSetting("SERVER_PORT") as string | undefined) ??
-          "2138";
+        // Inject HTTP hooks for deterministic state detection.
+        // Merge with existing hooks to preserve workspace-owned hook entries.
         const adapter = this.getAdapter("claude");
         const hookProtocol = adapter.getHookTelemetryProtocol({
-          httpUrl: `http://localhost:${serverPort}/api/coding-agents/hooks`,
+          httpUrl: hookUrl,
           sessionId,
         });
         if (hookProtocol) {
-          settings.hooks = hookProtocol.settingsHooks;
+          const existingHooks = (settings.hooks ?? {}) as Record<string, unknown>;
+          settings.hooks = { ...existingHooks, ...hookProtocol.settingsHooks };
           this.log(`Injecting HTTP hooks for session ${sessionId}`);
         }
 
@@ -368,6 +369,40 @@ export class PTYService {
         this.log(`Wrote allowedDirectories [${workdir}] to ${settingsPath}`);
       } catch (err) {
         this.log(`Failed to write Claude settings: ${err}`);
+      }
+    }
+
+    if (resolvedAgentType === "gemini") {
+      try {
+        const settingsPath = join(workdir, ".gemini", "settings.json");
+        let settings: Record<string, unknown> = {};
+        try {
+          settings = JSON.parse(await readFile(settingsPath, "utf-8"));
+        } catch {
+          // File may not exist yet
+        }
+
+        // Inject command hooks that curl the orchestrator endpoint.
+        // Merge with existing hooks to preserve workspace-owned hook entries.
+        const adapter = this.getAdapter("gemini");
+        const hookProtocol = adapter.getHookTelemetryProtocol({
+          httpUrl: hookUrl,
+          sessionId,
+        });
+        if (hookProtocol) {
+          const existingHooks = (settings.hooks ?? {}) as Record<string, unknown>;
+          settings.hooks = { ...existingHooks, ...hookProtocol.settingsHooks };
+          this.log(`Injecting Gemini CLI hooks for session ${sessionId}`);
+        }
+
+        await mkdir(dirname(settingsPath), { recursive: true });
+        await writeFile(
+          settingsPath,
+          JSON.stringify(settings, null, 2),
+          "utf-8",
+        );
+      } catch (err) {
+        this.log(`Failed to write Gemini settings: ${err}`);
       }
     }
 
@@ -631,6 +666,17 @@ export class PTYService {
       this.log(`Hook event for ${sessionId}: ${event} ${summary}`);
     }
 
+    // Forward hook event to the underlying PTY session so it can reset its
+    // stall timer and update internal status. Without this, the stall detector
+    // runs independently of hooks and can falsely escalate hook-managed sessions.
+    if (this.manager && this.usingBunWorker) {
+      (this.manager as BunCompatiblePTYManager)
+        .notifyHookEvent(sessionId, event)
+        .catch((err) =>
+          logger.debug(`[PTYService] Failed to forward hook event to session: ${err}`),
+        );
+    }
+
     switch (event) {
       case "tool_running":
         this.emitEvent(sessionId, "tool_running", data);
@@ -644,6 +690,11 @@ export class PTYService {
         break;
       case "notification":
         this.emitEvent(sessionId, "message", data);
+        break;
+      case "session_end":
+        // CLI session is ending — treat as a stopped event so the coordinator
+        // and frontend see the session transition to terminal state.
+        this.emitEvent(sessionId, "stopped", { ...data, reason: "session_end" });
         break;
       default:
         break;
