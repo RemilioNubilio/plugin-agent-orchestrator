@@ -99,7 +99,7 @@ function collectSiblings(
 
 /**
  * Enrich a text response with any shared decisions the agent hasn't seen yet.
- * Updates the high-water mark so decisions aren't repeated.
+ * Returns the enriched response and the snapshot index to commit after send.
  * Short responses (like "y", "n", single-word approvals) are left untouched
  * to avoid confusing TUI prompts.
  */
@@ -107,38 +107,42 @@ function enrichWithSharedDecisions(
   ctx: SwarmCoordinatorContext,
   sessionId: string,
   response: string,
-): string {
+): { response: string; snapshotIndex?: number } {
   const taskCtx = ctx.tasks.get(sessionId);
-  if (!taskCtx) return response;
+  if (!taskCtx) return { response };
 
   const allDecisions = ctx.sharedDecisions;
   const lastSeen = taskCtx.lastSeenDecisionIndex;
-  if (lastSeen >= allDecisions.length) return response;
+  // Snapshot the current length so we don't skip decisions appended during send.
+  const snapshotEnd = allDecisions.length;
+  if (lastSeen >= snapshotEnd) return { response };
 
   // Don't inject context into short responses (approvals, single words)
   if (response.length < 20) {
-    return response;
+    return { response };
   }
 
-  const unseen = allDecisions.slice(lastSeen);
+  const unseen = allDecisions.slice(lastSeen, snapshotEnd);
 
   const contextBlock = unseen
     .map((d) => `[${d.agentLabel}] ${d.summary}`)
     .join("; ");
 
-  // NOTE: index is NOT updated here — the caller must call
-  // commitSharedDecisionIndex() after the send succeeds.
-  return `${response}\n\n(Context from other agents: ${contextBlock})`;
+  return {
+    response: `${response}\n\n(Context from other agents: ${contextBlock})`,
+    snapshotIndex: snapshotEnd,
+  };
 }
 
 /** Advance the shared-decisions high-water mark for a session after a successful send. */
 function commitSharedDecisionIndex(
   ctx: SwarmCoordinatorContext,
   sessionId: string,
+  snapshotIndex: number,
 ): void {
   const taskCtx = ctx.tasks.get(sessionId);
   if (taskCtx) {
-    taskCtx.lastSeenDecisionIndex = ctx.sharedDecisions.length;
+    taskCtx.lastSeenDecisionIndex = snapshotIndex;
   }
 }
 
@@ -293,13 +297,21 @@ export function checkAllTasksComplete(ctx: SwarmCoordinatorContext): void {
       status: t.status,
       completionSummary: t.completionSummary ?? "",
     }));
-    swarmCompleteCb({
-      tasks: taskSummaries,
-      total: tasks.length,
-      completed: completed.length,
-      stopped: stopped.length,
-      errored: errored.length,
-    }).catch((err) => {
+    // Wrap in Promise.resolve().then() to catch sync throws, and race against
+    // a timeout to guard against callbacks that never settle.
+    void withTimeout(
+      Promise.resolve().then(() =>
+        swarmCompleteCb({
+          tasks: taskSummaries,
+          total: tasks.length,
+          completed: completed.length,
+          stopped: stopped.length,
+          errored: errored.length,
+        }),
+      ),
+      DECISION_CB_TIMEOUT_MS,
+      "swarmCompleteCb",
+    ).catch((err) => {
       ctx.log(`Swarm complete callback failed: ${err} — falling back to generic summary`);
       sendFallbackSummary();
     });
@@ -371,11 +383,15 @@ export async function executeDecision(
         await ctx.ptyService.sendKeysToSession(sessionId, decision.keys);
       } else if (decision.response !== undefined) {
         // Proactive injection: append unseen shared decisions to text responses
-        const enriched = enrichWithSharedDecisions(ctx, sessionId, decision.response);
+        const { response: enriched, snapshotIndex } = enrichWithSharedDecisions(
+          ctx, sessionId, decision.response,
+        );
         await ctx.ptyService.sendToSession(sessionId, enriched);
         // Only advance the high-water mark after send succeeds — if the send
         // fails, the decisions will be retried on the next enrichment.
-        commitSharedDecisionIndex(ctx, sessionId);
+        if (snapshotIndex !== undefined) {
+          commitSharedDecisionIndex(ctx, sessionId, snapshotIndex);
+        }
       }
       break;
 
