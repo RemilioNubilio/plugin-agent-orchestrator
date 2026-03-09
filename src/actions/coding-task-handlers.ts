@@ -28,6 +28,7 @@ import {
 } from "../services/pty-types.js";
 import type { CodingWorkspaceService } from "../services/workspace-service.js";
 import type { AgentSelectionStrategy } from "../services/agent-selection.js";
+import { withTrajectoryContext } from "../services/trajectory-context.js";
 import {
   createScratchDir,
   generateLabel,
@@ -59,6 +60,42 @@ function stripAgentPrefix(spec: string): string {
 }
 
 /**
+ * Build CLAUDE.md instructions that tell a swarm agent how to coordinate.
+ * Each agent gets awareness of its role within the swarm and instructions
+ * to surface design decisions explicitly so the orchestrator can share them.
+ */
+function buildSwarmMemoryInstructions(
+  agentLabel: string,
+  agentTask: string,
+  allSubtasks: string[],
+  agentIndex: number,
+): string {
+  const siblingTasks = allSubtasks
+    .filter((_, i) => i !== agentIndex)
+    .map((t, i) => `  ${i + 1}. ${t}`)
+    .join("\n");
+
+  return (
+    `# Swarm Coordination\n\n` +
+    `You are agent "${agentLabel}" in a multi-agent swarm of ${allSubtasks.length} agents.\n` +
+    `Your task: ${agentTask}\n\n` +
+    `Other agents are working on:\n${siblingTasks}\n\n` +
+    `## Coordination Rules\n\n` +
+    `- **Follow the Shared Context exactly.** The planning brief above contains ` +
+    `concrete decisions (names, file paths, APIs, conventions). Use them as-is.\n` +
+    `- **Surface design decisions.** If you need to make a creative or architectural ` +
+    `choice not covered by the Shared Context (naming something, choosing a library, ` +
+    `designing an interface, picking an approach), state your decision clearly in your ` +
+    `output so the orchestrator can share it with sibling agents. Write it as:\n` +
+    `  "DECISION: [brief description of what you decided and why]"\n` +
+    `- **Don't contradict sibling work.** If the orchestrator tells you about decisions ` +
+    `other agents have made, align with them.\n` +
+    `- **Ask when uncertain.** If your task depends on another agent's output and you ` +
+    `don't have enough context, ask rather than guessing.\n`
+  );
+}
+
+/**
  * Generate a shared context brief for a swarm of agents.
  * The LLM produces shared guidance (style, conventions, constraints) from
  * the user's request and subtask list. Task-type agnostic — works for coding,
@@ -78,22 +115,35 @@ async function generateSwarmContext(
     `Before they start, produce a brief shared context document so all agents stay aligned.\n\n` +
     `User's request: "${userRequest}"\n\n` +
     `Subtasks being assigned:\n${taskList}\n\n` +
-    `Generate a concise shared context brief (3-8 bullet points) covering:\n` +
+    `Generate a concise shared context brief (3-10 bullet points) covering:\n` +
     `- Project intent and overall goal\n` +
     `- Key constraints or preferences from the user's request\n` +
     `- Conventions all agents should follow (naming, style, patterns, tone)\n` +
     `- How subtasks relate to each other (dependencies, shared interfaces, etc.)\n` +
     `- Any decisions that should be consistent across all agents\n\n` +
+    `CRITICAL — Concrete Decisions:\n` +
+    `If any subtask involves creative choices (naming a feature, choosing an approach, ` +
+    `designing an API, picking a concept), YOU must make those decisions NOW in this brief. ` +
+    `Do NOT leave creative choices to individual agents — they run in parallel and will ` +
+    `each make different choices, causing inconsistency.\n` +
+    `For example: if one agent builds a feature and another writes tests for it, ` +
+    `decide the feature name, file paths, function signatures, and key design choices here ` +
+    `so both agents use the same names and structure.\n\n` +
     `Only include what's relevant — skip categories that don't apply. ` +
-    `Be specific and actionable, not generic. Keep it under 200 words.\n\n` +
+    `Be specific and actionable, not generic. Be as detailed as the task requires — ` +
+    `a trivial task needs a few bullets, a complex task deserves a thorough roadmap.\n\n` +
     `Output ONLY the bullet points, no preamble.`;
 
   try {
-    const result = await runtime.useModel(ModelType.TEXT_SMALL, {
-      prompt,
-      maxTokens: 400,
-      temperature: 0.3,
-    });
+    const result = await withTrajectoryContext(
+      runtime,
+      { source: "orchestrator", decisionType: "swarm-context-generation" },
+      () =>
+        runtime.useModel(ModelType.TEXT_SMALL, {
+          prompt,
+          temperature: 0.3,
+        }),
+    );
     return result?.trim() || "";
   } catch (err) {
     logger.warn(`Swarm context generation failed: ${err}`);
@@ -286,12 +336,22 @@ export async function handleMultiAgent(
         : specTask;
       const initialTask = specPiRequested ? toPiCommand(taskWithContext) : taskWithContext;
       const displayType = specPiRequested ? "pi" : specAgentType;
+
+      // Append swarm coordination instructions to agent memory so the agent
+      // knows to surface design decisions explicitly for the orchestrator.
+      const swarmMemory = agentSpecs.length > 1
+        ? buildSwarmMemoryInstructions(specLabel, specTask, cleanSubtasks, i)
+        : undefined;
+      const agentMemory = [memoryContent, swarmMemory]
+        .filter(Boolean)
+        .join("\n\n") || undefined;
+
       const session: SessionInfo = await ptyService.spawnSession({
         name: `coding-${Date.now()}-${i}`,
         agentType: specAgentType,
         workdir,
         initialTask,
-        memoryContent,
+        memoryContent: agentMemory,
         credentials,
         approvalPreset:
           (approvalPreset as ApprovalPreset | undefined) ??

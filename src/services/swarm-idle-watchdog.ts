@@ -23,6 +23,7 @@ import {
   type TaskContextSummary,
 } from "./swarm-coordinator-prompts.js";
 import { checkAllTasksComplete, executeDecision } from "./swarm-decision-loop.js";
+import { withTrajectoryContext } from "./trajectory-context.js";
 
 // ─── Constants ───
 
@@ -231,9 +232,16 @@ export async function handleIdleCheck(
 
     let decision: CoordinationLLMResponse | null = null;
     try {
-      const result = await ctx.runtime.useModel(ModelType.TEXT_SMALL, {
-        prompt,
-      });
+      const result = await withTrajectoryContext(
+        ctx.runtime,
+        {
+          source: "orchestrator",
+          decisionType: "idle-check",
+          sessionId,
+          taskLabel: taskCtx.label,
+        },
+        () => ctx.runtime.useModel(ModelType.TEXT_SMALL, { prompt }),
+      );
       decision = parseCoordinationResponse(result);
     } catch (err) {
       ctx.log(`Idle check LLM call failed: ${err}`);

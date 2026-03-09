@@ -31,6 +31,7 @@ import {
   classifyEventTier,
   type TriageContext,
 } from "./swarm-event-triage.js";
+import { withTrajectoryContext } from "./trajectory-context.js";
 
 // ─── Constants ───
 
@@ -87,11 +88,33 @@ function collectSiblings(
   const siblings: SiblingTaskSummary[] = [];
   for (const [sid, task] of ctx.tasks) {
     if (sid === currentSessionId) continue;
+
+    // Find the most recent keyDecision from this sibling's decisions
+    let lastKeyDecision: string | undefined;
+    for (let i = task.decisions.length - 1; i >= 0; i--) {
+      const d = task.decisions[i];
+      if (d.reasoning && d.decision !== "auto_resolved") {
+        lastKeyDecision = d.reasoning;
+        break;
+      }
+    }
+
+    // Also check shared decisions for this sibling's key decisions
+    for (let i = ctx.sharedDecisions.length - 1; i >= 0; i--) {
+      const sd = ctx.sharedDecisions[i];
+      if (sd.agentLabel === task.label) {
+        lastKeyDecision = sd.summary;
+        break;
+      }
+    }
+
     siblings.push({
       label: task.label,
       agentType: task.agentType,
       originalTask: task.originalTask,
       status: task.status,
+      lastKeyDecision,
+      completionSummary: task.completionSummary,
     });
   }
   return siblings;
@@ -357,9 +380,16 @@ export async function makeCoordinationDecision(
   );
 
   try {
-    const result = await ctx.runtime.useModel(ModelType.TEXT_SMALL, {
-      prompt,
-    });
+    const result = await withTrajectoryContext(
+      ctx.runtime,
+      {
+        source: "orchestrator",
+        decisionType: "coordination",
+        sessionId: taskCtx.sessionId,
+        taskLabel: taskCtx.label,
+      },
+      () => ctx.runtime.useModel(ModelType.TEXT_SMALL, { prompt }),
+    );
     return parseCoordinationResponse(result);
   } catch (err) {
     ctx.log(`LLM coordination call failed: ${err}`);
@@ -556,6 +586,14 @@ export async function handleBlocked(
     return;
   }
 
+  // Deduplicate: if an LLM decision is already in-flight for this session,
+  // skip the duplicate blocked event. TUI re-renders and hook events can
+  // cause the same permission prompt to fire many times in rapid succession.
+  if (ctx.inFlightDecisions.has(sessionId)) {
+    ctx.log(`Skipping duplicate blocked event for ${taskCtx.label} (decision in-flight)`);
+    return;
+  }
+
   // Broadcast that the agent is blocked (for all supervision levels)
   ctx.broadcast({
     type: "blocked",
@@ -663,9 +701,16 @@ export async function handleTurnComplete(
       ctx.getSwarmContext(),
     );
     try {
-      const result = await ctx.runtime.useModel(ModelType.TEXT_SMALL, {
-        prompt,
-      });
+      const result = await withTrajectoryContext(
+        ctx.runtime,
+        {
+          source: "orchestrator",
+          decisionType: "turn-complete",
+          sessionId,
+          taskLabel: taskCtx.label,
+        },
+        () => ctx.runtime.useModel(ModelType.TEXT_SMALL, { prompt }),
+      );
       decision = parseCoordinationResponse(result);
     } catch (err) {
       ctx.log(`Turn-complete LLM call failed: ${err}`);
