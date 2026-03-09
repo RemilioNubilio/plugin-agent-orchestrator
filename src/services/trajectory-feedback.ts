@@ -15,6 +15,18 @@
 
 import type { IAgentRuntime } from "@elizaos/core";
 
+/** Timeout for trajectory DB calls to prevent blocking agent spawn. */
+const QUERY_TIMEOUT_MS = 5000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`Trajectory query timed out after ${ms}ms`)), ms),
+    ),
+  ]);
+}
+
 // ─── Types ───
 
 /** A distilled experience entry from a past trajectory. */
@@ -211,11 +223,11 @@ export async function queryPastExperience(
 
   try {
     // Fetch recent orchestrator trajectories
-    const result = await logger.listTrajectories({
+    const result = await withTimeout(logger.listTrajectories({
       source: "orchestrator",
       limit: maxTrajectories,
       startDate,
-    });
+    }), QUERY_TIMEOUT_MS);
 
     if (!result.trajectories || result.trajectories.length === 0) return [];
 
@@ -225,7 +237,10 @@ export async function queryPastExperience(
     for (const summary of result.trajectories) {
       if (experiences.length >= maxEntries * 2) break; // Over-fetch for filtering
 
-      const detail = await logger.getTrajectoryDetail(summary.id);
+      const detail = await withTimeout(
+        logger.getTrajectoryDetail(summary.id),
+        QUERY_TIMEOUT_MS,
+      );
       if (!detail?.steps) continue;
 
       const metadata = detail.metadata as

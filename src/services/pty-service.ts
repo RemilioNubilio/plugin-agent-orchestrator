@@ -1,6 +1,6 @@
 /** @module services/pty-service */
 
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { type IAgentRuntime, type Service, logger } from "@elizaos/core";
 import {
@@ -875,12 +875,14 @@ export class PTYService {
     ];
 
     try {
-      const separator = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
-      await writeFile(
-        gitignorePath,
-        existing + separator + entries.join("\n") + "\n",
-        "utf-8",
-      );
+      if (existing.length === 0) {
+        // No .gitignore yet — create with just our entries
+        await writeFile(gitignorePath, entries.join("\n") + "\n", "utf-8");
+      } else {
+        // Append-only to avoid clobbering concurrent edits
+        const separator = existing.endsWith("\n") ? "" : "\n";
+        await appendFile(gitignorePath, separator + entries.join("\n") + "\n", "utf-8");
+      }
     } catch (err) {
       this.log(`Failed to update .gitignore in ${workdir}: ${err}`);
     }

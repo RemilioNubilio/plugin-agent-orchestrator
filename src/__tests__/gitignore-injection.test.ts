@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
-import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -36,12 +36,12 @@ async function ensureOrchestratorGitignore(workdir: string): Promise<void> {
 
   if (existing.includes(GITIGNORE_MARKER)) return;
 
-  const separator = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
-  await writeFile(
-    gitignorePath,
-    existing + separator + ORCHESTRATOR_ENTRIES.join("\n") + "\n",
-    "utf-8",
-  );
+  if (existing.length === 0) {
+    await writeFile(gitignorePath, ORCHESTRATOR_ENTRIES.join("\n") + "\n", "utf-8");
+  } else {
+    const separator = existing.endsWith("\n") ? "" : "\n";
+    await appendFile(gitignorePath, separator + ORCHESTRATOR_ENTRIES.join("\n") + "\n", "utf-8");
+  }
 }
 
 describe("gitignore injection", () => {

@@ -204,6 +204,26 @@ async function drainPendingTurnComplete(
   await handleTurnComplete(ctx, sessionId, taskCtx, pendingData);
 }
 
+/**
+ * Drain a buffered blocked event for a session after an in-flight
+ * decision finishes. Prevents a distinct blocked prompt from being
+ * silently dropped when it arrives during a slow LLM call.
+ */
+async function drainPendingBlocked(
+  ctx: SwarmCoordinatorContext,
+  sessionId: string,
+): Promise<void> {
+  if (!ctx.pendingBlocked.has(sessionId)) return;
+  const pendingData = ctx.pendingBlocked.get(sessionId);
+  ctx.pendingBlocked.delete(sessionId);
+
+  const taskCtx = ctx.tasks.get(sessionId);
+  if (!taskCtx || taskCtx.status !== "active") return;
+
+  ctx.log(`Draining buffered blocked event for "${taskCtx.label}"`);
+  await handleBlocked(ctx, sessionId, taskCtx, pendingData);
+}
+
 /** Format a decision's response for recording. */
 function formatDecisionResponse(
   decision: CoordinationLLMResponse,
@@ -600,9 +620,11 @@ export async function handleBlocked(
       ctx.log(`Skipping duplicate blocked event for ${taskCtx.label} (decision in-flight, same prompt)`);
       return;
     }
-    // Different prompt — let it through after the current decision completes.
-    // Buffer it like we do for turn-complete events.
+    // Different prompt — buffer it so it's replayed after the current decision completes.
     ctx.log(`New blocked prompt for ${taskCtx.label} while decision in-flight — buffering`);
+    ctx.pendingBlocked.set(sessionId, data);
+    ctx.lastBlockedPromptFingerprint.set(sessionId, promptFingerprint);
+    return;
   }
   ctx.lastBlockedPromptFingerprint.set(sessionId, promptFingerprint);
 
@@ -798,6 +820,7 @@ export async function handleTurnComplete(
   } finally {
     ctx.inFlightDecisions.delete(sessionId);
     await drainPendingTurnComplete(ctx, sessionId);
+    await drainPendingBlocked(ctx, sessionId);
   }
 }
 
@@ -983,6 +1006,7 @@ export async function handleAutonomousDecision(
   } finally {
     ctx.inFlightDecisions.delete(sessionId);
     await drainPendingTurnComplete(ctx, sessionId);
+    await drainPendingBlocked(ctx, sessionId);
   }
 }
 
@@ -1107,5 +1131,6 @@ export async function handleConfirmDecision(
   } finally {
     ctx.inFlightDecisions.delete(sessionId);
     await drainPendingTurnComplete(ctx, sessionId);
+    await drainPendingBlocked(ctx, sessionId);
   }
 }
