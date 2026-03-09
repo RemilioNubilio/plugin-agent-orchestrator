@@ -41,6 +41,12 @@ export interface OrchestratorTrajectoryContext {
   sessionId?: string;
   /** Human-readable task label */
   taskLabel?: string;
+  /** Repository URL or identifier (for trajectory feedback filtering) */
+  repo?: string;
+  /** Workspace directory path */
+  workdir?: string;
+  /** Original task description assigned to the agent */
+  originalTask?: string;
 }
 
 const CTX_KEY = "__orchestratorTrajectoryCtx";

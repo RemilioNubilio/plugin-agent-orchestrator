@@ -387,6 +387,9 @@ export async function makeCoordinationDecision(
         decisionType: "coordination",
         sessionId: taskCtx.sessionId,
         taskLabel: taskCtx.label,
+        repo: taskCtx.repo,
+        workdir: taskCtx.workdir,
+        originalTask: taskCtx.originalTask,
       },
       () => ctx.runtime.useModel(ModelType.TEXT_SMALL, { prompt }),
     );
@@ -708,6 +711,9 @@ export async function handleTurnComplete(
           decisionType: "turn-complete",
           sessionId,
           taskLabel: taskCtx.label,
+          repo: taskCtx.repo,
+          workdir: taskCtx.workdir,
+          originalTask: taskCtx.originalTask,
         },
         () => ctx.runtime.useModel(ModelType.TEXT_SMALL, { prompt }),
       );

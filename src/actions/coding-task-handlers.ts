@@ -30,6 +30,10 @@ import type { CodingWorkspaceService } from "../services/workspace-service.js";
 import type { AgentSelectionStrategy } from "../services/agent-selection.js";
 import { withTrajectoryContext } from "../services/trajectory-context.js";
 import {
+  formatPastExperience,
+  queryPastExperience,
+} from "../services/trajectory-feedback.js";
+import {
   createScratchDir,
   generateLabel,
   registerSessionEvents,
@@ -251,6 +255,17 @@ export async function handleMultiAgent(
     coordinator?.setSwarmContext(swarmContext);
   }
 
+  // Query past orchestrator experience for trajectory feedback injection.
+  // This feeds lessons from previous agent sessions back into new agents,
+  // preventing repeated mistakes and maintaining consistency with past decisions.
+  const pastExperience = await queryPastExperience(runtime, {
+    taskDescription: userRequest,
+    lookbackHours: 48,
+    maxEntries: 8,
+    repo,
+  });
+  const pastExperienceBlock = formatPastExperience(pastExperience);
+
   const results: Array<{
     sessionId: string;
     agentType: string;
@@ -342,7 +357,7 @@ export async function handleMultiAgent(
       const swarmMemory = agentSpecs.length > 1
         ? buildSwarmMemoryInstructions(specLabel, specTask, cleanSubtasks, i)
         : undefined;
-      const agentMemory = [memoryContent, swarmMemory]
+      const agentMemory = [memoryContent, swarmMemory, pastExperienceBlock]
         .filter(Boolean)
         .join("\n\n") || undefined;
 
@@ -562,6 +577,18 @@ export async function handleSingleAgent(
     const initialTask = piRequested ? toPiCommand(task) : task;
     const displayType = piRequested ? "pi" : agentType;
 
+    // Query past experience for trajectory feedback injection
+    const pastExperience = await queryPastExperience(runtime, {
+      taskDescription: task,
+      lookbackHours: 48,
+      maxEntries: 6,
+      repo,
+    });
+    const pastExperienceBlock = formatPastExperience(pastExperience);
+    const agentMemory = [memoryContent, pastExperienceBlock]
+      .filter(Boolean)
+      .join("\n\n") || undefined;
+
     // Check if coordinator is active — route blocking prompts through it
     const coordinator = getCoordinator(runtime);
 
@@ -573,7 +600,7 @@ export async function handleSingleAgent(
       agentType,
       workdir,
       initialTask,
-      memoryContent,
+      memoryContent: agentMemory,
       credentials,
       approvalPreset:
         (approvalPreset as ApprovalPreset | undefined) ??

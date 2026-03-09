@@ -406,6 +406,12 @@ export class PTYService {
       }
     }
 
+    // Ensure injected config/memory files are gitignored so agents don't
+    // commit them. Appends to existing .gitignore if present.
+    if (resolvedAgentType !== "shell") {
+      await this.ensureOrchestratorGitignore(workdir, resolvedAgentType);
+    }
+
     const spawnConfig = buildSpawnConfig(
       sessionId,
       {
@@ -827,6 +833,57 @@ export class PTYService {
       content,
       options,
     );
+  }
+
+  // ─── Gitignore for Orchestrator Files ───
+
+  /** Marker comment used to detect orchestrator-managed gitignore entries. */
+  private static readonly GITIGNORE_MARKER =
+    "# orchestrator-injected (do not commit agent config/memory files)";
+
+  /**
+   * Ensure that orchestrator-injected files (CLAUDE.md, .claude/, GEMINI.md, etc.)
+   * are listed in the workspace .gitignore so agents don't commit them.
+   * Appends to an existing .gitignore or creates one. Idempotent — skips if
+   * the marker comment is already present.
+   */
+  private async ensureOrchestratorGitignore(
+    workdir: string,
+    agentType: string,
+  ): Promise<void> {
+    const gitignorePath = join(workdir, ".gitignore");
+
+    let existing = "";
+    try {
+      existing = await readFile(gitignorePath, "utf-8");
+    } catch {
+      // No .gitignore yet — we'll create one
+    }
+
+    // Idempotent: skip if we already added our entries
+    if (existing.includes(PTYService.GITIGNORE_MARKER)) return;
+
+    // Build the entries based on agent type. Include all common patterns
+    // so multi-agent swarms with mixed types are covered.
+    const entries = [
+      "",
+      PTYService.GITIGNORE_MARKER,
+      "CLAUDE.md",
+      ".claude/",
+      "GEMINI.md",
+      ".gemini/",
+      ".aider*",
+    ];
+
+    try {
+      await writeFile(
+        gitignorePath,
+        existing + entries.join("\n") + "\n",
+        "utf-8",
+      );
+    } catch (err) {
+      this.log(`Failed to update .gitignore in ${workdir}: ${err}`);
+    }
   }
 
   // ─── Event & Adapter Registration ───

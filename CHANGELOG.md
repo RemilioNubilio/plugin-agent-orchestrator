@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.11
+
+### Features
+
+- **Trajectory feedback loop**: Agents are now spawned with past experience context. The orchestrator queries recent trajectory records for decisions and insights from previous agent sessions (DECISION markers, keyDecision fields, coordination reasoning) and injects them into agent memory at spawn time. Experiences are filtered by repository and keyword relevance, deduplicated, and formatted as a "Past Experience" section in the agent's CLAUDE.md/GEMINI.md.
+- **Rich trajectory metadata**: Orchestrator trajectory context now includes `repo`, `workdir`, and `originalTask` fields, stored in trajectory metadata alongside `decisionType`, `sessionId`, and `taskLabel`. Enables structural filtering when querying past experience (only decisions from the same repo are surfaced).
+- **Orchestrator .gitignore injection**: Agent config and memory files (`CLAUDE.md`, `.claude/`, `GEMINI.md`, `.gemini/`, `.aider*`) are automatically added to the workspace `.gitignore` before agent spawn. Prevents agents from committing orchestrator-injected files. Idempotent — appends to existing `.gitignore` if present, skips if marker is already there.
+
+### Fixed
+
+- **Blocking prompt flood (orchestrator-side)**: Added `inFlightDecisions` guard to `handleBlocked` to prevent duplicate LLM coordination calls when TUI re-renders cause rapid-fire blocking prompt events for the same session.
+
+### Deps
+
+- Bump `pty-manager` peer dependency from `1.9.6` → `1.9.8` (blocking prompt dedup fix, ensurePty runtime preflight).
+
 ## 0.3.10
 
 ### Features
