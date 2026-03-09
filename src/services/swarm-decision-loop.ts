@@ -31,6 +31,7 @@ import {
   classifyEventTier,
   type TriageContext,
 } from "./swarm-event-triage.js";
+import { withTrajectoryContext } from "./trajectory-context.js";
 
 // ─── Constants ───
 
@@ -87,11 +88,33 @@ function collectSiblings(
   const siblings: SiblingTaskSummary[] = [];
   for (const [sid, task] of ctx.tasks) {
     if (sid === currentSessionId) continue;
+
+    // Find the most recent keyDecision from this sibling's decisions
+    let lastKeyDecision: string | undefined;
+    for (let i = task.decisions.length - 1; i >= 0; i--) {
+      const d = task.decisions[i];
+      if (d.reasoning && d.decision !== "auto_resolved") {
+        lastKeyDecision = d.reasoning;
+        break;
+      }
+    }
+
+    // Also check shared decisions for this sibling's key decisions
+    for (let i = ctx.sharedDecisions.length - 1; i >= 0; i--) {
+      const sd = ctx.sharedDecisions[i];
+      if (sd.agentLabel === task.label) {
+        lastKeyDecision = sd.summary;
+        break;
+      }
+    }
+
     siblings.push({
       label: task.label,
       agentType: task.agentType,
       originalTask: task.originalTask,
       status: task.status,
+      lastKeyDecision,
+      completionSummary: task.completionSummary,
     });
   }
   return siblings;
@@ -179,6 +202,26 @@ async function drainPendingTurnComplete(
 
   ctx.log(`Draining buffered turn-complete for "${taskCtx.label}"`);
   await handleTurnComplete(ctx, sessionId, taskCtx, pendingData);
+}
+
+/**
+ * Drain a buffered blocked event for a session after an in-flight
+ * decision finishes. Prevents a distinct blocked prompt from being
+ * silently dropped when it arrives during a slow LLM call.
+ */
+async function drainPendingBlocked(
+  ctx: SwarmCoordinatorContext,
+  sessionId: string,
+): Promise<void> {
+  if (!ctx.pendingBlocked.has(sessionId)) return;
+  const pendingData = ctx.pendingBlocked.get(sessionId);
+  ctx.pendingBlocked.delete(sessionId);
+
+  const taskCtx = ctx.tasks.get(sessionId);
+  if (!taskCtx || taskCtx.status !== "active") return;
+
+  ctx.log(`Draining buffered blocked event for "${taskCtx.label}"`);
+  await handleBlocked(ctx, sessionId, taskCtx, pendingData);
 }
 
 /** Format a decision's response for recording. */
@@ -357,9 +400,19 @@ export async function makeCoordinationDecision(
   );
 
   try {
-    const result = await ctx.runtime.useModel(ModelType.TEXT_SMALL, {
-      prompt,
-    });
+    const result = await withTrajectoryContext(
+      ctx.runtime,
+      {
+        source: "orchestrator",
+        decisionType: "coordination",
+        sessionId: taskCtx.sessionId,
+        taskLabel: taskCtx.label,
+        repo: taskCtx.repo,
+        workdir: taskCtx.workdir,
+        originalTask: taskCtx.originalTask,
+      },
+      () => ctx.runtime.useModel(ModelType.TEXT_SMALL, { prompt }),
+    );
     return parseCoordinationResponse(result);
   } catch (err) {
     ctx.log(`LLM coordination call failed: ${err}`);
@@ -556,6 +609,25 @@ export async function handleBlocked(
     return;
   }
 
+  // Deduplicate: if an LLM decision is already in-flight for this session
+  // AND the prompt text matches the one already being handled, skip.
+  // TUI re-renders fire the same prompt many times; a *different* prompt
+  // (theoretically possible if the agent resolves one prompt and immediately
+  // hits another) should not be dropped.
+  const promptFingerprint = promptText.slice(0, 200);
+  if (ctx.inFlightDecisions.has(sessionId)) {
+    if (ctx.lastBlockedPromptFingerprint.get(sessionId) === promptFingerprint) {
+      ctx.log(`Skipping duplicate blocked event for ${taskCtx.label} (decision in-flight, same prompt)`);
+      return;
+    }
+    // Different prompt — buffer it so it's replayed after the current decision completes.
+    ctx.log(`New blocked prompt for ${taskCtx.label} while decision in-flight — buffering`);
+    ctx.pendingBlocked.set(sessionId, data);
+    ctx.lastBlockedPromptFingerprint.set(sessionId, promptFingerprint);
+    return;
+  }
+  ctx.lastBlockedPromptFingerprint.set(sessionId, promptFingerprint);
+
   // Broadcast that the agent is blocked (for all supervision levels)
   ctx.broadcast({
     type: "blocked",
@@ -663,9 +735,19 @@ export async function handleTurnComplete(
       ctx.getSwarmContext(),
     );
     try {
-      const result = await ctx.runtime.useModel(ModelType.TEXT_SMALL, {
-        prompt,
-      });
+      const result = await withTrajectoryContext(
+        ctx.runtime,
+        {
+          source: "orchestrator",
+          decisionType: "turn-complete",
+          sessionId,
+          taskLabel: taskCtx.label,
+          repo: taskCtx.repo,
+          workdir: taskCtx.workdir,
+          originalTask: taskCtx.originalTask,
+        },
+        () => ctx.runtime.useModel(ModelType.TEXT_SMALL, { prompt }),
+      );
       decision = parseCoordinationResponse(result);
     } catch (err) {
       ctx.log(`Turn-complete LLM call failed: ${err}`);
@@ -738,6 +820,7 @@ export async function handleTurnComplete(
   } finally {
     ctx.inFlightDecisions.delete(sessionId);
     await drainPendingTurnComplete(ctx, sessionId);
+    await drainPendingBlocked(ctx, sessionId);
   }
 }
 
@@ -923,6 +1006,7 @@ export async function handleAutonomousDecision(
   } finally {
     ctx.inFlightDecisions.delete(sessionId);
     await drainPendingTurnComplete(ctx, sessionId);
+    await drainPendingBlocked(ctx, sessionId);
   }
 }
 
@@ -1047,5 +1131,6 @@ export async function handleConfirmDecision(
   } finally {
     ctx.inFlightDecisions.delete(sessionId);
     await drainPendingTurnComplete(ctx, sessionId);
+    await drainPendingBlocked(ctx, sessionId);
   }
 }

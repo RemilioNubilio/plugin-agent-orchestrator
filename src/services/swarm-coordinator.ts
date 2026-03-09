@@ -139,6 +139,10 @@ export interface SwarmCoordinatorContext {
   readonly pendingDecisions: Map<string, PendingDecision>;
   /** Buffered task_complete events that arrived while an in-flight decision was running. */
   readonly pendingTurnComplete: Map<string, unknown>;
+  /** Fingerprint of the last blocked prompt per session — for re-render dedup. */
+  readonly lastBlockedPromptFingerprint: Map<string, string>;
+  /** Buffered blocked events that arrived while an in-flight decision was running. */
+  readonly pendingBlocked: Map<string, unknown>;
   /** Last-seen output snapshot per session — used by idle watchdog. */
   readonly lastSeenOutput: Map<string, string>;
   /** Timestamp of last tool_running chat notification per session — for throttling. */
@@ -207,6 +211,12 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 
   /** Buffered task_complete events that arrived while an in-flight decision was running. */
   readonly pendingTurnComplete: Map<string, unknown> = new Map();
+
+  /** Fingerprint of the last blocked prompt per session — for re-render dedup. */
+  readonly lastBlockedPromptFingerprint: Map<string, string> = new Map();
+
+  /** Buffered blocked events that arrived while an in-flight decision was running. */
+  readonly pendingBlocked: Map<string, unknown> = new Map();
 
   /** Callback to send chat messages to the user's conversation UI. */
   private chatCallback: ChatMessageCallback | null = null;
@@ -358,6 +368,8 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
     this.pendingDecisions.clear();
     this.inFlightDecisions.clear();
     this.pendingTurnComplete.clear();
+    this.lastBlockedPromptFingerprint.clear();
+    this.pendingBlocked.clear();
     this.unregisteredBuffer.clear();
     this.lastSeenOutput.clear();
     this.lastToolNotification.clear();

@@ -32,6 +32,8 @@ function createMockCtx(overrides: Record<string, unknown> = {}) {
     inFlightDecisions: new Set<string>(),
     pendingDecisions: new Map(),
     pendingTurnComplete: new Map(),
+    lastBlockedPromptFingerprint: new Map(),
+    pendingBlocked: new Map(),
     getSupervisionLevel: () => "autonomous",
     getAgentDecisionCallback: () => null,
     getSwarmCompleteCallback: () => null,

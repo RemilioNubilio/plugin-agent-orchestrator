@@ -13,6 +13,7 @@
  */
 
 import { type IAgentRuntime, ModelType } from "@elizaos/core";
+import { withTrajectoryContext } from "./trajectory-context.js";
 
 // ─── Types ───
 
@@ -195,7 +196,11 @@ export async function classifyEventTier(
   // Step 2: Small LLM classifier
   try {
     const prompt = buildTriagePrompt(ctx);
-    const result = await runtime.useModel(ModelType.TEXT_SMALL, { prompt });
+    const result = await withTrajectoryContext(
+      runtime,
+      { source: "orchestrator", decisionType: "event-triage" },
+      () => runtime.useModel(ModelType.TEXT_SMALL, { prompt }),
+    );
     const tier = parseTriageResponse(result);
     if (tier) {
       log(`Triage: LLM → ${tier}`);

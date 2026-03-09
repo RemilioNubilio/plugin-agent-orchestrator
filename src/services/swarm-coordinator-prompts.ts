@@ -33,6 +33,10 @@ export interface SiblingTaskSummary {
   agentType: string;
   originalTask: string;
   status: string;
+  /** Last significant decision or action taken by this sibling. */
+  lastKeyDecision?: string;
+  /** Summary of what the sibling accomplished (populated on completion). */
+  completionSummary?: string;
 }
 
 /** A significant creative or architectural decision made by an agent in the swarm. */
@@ -51,16 +55,20 @@ export interface SharedDecision {
  */
 function buildSiblingSection(siblings?: SiblingTaskSummary[]): string {
   if (!siblings || siblings.length === 0) return "";
+  const lines = siblings.map((s) => {
+    let line = `  - [${s.status}] "${s.label}" (${s.agentType}): ${s.originalTask}`;
+    if (s.completionSummary) {
+      line += `\n    Result: ${s.completionSummary}`;
+    } else if (s.lastKeyDecision) {
+      line += `\n    Latest: ${s.lastKeyDecision}`;
+    }
+    return line;
+  });
   return (
     `\nOther agents in this swarm:\n` +
-    siblings
-      .map(
-        (s) =>
-          `  - [${s.status}] "${s.label}" (${s.agentType}): ${s.originalTask}`,
-      )
-      .join("\n") +
+    lines.join("\n") +
     `\nUse this context when the agent asks creative or architectural questions — ` +
-    `your answer should be consistent with what sibling agents are working on.\n`
+    `your answer should be consistent with what sibling agents are doing.\n`
   );
 }
 
@@ -173,7 +181,9 @@ export function buildCoordinationPrompt(
     `- If the agent's output reveals a significant decision that sibling agents should know about ` +
     `(e.g. chose a library, designed an API shape, picked a UI pattern, established a writing style, ` +
     `narrowed a research scope, made any choice that affects the shared project), ` +
-    `include "keyDecision" with a brief one-line summary. Skip this for routine tool approvals.\n\n` +
+    `include "keyDecision" with a brief one-line summary. Skip this for routine tool approvals.\n` +
+    `- Look for explicit "DECISION:" markers in the agent's output — these are the agent deliberately ` +
+    `surfacing design choices. Always capture these as keyDecision.\n\n` +
     `Respond with ONLY a JSON object:\n` +
     `{"action": "respond|complete|escalate|ignore", "response": "...", "useKeys": false, "keys": [], "reasoning": "...", "keyDecision": "..."}`
   );
@@ -243,7 +253,8 @@ export function buildIdleCheckPrompt(
     `- If the agent is clearly mid-operation (build output, test runner, git operations), use "ignore".\n` +
     `- On check ${idleCheckNumber} of ${maxIdleChecks} — if unsure, lean toward "respond" with a nudge rather than "complete".\n` +
     `- If the agent's output reveals a significant creative or architectural decision, ` +
-    `include "keyDecision" with a brief one-line summary.\n\n` +
+    `include "keyDecision" with a brief one-line summary.\n` +
+    `- Look for explicit "DECISION:" markers in the agent's output — always capture these as keyDecision.\n\n` +
     `Respond with ONLY a JSON object:\n` +
     `{"action": "respond|complete|escalate|ignore", "response": "...", "useKeys": false, "keys": [], "reasoning": "...", "keyDecision": "..."}`
   );
@@ -331,7 +342,9 @@ export function buildTurnCompletePrompt(
     `- If the agent's output reveals a significant decision that sibling agents should know about ` +
     `(e.g. chose a library, designed an API shape, picked a UI pattern, established a writing style, ` +
     `narrowed a research scope, made any choice that affects the shared project), ` +
-    `include "keyDecision" with a brief one-line summary. Skip this for routine tool approvals.\n\n` +
+    `include "keyDecision" with a brief one-line summary. Skip this for routine tool approvals.\n` +
+    `- Look for explicit "DECISION:" markers in the agent's output — these are the agent deliberately ` +
+    `surfacing design choices. Always capture these as keyDecision.\n\n` +
     `Respond with ONLY a JSON object:\n` +
     `{"action": "respond|complete|escalate|ignore", "response": "...", "useKeys": false, "keys": [], "reasoning": "...", "keyDecision": "..."}`
   );
@@ -388,7 +401,8 @@ export function buildBlockedEventMessage(
     `- Decline access to paths outside ${taskCtx.workdir}.\n` +
     `- If a PR was just created, respond to review & verify test plan items before completing.\n` +
     `- When in doubt, escalate.\n\n` +
-    `If the agent's output reveals a significant decision that sibling agents should know about, include "keyDecision" with a brief summary.\n\n` +
+    `If the agent's output reveals a significant decision that sibling agents should know about, include "keyDecision" with a brief summary.\n` +
+    `Look for explicit "DECISION:" markers in the agent's output — always capture these as keyDecision.\n\n` +
     `Include a JSON action block at the end of your response:\n` +
     "```json\n" +
     `{"action": "respond|complete|escalate|ignore", "response": "...", "useKeys": false, "keys": [], "reasoning": "...", "keyDecision": "..."}\n` +
@@ -441,7 +455,8 @@ export function buildTurnCompleteEventMessage(
     `- If a PR was just created, respond to review & verify test plan items.\n` +
     `- When asking agents to verify work, prefer CLI tools (gh, curl, cat, etc.) over browser automation.\n` +
     `- Default to "respond" — only "complete" when certain ALL work is done.\n` +
-    `- If the agent's output reveals a significant creative or architectural decision, include "keyDecision" with a brief summary.\n\n` +
+    `- If the agent's output reveals a significant creative or architectural decision, include "keyDecision" with a brief summary.\n` +
+    `- Look for explicit "DECISION:" markers in the agent's output — always capture these as keyDecision.\n\n` +
     `Include a JSON action block at the end of your response:\n` +
     "```json\n" +
     `{"action": "respond|complete|escalate|ignore", "response": "...", "useKeys": false, "keys": [], "reasoning": "...", "keyDecision": "..."}\n` +

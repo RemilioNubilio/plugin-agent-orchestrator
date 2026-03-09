@@ -1,6 +1,6 @@
 {
   "name": "@elizaos/plugin-agent-orchestrator",
-  "version": "0.3.10",
+  "version": "0.3.11",
   "description": "Coding agent orchestration plugin - spawn and manage CLI coding agents via PTY",
   "type": "module",
   "main": "dist/index.js",
@@ -30,7 +30,7 @@
   "peerDependencies": {
     "@elizaos/core": ">=2.0.0-alpha.0",
     "git-workspace-service": "0.4.4",
-    "pty-manager": "1.9.6"
+    "pty-manager": "1.9.8"
   },
   "devDependencies": {
     "@types/node": "^25.2.3",

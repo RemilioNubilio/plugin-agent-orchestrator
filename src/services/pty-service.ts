@@ -1,6 +1,6 @@
 /** @module services/pty-service */
 
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { type IAgentRuntime, type Service, logger } from "@elizaos/core";
 import {
@@ -404,6 +404,12 @@ export class PTYService {
       } catch (err) {
         this.log(`Failed to write Gemini settings: ${err}`);
       }
+    }
+
+    // Ensure injected config/memory files are gitignored so agents don't
+    // commit them. Appends to existing .gitignore if present.
+    if (resolvedAgentType !== "shell" && workdir !== process.cwd()) {
+      await this.ensureOrchestratorGitignore(workdir);
     }
 
     const spawnConfig = buildSpawnConfig(
@@ -827,6 +833,82 @@ export class PTYService {
       content,
       options,
     );
+  }
+
+  // ─── Gitignore for Orchestrator Files ───
+
+  /** Marker comment used to detect orchestrator-managed gitignore entries. */
+  private static readonly GITIGNORE_MARKER =
+    "# orchestrator-injected (do not commit agent config/memory files)";
+
+  /** Per-path lock to serialize concurrent gitignore updates for the same workdir. */
+  private static gitignoreLocks = new Map<string, Promise<void>>();
+
+  /**
+   * Ensure that orchestrator-injected files (CLAUDE.md, .claude/, GEMINI.md, etc.)
+   * are listed in the workspace .gitignore so agents don't commit them.
+   * Appends to an existing .gitignore or creates one. Idempotent — skips if
+   * the marker comment is already present. Serialized per-path to prevent
+   * duplicate entries from concurrent spawns.
+   */
+  private async ensureOrchestratorGitignore(
+    workdir: string,
+  ): Promise<void> {
+    const gitignorePath = join(workdir, ".gitignore");
+
+    // Serialize per-path: wait for any in-flight update to the same file.
+    const existing_lock = PTYService.gitignoreLocks.get(gitignorePath);
+    if (existing_lock) await existing_lock;
+
+    const task = this.doEnsureGitignore(gitignorePath, workdir);
+    PTYService.gitignoreLocks.set(gitignorePath, task);
+    try {
+      await task;
+    } finally {
+      // Only delete if we're still the current holder
+      if (PTYService.gitignoreLocks.get(gitignorePath) === task) {
+        PTYService.gitignoreLocks.delete(gitignorePath);
+      }
+    }
+  }
+
+  private async doEnsureGitignore(
+    gitignorePath: string,
+    workdir: string,
+  ): Promise<void> {
+    let existing = "";
+    try {
+      existing = await readFile(gitignorePath, "utf-8");
+    } catch {
+      // No .gitignore yet — we'll create one
+    }
+
+    // Idempotent: skip if we already added our entries
+    if (existing.includes(PTYService.GITIGNORE_MARKER)) return;
+
+    // Include all common patterns so multi-agent swarms with mixed types are covered.
+    const entries = [
+      "",
+      PTYService.GITIGNORE_MARKER,
+      "CLAUDE.md",
+      ".claude/",
+      "GEMINI.md",
+      ".gemini/",
+      ".aider*",
+    ];
+
+    try {
+      if (existing.length === 0) {
+        // No .gitignore yet — create with just our entries
+        await writeFile(gitignorePath, entries.join("\n") + "\n", "utf-8");
+      } else {
+        // Append-only to avoid clobbering concurrent edits
+        const separator = existing.endsWith("\n") ? "" : "\n";
+        await appendFile(gitignorePath, separator + entries.join("\n") + "\n", "utf-8");
+      }
+    } catch (err) {
+      this.log(`Failed to update .gitignore in ${workdir}: ${err}`);
+    }
   }
 
   // ─── Event & Adapter Registration ───

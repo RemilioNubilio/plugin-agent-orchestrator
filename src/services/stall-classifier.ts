@@ -20,6 +20,7 @@ import type {
   TaskContextSummary,
   DecisionHistoryEntry,
 } from "./swarm-coordinator-prompts.js";
+import { withTrajectoryContext } from "./trajectory-context.js";
 
 /** Everything the classifier needs, passed in from PTYService. */
 export interface StallClassifierContext {
@@ -199,9 +200,15 @@ export async function classifyStallOutput(
 
   try {
     log(`Stall detected for ${sessionId}, asking LLM to classify...`);
-    const result = await runtime.useModel(ModelType.TEXT_SMALL, {
-      prompt: systemPrompt,
-    });
+    const result = await withTrajectoryContext(
+      runtime,
+      {
+        source: "orchestrator",
+        decisionType: "stall-classification",
+        sessionId,
+      },
+      () => runtime.useModel(ModelType.TEXT_SMALL, { prompt: systemPrompt }),
+    );
 
     const jsonMatch = result.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
@@ -382,9 +389,19 @@ export async function classifyAndDecideForCoordinator(
     log(
       `Stall detected for coordinator-managed ${sessionId}, combined classify+decide...`,
     );
-    const result = await runtime.useModel(ModelType.TEXT_SMALL, {
-      prompt: systemPrompt,
-    });
+    const result = await withTrajectoryContext(
+      runtime,
+      {
+        source: "orchestrator",
+        decisionType: "stall-classify-decide",
+        sessionId,
+        taskLabel: taskContext.label,
+        repo: taskContext.repo,
+        workdir: taskContext.workdir,
+        originalTask: taskContext.originalTask,
+      },
+      () => runtime.useModel(ModelType.TEXT_SMALL, { prompt: systemPrompt }),
+    );
 
     const jsonMatch = result.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
