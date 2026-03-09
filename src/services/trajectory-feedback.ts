@@ -233,14 +233,16 @@ export async function queryPastExperience(
 
     const experiences: PastExperience[] = [];
 
-    // Scan each trajectory for insights
-    for (const summary of result.trajectories) {
-      if (experiences.length >= maxEntries * 2) break; // Over-fetch for filtering
+    // Scan each trajectory for insights. Use trajectory count (not raw experience
+    // count) as the scan limit since duplicates and filtering can reduce the yield.
+    const maxScans = Math.min(result.trajectories.length, maxTrajectories);
+    for (let scanIdx = 0; scanIdx < maxScans; scanIdx++) {
+      const summary = result.trajectories[scanIdx];
 
       const detail = await withTimeout(
         logger.getTrajectoryDetail(summary.id),
         QUERY_TIMEOUT_MS,
-      );
+      ).catch(() => null);
       if (!detail?.steps) continue;
 
       const metadata = detail.metadata as
@@ -253,7 +255,7 @@ export async function queryPastExperience(
       // Filter by repo: if a repo is specified, only include trajectories
       // from the same repo. This ensures agents working on repo A don't get
       // decisions made for repo B.
-      if (repo && trajectoryRepo && trajectoryRepo !== repo) continue;
+      if (repo && (!trajectoryRepo || trajectoryRepo !== repo)) continue;
 
       for (const step of detail.steps) {
         if (!step.llmCalls) continue;

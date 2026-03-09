@@ -408,7 +408,7 @@ export class PTYService {
 
     // Ensure injected config/memory files are gitignored so agents don't
     // commit them. Appends to existing .gitignore if present.
-    if (resolvedAgentType !== "shell") {
+    if (resolvedAgentType !== "shell" && workdir !== process.cwd()) {
       await this.ensureOrchestratorGitignore(workdir);
     }
 
@@ -841,17 +841,41 @@ export class PTYService {
   private static readonly GITIGNORE_MARKER =
     "# orchestrator-injected (do not commit agent config/memory files)";
 
+  /** Per-path lock to serialize concurrent gitignore updates for the same workdir. */
+  private static gitignoreLocks = new Map<string, Promise<void>>();
+
   /**
    * Ensure that orchestrator-injected files (CLAUDE.md, .claude/, GEMINI.md, etc.)
    * are listed in the workspace .gitignore so agents don't commit them.
    * Appends to an existing .gitignore or creates one. Idempotent — skips if
-   * the marker comment is already present.
+   * the marker comment is already present. Serialized per-path to prevent
+   * duplicate entries from concurrent spawns.
    */
   private async ensureOrchestratorGitignore(
     workdir: string,
   ): Promise<void> {
     const gitignorePath = join(workdir, ".gitignore");
 
+    // Serialize per-path: wait for any in-flight update to the same file.
+    const existing_lock = PTYService.gitignoreLocks.get(gitignorePath);
+    if (existing_lock) await existing_lock;
+
+    const task = this.doEnsureGitignore(gitignorePath, workdir);
+    PTYService.gitignoreLocks.set(gitignorePath, task);
+    try {
+      await task;
+    } finally {
+      // Only delete if we're still the current holder
+      if (PTYService.gitignoreLocks.get(gitignorePath) === task) {
+        PTYService.gitignoreLocks.delete(gitignorePath);
+      }
+    }
+  }
+
+  private async doEnsureGitignore(
+    gitignorePath: string,
+    workdir: string,
+  ): Promise<void> {
     let existing = "";
     try {
       existing = await readFile(gitignorePath, "utf-8");
@@ -862,8 +886,7 @@ export class PTYService {
     // Idempotent: skip if we already added our entries
     if (existing.includes(PTYService.GITIGNORE_MARKER)) return;
 
-    // Build the entries based on agent type. Include all common patterns
-    // so multi-agent swarms with mixed types are covered.
+    // Include all common patterns so multi-agent swarms with mixed types are covered.
     const entries = [
       "",
       PTYService.GITIGNORE_MARKER,
