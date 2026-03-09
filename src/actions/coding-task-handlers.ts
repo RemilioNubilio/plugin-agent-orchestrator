@@ -354,7 +354,7 @@ export async function handleMultiAgent(
 
       // Append swarm coordination instructions to agent memory so the agent
       // knows to surface design decisions explicitly for the orchestrator.
-      const swarmMemory = agentSpecs.length > 1
+      const swarmMemory = agentSpecs.length > 1 && swarmContext
         ? buildSwarmMemoryInstructions(specLabel, specTask, cleanSubtasks, i)
         : undefined;
       const agentMemory = [memoryContent, swarmMemory, pastExperienceBlock]

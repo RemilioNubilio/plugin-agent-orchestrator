@@ -36,9 +36,10 @@ async function ensureOrchestratorGitignore(workdir: string): Promise<void> {
 
   if (existing.includes(GITIGNORE_MARKER)) return;
 
+  const separator = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
   await writeFile(
     gitignorePath,
-    existing + ORCHESTRATOR_ENTRIES.join("\n") + "\n",
+    existing + separator + ORCHESTRATOR_ENTRIES.join("\n") + "\n",
     "utf-8",
   );
 }

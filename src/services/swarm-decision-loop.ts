@@ -589,13 +589,22 @@ export async function handleBlocked(
     return;
   }
 
-  // Deduplicate: if an LLM decision is already in-flight for this session,
-  // skip the duplicate blocked event. TUI re-renders and hook events can
-  // cause the same permission prompt to fire many times in rapid succession.
+  // Deduplicate: if an LLM decision is already in-flight for this session
+  // AND the prompt text matches the one already being handled, skip.
+  // TUI re-renders fire the same prompt many times; a *different* prompt
+  // (theoretically possible if the agent resolves one prompt and immediately
+  // hits another) should not be dropped.
+  const promptFingerprint = promptText.slice(0, 200);
   if (ctx.inFlightDecisions.has(sessionId)) {
-    ctx.log(`Skipping duplicate blocked event for ${taskCtx.label} (decision in-flight)`);
-    return;
+    if (ctx.lastBlockedPromptFingerprint.get(sessionId) === promptFingerprint) {
+      ctx.log(`Skipping duplicate blocked event for ${taskCtx.label} (decision in-flight, same prompt)`);
+      return;
+    }
+    // Different prompt — let it through after the current decision completes.
+    // Buffer it like we do for turn-complete events.
+    ctx.log(`New blocked prompt for ${taskCtx.label} while decision in-flight — buffering`);
   }
+  ctx.lastBlockedPromptFingerprint.set(sessionId, promptFingerprint);
 
   // Broadcast that the agent is blocked (for all supervision levels)
   ctx.broadcast({

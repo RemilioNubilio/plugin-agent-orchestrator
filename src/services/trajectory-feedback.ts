@@ -276,7 +276,7 @@ export async function queryPastExperience(
     // Deduplicate by insight text (keep most recent)
     const seen = new Map<string, PastExperience>();
     for (const exp of filtered) {
-      const key = exp.insight.toLowerCase().slice(0, 80);
+      const key = exp.insight.toLowerCase();
       const existing = seen.get(key);
       if (!existing || exp.timestamp > existing.timestamp) {
         seen.set(key, exp);

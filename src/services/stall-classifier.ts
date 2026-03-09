@@ -395,6 +395,10 @@ export async function classifyAndDecideForCoordinator(
         source: "orchestrator",
         decisionType: "stall-classify-decide",
         sessionId,
+        taskLabel: taskContext.label,
+        repo: taskContext.repo,
+        workdir: taskContext.workdir,
+        originalTask: taskContext.originalTask,
       },
       () => runtime.useModel(ModelType.TEXT_SMALL, { prompt: systemPrompt }),
     );

@@ -239,6 +239,9 @@ export async function handleIdleCheck(
           decisionType: "idle-check",
           sessionId,
           taskLabel: taskCtx.label,
+          repo: taskCtx.repo,
+          workdir: taskCtx.workdir,
+          originalTask: taskCtx.originalTask,
         },
         () => ctx.runtime.useModel(ModelType.TEXT_SMALL, { prompt }),
       );

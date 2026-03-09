@@ -409,7 +409,7 @@ export class PTYService {
     // Ensure injected config/memory files are gitignored so agents don't
     // commit them. Appends to existing .gitignore if present.
     if (resolvedAgentType !== "shell") {
-      await this.ensureOrchestratorGitignore(workdir, resolvedAgentType);
+      await this.ensureOrchestratorGitignore(workdir);
     }
 
     const spawnConfig = buildSpawnConfig(
@@ -849,7 +849,6 @@ export class PTYService {
    */
   private async ensureOrchestratorGitignore(
     workdir: string,
-    agentType: string,
   ): Promise<void> {
     const gitignorePath = join(workdir, ".gitignore");
 
@@ -876,9 +875,10 @@ export class PTYService {
     ];
 
     try {
+      const separator = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
       await writeFile(
         gitignorePath,
-        existing + entries.join("\n") + "\n",
+        existing + separator + entries.join("\n") + "\n",
         "utf-8",
       );
     } catch (err) {
