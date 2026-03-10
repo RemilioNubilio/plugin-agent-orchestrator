@@ -62,6 +62,12 @@ import {
   classifyStallOutput,
 } from "./stall-classifier.js";
 import { SwarmCoordinator } from "./swarm-coordinator.js";
+import {
+  captureFeed,
+  captureLifecycle,
+  captureSessionOpen,
+  isDebugCaptureEnabled,
+} from "./debug-capture.js";
 
 export type {
   CodingAgentType,
@@ -464,6 +470,18 @@ export class PTYService {
       setupOutputBuffer(ctx, session.id);
     }
 
+    // Debug capture: open a capture session and wire stdout feed.
+    // Capture files persist after the agent is killed for offline analysis.
+    if (isDebugCaptureEnabled()) {
+      captureSessionOpen(session.id, resolvedAgentType).catch(() => {});
+      if (this.usingBunWorker) {
+        (this.manager as BunCompatiblePTYManager).onSessionData(
+          session.id,
+          (data: string) => { captureFeed(session.id, data, "stdout"); },
+        );
+      }
+    }
+
     // Defer initial task until session is ready.
     // IMPORTANT: Set up the listener BEFORE pushDefaultRules (which has a 1500ms sleep),
     // otherwise session_ready fires during pushDefaultRules and the listener misses it.
@@ -516,6 +534,7 @@ export class PTYService {
     input: string,
   ): Promise<SessionMessage | undefined> {
     if (!this.manager) throw new Error("PTYService not initialized");
+    captureFeed(sessionId, input, "stdin");
     return sendToSessionIO(this.ioContext(), sessionId, input);
   }
 
@@ -529,6 +548,7 @@ export class PTYService {
 
   async stopSession(sessionId: string, force = false): Promise<void> {
     if (!this.manager) throw new Error("PTYService not initialized");
+    captureLifecycle(sessionId, "session_stopped", force ? "force" : undefined);
     return stopSessionIO(
       this.ioContext(),
       sessionId,
@@ -736,6 +756,20 @@ export class PTYService {
     ) {
       const taskCtx = this.coordinator.getTaskContext(sessionId);
       if (taskCtx) {
+        // Suppress stall classification during the post-send cooldown.
+        // The agent is processing coordinator input — the output buffer
+        // still contains the previous response, so classifying now would
+        // produce a stale "task_complete" that triggers cascading follow-ups.
+        if (taskCtx.lastInputSentAt) {
+          const elapsed = Date.now() - taskCtx.lastInputSentAt;
+          if (elapsed < 15_000) {
+            this.log(
+              `Suppressing stall classification for ${sessionId} — ` +
+              `${Math.round(elapsed / 1000)}s since coordinator sent input`,
+            );
+            return null;
+          }
+        }
         return classifyAndDecideForCoordinator({
           sessionId,
           recentOutput,

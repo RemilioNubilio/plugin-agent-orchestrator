@@ -52,6 +52,13 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 /** Maximum consecutive auto-responses before escalating to a human. */
 const MAX_AUTO_RESPONSES = 10;
 
+/**
+ * Grace period after the coordinator sends input to an agent (ms).
+ * During this window, stall and turn-complete events are suppressed
+ * to give the agent time to process the input before re-assessment.
+ */
+const POST_SEND_COOLDOWN_MS = 15_000;
+
 // ─── Helpers ───
 
 /** Build a TaskContextSummary from a TaskContext. */
@@ -431,7 +438,8 @@ export async function executeDecision(
   if (!ctx.ptyService) return;
 
   switch (decision.action) {
-    case "respond":
+    case "respond": {
+      const taskCtx = ctx.tasks.get(sessionId);
       if (decision.useKeys && decision.keys) {
         await ctx.ptyService.sendKeysToSession(sessionId, decision.keys);
       } else if (decision.response !== undefined) {
@@ -446,7 +454,11 @@ export async function executeDecision(
           commitSharedDecisionIndex(ctx, sessionId, snapshotIndex);
         }
       }
+      // Mark the send time so stall/turn-complete events are suppressed
+      // during the grace period while the agent processes this input.
+      if (taskCtx) taskCtx.lastInputSentAt = Date.now();
       break;
+    }
 
     case "complete": {
       // LLM recognized the task is done — trigger completion flow
@@ -703,6 +715,21 @@ export async function handleTurnComplete(
     ctx.log(`Buffering turn-complete for ${sessionId} (in-flight decision running)`);
     ctx.pendingTurnComplete.set(sessionId, data);
     return;
+  }
+
+  // Suppress turn-complete events during the post-send cooldown period.
+  // After the coordinator sends input, the agent needs time to process it.
+  // Without this, stall-classified "task_complete" events from stale output
+  // trigger cascading follow-ups before the agent starts responding.
+  if (taskCtx.lastInputSentAt) {
+    const elapsed = Date.now() - taskCtx.lastInputSentAt;
+    if (elapsed < POST_SEND_COOLDOWN_MS) {
+      ctx.log(
+        `Suppressing turn-complete for "${taskCtx.label}" — ` +
+        `${Math.round(elapsed / 1000)}s since last input (cooldown ${POST_SEND_COOLDOWN_MS / 1000}s)`,
+      );
+      return;
+    }
   }
 
   ctx.inFlightDecisions.add(sessionId);

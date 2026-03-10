@@ -100,6 +100,9 @@ export interface TaskContext {
   completionSummary?: string;
   /** Index into sharedDecisions[] — tracks which decisions this agent has already seen. */
   lastSeenDecisionIndex: number;
+  /** Timestamp of last coordinator-sent input. Used to suppress stall/turn-complete
+   *  events for a grace period so the agent has time to process the input. */
+  lastInputSentAt?: number;
 }
 
 export interface CoordinationDecision {

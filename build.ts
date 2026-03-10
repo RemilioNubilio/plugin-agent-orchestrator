@@ -44,6 +44,7 @@ async function build() {
             "git-workspace-service",
             "pty-manager",
             "pty-console",
+            "pty-state-capture",
             "zod",
           ],
           naming: {
