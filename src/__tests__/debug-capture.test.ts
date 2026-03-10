@@ -9,12 +9,21 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
+import {
+  _resetForTesting,
+  captureFeed,
+  captureLifecycle,
+  captureSessionOpen,
+  captureSnapshot,
+  isDebugCaptureEnabled,
+} from "../services/debug-capture.js";
 
-// Save and restore env var around each test
+// Save and restore env var + module state around each test
 let originalEnv: string | undefined;
 
 beforeEach(() => {
   originalEnv = process.env.PARALLAX_DEBUG_CAPTURE;
+  _resetForTesting();
 });
 
 afterEach(() => {
@@ -23,34 +32,25 @@ afterEach(() => {
   } else {
     process.env.PARALLAX_DEBUG_CAPTURE = originalEnv;
   }
+  _resetForTesting();
 });
 
 // ---------------------------------------------------------------------------
 // isDebugCaptureEnabled
 // ---------------------------------------------------------------------------
 describe("isDebugCaptureEnabled", () => {
-  it("returns false when env var is not set", async () => {
+  it("returns false when env var is not set", () => {
     delete process.env.PARALLAX_DEBUG_CAPTURE;
-    // Re-import to get fresh module
-    const { isDebugCaptureEnabled } = await import(
-      "../services/debug-capture.js"
-    );
     expect(isDebugCaptureEnabled()).toBe(false);
   });
 
-  it("returns false when env var is '0'", async () => {
+  it("returns false when env var is '0'", () => {
     process.env.PARALLAX_DEBUG_CAPTURE = "0";
-    const { isDebugCaptureEnabled } = await import(
-      "../services/debug-capture.js"
-    );
     expect(isDebugCaptureEnabled()).toBe(false);
   });
 
-  it("returns true when env var is '1'", async () => {
+  it("returns true when env var is '1'", () => {
     process.env.PARALLAX_DEBUG_CAPTURE = "1";
-    const { isDebugCaptureEnabled } = await import(
-      "../services/debug-capture.js"
-    );
     expect(isDebugCaptureEnabled()).toBe(true);
   });
 });
@@ -61,24 +61,18 @@ describe("isDebugCaptureEnabled", () => {
 describe("capture functions when disabled", () => {
   it("captureFeed does nothing when capture is not enabled", async () => {
     delete process.env.PARALLAX_DEBUG_CAPTURE;
-    const { captureFeed } = await import("../services/debug-capture.js");
-
     // Should not throw
     await captureFeed("test-session", "hello world", "stdout");
   });
 
   it("captureLifecycle does nothing when capture is not enabled", async () => {
     delete process.env.PARALLAX_DEBUG_CAPTURE;
-    const { captureLifecycle } = await import("../services/debug-capture.js");
-
     // Should not throw
     await captureLifecycle("test-session", "session_stopped");
   });
 
-  it("captureSnapshot returns null when capture is not enabled", async () => {
+  it("captureSnapshot returns null when capture is not enabled", () => {
     delete process.env.PARALLAX_DEBUG_CAPTURE;
-    const { captureSnapshot } = await import("../services/debug-capture.js");
-
     expect(captureSnapshot("test-session")).toBeNull();
   });
 });
@@ -89,11 +83,14 @@ describe("capture functions when disabled", () => {
 describe("captureSessionOpen", () => {
   it("does not throw when env is disabled", async () => {
     delete process.env.PARALLAX_DEBUG_CAPTURE;
-    const { captureSessionOpen } = await import(
-      "../services/debug-capture.js"
-    );
-
     // Should resolve without error
+    await captureSessionOpen("test-session", "claude");
+  });
+
+  it("does not throw when env is enabled but package unavailable", async () => {
+    process.env.PARALLAX_DEBUG_CAPTURE = "1";
+    // pty-state-capture may or may not be installed in test env.
+    // Either way, this should not throw.
     await captureSessionOpen("test-session", "claude");
   });
 });

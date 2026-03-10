@@ -57,7 +57,7 @@ const MAX_AUTO_RESPONSES = 10;
  * During this window, stall and turn-complete events are suppressed
  * to give the agent time to process the input before re-assessment.
  */
-const POST_SEND_COOLDOWN_MS = 15_000;
+export const POST_SEND_COOLDOWN_MS = 15_000;
 
 // ─── Helpers ───
 

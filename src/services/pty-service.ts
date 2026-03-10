@@ -61,6 +61,7 @@ import {
   classifyAndDecideForCoordinator,
   classifyStallOutput,
 } from "./stall-classifier.js";
+import { POST_SEND_COOLDOWN_MS } from "./swarm-decision-loop.js";
 import { SwarmCoordinator } from "./swarm-coordinator.js";
 import {
   captureFeed,
@@ -479,6 +480,13 @@ export class PTYService {
           session.id,
           (data: string) => { captureFeed(session.id, data, "stdout"); },
         );
+      } else {
+        const ptySession = (this.manager as PTYManager).getSession(session.id);
+        if (ptySession) {
+          ptySession.on("output", (data: string) => {
+            captureFeed(session.id, data, "stdout");
+          });
+        }
       }
     }
 
@@ -762,7 +770,7 @@ export class PTYService {
         // produce a stale "task_complete" that triggers cascading follow-ups.
         if (taskCtx.lastInputSentAt) {
           const elapsed = Date.now() - taskCtx.lastInputSentAt;
-          if (elapsed < 15_000) {
+          if (elapsed < POST_SEND_COOLDOWN_MS) {
             this.log(
               `Suppressing stall classification for ${sessionId} — ` +
               `${Math.round(elapsed / 1000)}s since coordinator sent input`,

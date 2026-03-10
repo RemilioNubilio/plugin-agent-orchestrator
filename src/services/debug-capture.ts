@@ -127,5 +127,16 @@ export async function captureLifecycle(
  */
 export function captureSnapshot(sessionId: string): unknown | null {
   if (!captureManager) return null;
-  return captureManager.snapshot(sessionId);
+  try {
+    return captureManager.snapshot(sessionId);
+  } catch (err) {
+    logger.debug(`[debug-capture] Snapshot error for ${sessionId}: ${err}`);
+    return null;
+  }
+}
+
+/** @internal Reset module state for testing only. */
+export function _resetForTesting(): void {
+  captureManager = null;
+  initAttempted = false;
 }
