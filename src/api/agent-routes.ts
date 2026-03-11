@@ -40,6 +40,45 @@ function shouldAutoPreflight(): boolean {
   return false;
 }
 
+function resolveSafeVenvPath(workdir: string, venvDirRaw: string): string {
+  const venvDir = venvDirRaw.trim();
+  if (!venvDir) {
+    throw new Error("PARALLAX_BENCHMARK_PREFLIGHT_VENV must be non-empty");
+  }
+  if (path.isAbsolute(venvDir)) {
+    throw new Error(
+      "PARALLAX_BENCHMARK_PREFLIGHT_VENV must be relative to workdir",
+    );
+  }
+
+  const normalized = path.normalize(venvDir);
+  if (
+    normalized === "." ||
+    normalized === ".." ||
+    normalized.startsWith(`..${path.sep}`)
+  ) {
+    throw new Error(
+      "PARALLAX_BENCHMARK_PREFLIGHT_VENV must stay within workdir",
+    );
+  }
+
+  const resolved = path.resolve(workdir, normalized);
+  const workdirResolved = path.resolve(workdir);
+  const workdirPrefix = `${workdirResolved}${path.sep}`;
+  if (resolved !== workdirResolved && !resolved.startsWith(workdirPrefix)) {
+    throw new Error(
+      "PARALLAX_BENCHMARK_PREFLIGHT_VENV resolves outside workdir",
+    );
+  }
+  if (resolved === workdirResolved) {
+    throw new Error(
+      "PARALLAX_BENCHMARK_PREFLIGHT_VENV must not resolve to workdir root",
+    );
+  }
+
+  return resolved;
+}
+
 async function fileExists(filePath: string): Promise<boolean> {
   try {
     await access(filePath);
@@ -71,10 +110,10 @@ async function runBenchmarkPreflight(workdir: string): Promise<void> {
       ? "warm"
       : "cold";
   const venvDir = process.env.PARALLAX_BENCHMARK_PREFLIGHT_VENV || ".benchmark-venv";
-  const key = `${workdir}::${mode}::${venvDir}`;
+  const venvPath = resolveSafeVenvPath(workdir, venvDir);
+  const key = `${workdir}::${mode}::${venvPath}`;
   if (PREFLIGHT_DONE.has(key)) return;
 
-  const venvPath = path.join(workdir, venvDir);
   const pythonInVenv = path.join(
     venvPath,
     process.platform === "win32" ? "Scripts" : "bin",
