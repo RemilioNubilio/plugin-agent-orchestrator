@@ -10,7 +10,7 @@
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { access, rm, stat } from "node:fs/promises";
+import { access, realpath, rm, stat } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { execFile } from "node:child_process";
@@ -26,6 +26,7 @@ import { parseBody, sendError, sendJson } from "./routes.js";
 
 const execFileAsync = promisify(execFile);
 const PREFLIGHT_DONE = new Set<string>();
+const PREFLIGHT_INFLIGHT = new Map<string, Promise<void>>();
 
 type JsonValue =
   | string
@@ -40,7 +41,14 @@ function shouldAutoPreflight(): boolean {
   return false;
 }
 
-function resolveSafeVenvPath(workdir: string, venvDirRaw: string): string {
+function isPathInside(parent: string, candidate: string): boolean {
+  return candidate === parent || candidate.startsWith(`${parent}${path.sep}`);
+}
+
+async function resolveSafeVenvPath(
+  workdir: string,
+  venvDirRaw: string,
+): Promise<string> {
   const venvDir = venvDirRaw.trim();
   if (!venvDir) {
     throw new Error("PARALLAX_BENCHMARK_PREFLIGHT_VENV must be non-empty");
@@ -62,18 +70,37 @@ function resolveSafeVenvPath(workdir: string, venvDirRaw: string): string {
     );
   }
 
-  const resolved = path.resolve(workdir, normalized);
   const workdirResolved = path.resolve(workdir);
-  const workdirPrefix = `${workdirResolved}${path.sep}`;
-  if (resolved !== workdirResolved && !resolved.startsWith(workdirPrefix)) {
+  const workdirReal = await realpath(workdirResolved);
+  const resolved = path.resolve(workdirReal, normalized);
+  if (!isPathInside(workdirReal, resolved)) {
     throw new Error(
       "PARALLAX_BENCHMARK_PREFLIGHT_VENV resolves outside workdir",
     );
   }
-  if (resolved === workdirResolved) {
+  if (resolved === workdirReal) {
     throw new Error(
       "PARALLAX_BENCHMARK_PREFLIGHT_VENV must not resolve to workdir root",
     );
+  }
+
+  // Canonicalize candidate when present to reject symlink escapes.
+  try {
+    const resolvedReal = await realpath(resolved);
+    if (!isPathInside(workdirReal, resolvedReal) || resolvedReal === workdirReal) {
+      throw new Error(
+        "PARALLAX_BENCHMARK_PREFLIGHT_VENV resolves outside workdir",
+      );
+    }
+  } catch (err) {
+    const maybeErr = err as NodeJS.ErrnoException;
+    if (maybeErr?.code !== "ENOENT") throw err;
+    const parentReal = await realpath(path.dirname(resolved));
+    if (!isPathInside(workdirReal, parentReal)) {
+      throw new Error(
+        "PARALLAX_BENCHMARK_PREFLIGHT_VENV parent resolves outside workdir",
+      );
+    }
   }
 
   return resolved;
@@ -89,12 +116,19 @@ async function fileExists(filePath: string): Promise<boolean> {
 }
 
 async function resolveRequirementsPath(workdir: string): Promise<string | null> {
+  const workdirReal = await realpath(path.resolve(workdir));
   const candidates = [
     path.join(workdir, "apps", "api", "requirements.txt"),
     path.join(workdir, "requirements.txt"),
   ];
   for (const candidate of candidates) {
-    if (await fileExists(candidate)) return candidate;
+    if (!(await fileExists(candidate))) continue;
+    try {
+      const candidateReal = await realpath(candidate);
+      if (isPathInside(workdirReal, candidateReal)) return candidateReal;
+    } catch {
+      // Ignore malformed candidate and keep scanning.
+    }
   }
   return null;
 }
@@ -110,55 +144,68 @@ async function runBenchmarkPreflight(workdir: string): Promise<void> {
       ? "warm"
       : "cold";
   const venvDir = process.env.PARALLAX_BENCHMARK_PREFLIGHT_VENV || ".benchmark-venv";
-  const venvPath = resolveSafeVenvPath(workdir, venvDir);
+  const venvPath = await resolveSafeVenvPath(workdir, venvDir);
   const key = `${workdir}::${mode}::${venvPath}`;
   if (PREFLIGHT_DONE.has(key)) return;
+  const existing = PREFLIGHT_INFLIGHT.get(key);
+  if (existing) {
+    await existing;
+    return;
+  }
 
-  const pythonInVenv = path.join(
-    venvPath,
-    process.platform === "win32" ? "Scripts" : "bin",
-    process.platform === "win32" ? "python.exe" : "python",
-  );
+  const run = (async () => {
+    const pythonInVenv = path.join(
+      venvPath,
+      process.platform === "win32" ? "Scripts" : "bin",
+      process.platform === "win32" ? "python.exe" : "python",
+    );
 
-  if (mode === "cold") {
-    try {
-      await stat(venvPath);
-      await rm(venvPath, { recursive: true, force: true });
-    } catch {
-      // no-op: venv does not exist yet
+    if (mode === "cold") {
+      try {
+        await stat(venvPath);
+        await rm(venvPath, { recursive: true, force: true });
+      } catch {
+        // no-op: venv does not exist yet
+      }
     }
+
+    const hasVenv = await fileExists(pythonInVenv);
+    if (!hasVenv) {
+      await execFileAsync("python3", ["-m", "venv", venvPath], {
+        cwd: workdir,
+        timeout: 120_000,
+        maxBuffer: 8 * 1024 * 1024,
+      });
+    }
+
+    await execFileAsync(
+      pythonInVenv,
+      ["-m", "pip", "install", "--upgrade", "pip"],
+      {
+        cwd: workdir,
+        timeout: 300_000,
+        maxBuffer: 8 * 1024 * 1024,
+      },
+    );
+
+    await execFileAsync(
+      pythonInVenv,
+      ["-m", "pip", "install", "-r", requirementsPath],
+      {
+        cwd: workdir,
+        timeout: 600_000,
+        maxBuffer: 16 * 1024 * 1024,
+      },
+    );
+
+    PREFLIGHT_DONE.add(key);
+  })();
+  PREFLIGHT_INFLIGHT.set(key, run);
+  try {
+    await run;
+  } finally {
+    PREFLIGHT_INFLIGHT.delete(key);
   }
-
-  const hasVenv = await fileExists(pythonInVenv);
-  if (!hasVenv) {
-    await execFileAsync("python3", ["-m", "venv", venvPath], {
-      cwd: workdir,
-      timeout: 120_000,
-      maxBuffer: 8 * 1024 * 1024,
-    });
-  }
-
-  await execFileAsync(
-    pythonInVenv,
-    ["-m", "pip", "install", "--upgrade", "pip"],
-    {
-      cwd: workdir,
-      timeout: 300_000,
-      maxBuffer: 8 * 1024 * 1024,
-    },
-  );
-
-  await execFileAsync(
-    pythonInVenv,
-    ["-m", "pip", "install", "-r", requirementsPath],
-    {
-      cwd: workdir,
-      timeout: 600_000,
-      maxBuffer: 16 * 1024 * 1024,
-    },
-  );
-
-  PREFLIGHT_DONE.add(key);
 }
 
 /**
@@ -387,17 +434,6 @@ export async function handleAgentRoutes(
         workdir = resolved;
       }
 
-      if (workdir) {
-        try {
-          await runBenchmarkPreflight(workdir);
-        } catch (preflightError) {
-          console.warn(
-            `[coding-agent] benchmark preflight failed for ${workdir}:`,
-            preflightError,
-          );
-        }
-      }
-
       // Check concurrency limit before spawning
       const activeSessions = await ctx.ptyService.listSessions();
       const maxSessions = 8;
@@ -408,6 +444,17 @@ export async function handleAgentRoutes(
           429,
         );
         return true;
+      }
+
+      if (workdir) {
+        try {
+          await runBenchmarkPreflight(workdir);
+        } catch (preflightError) {
+          console.warn(
+            `[coding-agent] benchmark preflight failed for ${workdir}:`,
+            preflightError,
+          );
+        }
       }
 
       // Build credentials from runtime

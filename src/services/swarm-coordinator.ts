@@ -27,6 +27,7 @@ import type { PTYService } from "./pty-service.js";
 import type { CodingAgentType } from "./pty-types.js";
 import type { CoordinationLLMResponse, SharedDecision } from "./swarm-coordinator-prompts.js";
 import {
+  clearDeferredTurnCompleteTimers,
   checkAllTasksComplete,
   executeDecision as execDecision,
   handleBlocked,
@@ -375,6 +376,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
     this.pendingDecisions.clear();
     this.inFlightDecisions.clear();
     this.pendingTurnComplete.clear();
+    clearDeferredTurnCompleteTimers();
     this.lastBlockedPromptFingerprint.clear();
     this.pendingBlocked.clear();
     this.unregisteredBuffer.clear();

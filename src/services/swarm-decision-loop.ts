@@ -60,6 +60,14 @@ const MAX_AUTO_RESPONSES = 10;
 export const POST_SEND_COOLDOWN_MS = 15_000;
 const deferredTurnCompleteTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
+/** Clear all deferred turn-complete timers (used during coordinator shutdown). */
+export function clearDeferredTurnCompleteTimers(): void {
+  for (const timer of deferredTurnCompleteTimers.values()) {
+    clearTimeout(timer);
+  }
+  deferredTurnCompleteTimers.clear();
+}
+
 // ─── Helpers ───
 
 /** Build a TaskContextSummary from a TaskContext. */
@@ -346,16 +354,16 @@ export function checkAllTasksComplete(ctx: SwarmCoordinatorContext): void {
       const decisions = ctx.sharedDecisions
         .filter((sd) => sd.agentLabel === t.label)
         .map((sd) => sd.summary);
-      const parts: string[] = [];
-      if (decisions.length > 0) parts.push(decisions.join("; "));
-      if (t.completionSummary) parts.push(t.completionSummary);
+      const summaryParts: string[] = [];
+      if (decisions.length > 0) summaryParts.push(decisions.join("; "));
+      if (t.completionSummary) summaryParts.push(t.completionSummary);
       return {
         sessionId: t.sessionId,
         label: t.label,
         agentType: t.agentType,
         originalTask: t.originalTask,
         status: t.status,
-        completionSummary: parts.join("\n") || "",
+        completionSummary: summaryParts.join("\n") || "",
       };
     });
     // Wrap in Promise.resolve().then() to catch sync throws, and race against

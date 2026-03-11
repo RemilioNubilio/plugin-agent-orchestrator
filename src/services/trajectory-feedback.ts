@@ -17,6 +17,7 @@ import { type IAgentRuntime, logger as elizaLogger } from "@elizaos/core";
 
 /** Timeout for trajectory DB calls to prevent blocking agent spawn. */
 const QUERY_TIMEOUT_MS = 5000;
+const SLOW_PATH_BUDGET_MS = 15_000;
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return Promise.race([
@@ -233,6 +234,7 @@ export async function queryPastExperience(
     if (!result.trajectories || result.trajectories.length === 0) return [];
 
     const experiences: PastExperience[] = [];
+    const slowPathDeadline = Date.now() + SLOW_PATH_BUDGET_MS;
 
     // Scan each trajectory for insights. Prefer pre-extracted insights from
     // metadata (populated at write time by milaidy's trajectory-persistence)
@@ -250,9 +252,17 @@ export async function queryPastExperience(
               taskLabel?: string;
               repo?: string;
             };
-            insights?: string[];
+            insights?: unknown;
           }
         | undefined;
+      const metadataInsights = Array.isArray(metadata?.insights)
+        ? metadata.insights
+            .filter(
+              (value): value is string =>
+                typeof value === "string" && value.trim().length > 0,
+            )
+            .slice(0, 50)
+        : [];
       const decisionType =
         metadata?.orchestrator?.decisionType ?? "unknown";
       const taskLabel = metadata?.orchestrator?.taskLabel ?? "";
@@ -264,11 +274,11 @@ export async function queryPastExperience(
       if (repo && (!trajectoryRepo || trajectoryRepo !== repo)) continue;
 
       // Fast path: use pre-extracted insights from metadata (no full detail load)
-      if (metadata?.insights && metadata.insights.length > 0) {
+      if (metadataInsights.length > 0) {
         elizaLogger.debug(
-          `[trajectory-feedback] Fast path: ${metadata.insights.length} insight(s) from metadata for ${summary.id}`,
+          `[trajectory-feedback] Fast path: ${metadataInsights.length} insight(s) from metadata for ${summary.id}`,
         );
-        for (const insight of metadata.insights) {
+        for (const insight of metadataInsights) {
           experiences.push({
             timestamp: summary.startTime,
             decisionType,
@@ -280,6 +290,12 @@ export async function queryPastExperience(
       }
 
       // Slow path (fallback): load full detail for pre-extraction trajectories
+      if (Date.now() > slowPathDeadline) {
+        elizaLogger.debug(
+          `[trajectory-feedback] Slow path budget exhausted; stopping detail loads`,
+        );
+        break;
+      }
       elizaLogger.debug(
         `[trajectory-feedback] Slow path: loading full detail for ${summary.id} (no metadata insights)`,
       );
