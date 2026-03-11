@@ -54,6 +54,7 @@ export async function scanIdleSessions(
           `Idle watchdog: "${taskCtx.label}" — PTY session no longer exists, marking as stopped`,
         );
         taskCtx.status = "stopped";
+        taskCtx.stoppedAt = now;
         taskCtx.decisions.push({
           timestamp: now,
           event: "idle_watchdog",
@@ -121,6 +122,7 @@ export async function scanIdleSessions(
         `Idle watchdog: force-stopping "${taskCtx.label}" after ${MAX_IDLE_CHECKS} checks`,
       );
       taskCtx.status = "stopped";
+      taskCtx.stoppedAt = now;
       taskCtx.decisions.push({
         timestamp: now,
         event: "idle_watchdog",

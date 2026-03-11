@@ -322,6 +322,36 @@ describe("SwarmCoordinator", () => {
       expect(ctx.decisions.length).toBe(0);
     });
 
+    it("recovers a recently stopped session on late task_complete", async () => {
+      const ctx = coordinator.getTaskContext("s-1");
+      ctx.status = "stopped";
+      ctx.stoppedAt = Date.now();
+      mockRuntime.useModel.mockResolvedValue(
+        '{"action":"complete","reasoning":"Recovered late completion"}',
+      );
+
+      await coordinator.handleSessionEvent("s-1", "task_complete", {
+        response: "Done",
+      });
+
+      expect(ctx.status).toBe("completed");
+      expect(mockRuntime.useModel).toHaveBeenCalled();
+      expect(mockPty.stopSession).toHaveBeenCalledWith("s-1", true);
+    });
+
+    it("ignores stale task_complete for long-stopped sessions", async () => {
+      const ctx = coordinator.getTaskContext("s-1");
+      ctx.status = "stopped";
+      ctx.stoppedAt = Date.now() - 5 * 60_000; // outside recovery window
+
+      await coordinator.handleSessionEvent("s-1", "task_complete", {
+        response: "Done",
+      });
+
+      expect(ctx.status).toBe("stopped");
+      expect(mockRuntime.useModel).not.toHaveBeenCalled();
+    });
+
     it("skips events for completed sessions", async () => {
       const ctx = coordinator.getTaskContext("s-1");
       ctx.status = "completed";

@@ -13,7 +13,7 @@
  * @module services/trajectory-feedback
  */
 
-import type { IAgentRuntime } from "@elizaos/core";
+import { type IAgentRuntime, logger as elizaLogger } from "@elizaos/core";
 
 /** Timeout for trajectory DB calls to prevent blocking agent spawn. */
 const QUERY_TIMEOUT_MS = 5000;
@@ -102,6 +102,7 @@ type TrajectoryLoggerRef = {
       startTime: number;
       llmCallCount: number;
       createdAt: string;
+      metadata?: Record<string, unknown>;
     }>;
     total: number;
   }>;
@@ -233,22 +234,27 @@ export async function queryPastExperience(
 
     const experiences: PastExperience[] = [];
 
-    // Scan each trajectory for insights. Use trajectory count (not raw experience
-    // count) as the scan limit since duplicates and filtering can reduce the yield.
+    // Scan each trajectory for insights. Prefer pre-extracted insights from
+    // metadata (populated at write time by milaidy's trajectory-persistence)
+    // to avoid loading full trajectory details with their large prompt/response
+    // payloads. Fall back to getTrajectoryDetail for older trajectories that
+    // predate the metadata insight extraction.
     const maxScans = Math.min(result.trajectories.length, maxTrajectories);
     for (let scanIdx = 0; scanIdx < maxScans; scanIdx++) {
       const summary = result.trajectories[scanIdx];
 
-      const detail = await withTimeout(
-        logger.getTrajectoryDetail(summary.id),
-        QUERY_TIMEOUT_MS,
-      ).catch(() => null);
-      if (!detail?.steps) continue;
-
-      const metadata = detail.metadata as
-        | { orchestrator?: { decisionType?: string; taskLabel?: string; repo?: string } }
+      const metadata = summary.metadata as
+        | {
+            orchestrator?: {
+              decisionType?: string;
+              taskLabel?: string;
+              repo?: string;
+            };
+            insights?: string[];
+          }
         | undefined;
-      const decisionType = metadata?.orchestrator?.decisionType ?? "unknown";
+      const decisionType =
+        metadata?.orchestrator?.decisionType ?? "unknown";
       const taskLabel = metadata?.orchestrator?.taskLabel ?? "";
       const trajectoryRepo = metadata?.orchestrator?.repo;
 
@@ -256,6 +262,32 @@ export async function queryPastExperience(
       // from the same repo. This ensures agents working on repo A don't get
       // decisions made for repo B.
       if (repo && (!trajectoryRepo || trajectoryRepo !== repo)) continue;
+
+      // Fast path: use pre-extracted insights from metadata (no full detail load)
+      if (metadata?.insights && metadata.insights.length > 0) {
+        elizaLogger.debug(
+          `[trajectory-feedback] Fast path: ${metadata.insights.length} insight(s) from metadata for ${summary.id}`,
+        );
+        for (const insight of metadata.insights) {
+          experiences.push({
+            timestamp: summary.startTime,
+            decisionType,
+            taskLabel,
+            insight,
+          });
+        }
+        continue;
+      }
+
+      // Slow path (fallback): load full detail for pre-extraction trajectories
+      elizaLogger.debug(
+        `[trajectory-feedback] Slow path: loading full detail for ${summary.id} (no metadata insights)`,
+      );
+      const detail = await withTimeout(
+        logger.getTrajectoryDetail(summary.id),
+        QUERY_TIMEOUT_MS,
+      ).catch(() => null);
+      if (!detail?.steps) continue;
 
       for (const step of detail.steps) {
         if (!step.llmCalls) continue;
@@ -306,7 +338,7 @@ export async function queryPastExperience(
       .slice(0, maxEntries);
   } catch (err) {
     // Non-critical — log and return empty
-    console.error("[trajectory-feedback] Failed to query past experience:", err);
+    elizaLogger.error(`[trajectory-feedback] Failed to query past experience: ${err}`);
     return [];
   }
 }

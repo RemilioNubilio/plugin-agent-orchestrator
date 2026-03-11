@@ -10,8 +10,11 @@
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { access, rm, stat } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { getCoordinator } from "../services/pty-service.js";
 import {
   isPiAgentType,
@@ -21,6 +24,9 @@ import {
 import type { RouteContext } from "./routes.js";
 import { parseBody, sendError, sendJson } from "./routes.js";
 
+const execFileAsync = promisify(execFile);
+const PREFLIGHT_DONE = new Set<string>();
+
 type JsonValue =
   | string
   | number
@@ -28,6 +34,93 @@ type JsonValue =
   | null
   | JsonValue[]
   | { [key: string]: JsonValue };
+
+function shouldAutoPreflight(): boolean {
+  if (process.env.PARALLAX_BENCHMARK_PREFLIGHT_AUTO === "1") return true;
+  return false;
+}
+
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function resolveRequirementsPath(workdir: string): Promise<string | null> {
+  const candidates = [
+    path.join(workdir, "apps", "api", "requirements.txt"),
+    path.join(workdir, "requirements.txt"),
+  ];
+  for (const candidate of candidates) {
+    if (await fileExists(candidate)) return candidate;
+  }
+  return null;
+}
+
+async function runBenchmarkPreflight(workdir: string): Promise<void> {
+  if (!shouldAutoPreflight()) return;
+
+  const requirementsPath = await resolveRequirementsPath(workdir);
+  if (!requirementsPath) return;
+
+  const mode =
+    process.env.PARALLAX_BENCHMARK_PREFLIGHT_MODE?.toLowerCase() === "warm"
+      ? "warm"
+      : "cold";
+  const venvDir = process.env.PARALLAX_BENCHMARK_PREFLIGHT_VENV || ".benchmark-venv";
+  const key = `${workdir}::${mode}::${venvDir}`;
+  if (PREFLIGHT_DONE.has(key)) return;
+
+  const venvPath = path.join(workdir, venvDir);
+  const pythonInVenv = path.join(
+    venvPath,
+    process.platform === "win32" ? "Scripts" : "bin",
+    process.platform === "win32" ? "python.exe" : "python",
+  );
+
+  if (mode === "cold") {
+    try {
+      await stat(venvPath);
+      await rm(venvPath, { recursive: true, force: true });
+    } catch {
+      // no-op: venv does not exist yet
+    }
+  }
+
+  const hasVenv = await fileExists(pythonInVenv);
+  if (!hasVenv) {
+    await execFileAsync("python3", ["-m", "venv", venvPath], {
+      cwd: workdir,
+      timeout: 120_000,
+      maxBuffer: 8 * 1024 * 1024,
+    });
+  }
+
+  await execFileAsync(
+    pythonInVenv,
+    ["-m", "pip", "install", "--upgrade", "pip"],
+    {
+      cwd: workdir,
+      timeout: 300_000,
+      maxBuffer: 8 * 1024 * 1024,
+    },
+  );
+
+  await execFileAsync(
+    pythonInVenv,
+    ["-m", "pip", "install", "-r", requirementsPath],
+    {
+      cwd: workdir,
+      timeout: 600_000,
+      maxBuffer: 16 * 1024 * 1024,
+    },
+  );
+
+  PREFLIGHT_DONE.add(key);
+}
 
 /**
  * Handle coding agent routes (/api/coding-agents/*)
@@ -253,6 +346,17 @@ export async function handleAgentRoutes(
           return true;
         }
         workdir = resolved;
+      }
+
+      if (workdir) {
+        try {
+          await runBenchmarkPreflight(workdir);
+        } catch (preflightError) {
+          console.warn(
+            `[coding-agent] benchmark preflight failed for ${workdir}:`,
+            preflightError,
+          );
+        }
       }
 
       // Check concurrency limit before spawning

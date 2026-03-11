@@ -58,6 +58,7 @@ const MAX_AUTO_RESPONSES = 10;
  * to give the agent time to process the input before re-assessment.
  */
 export const POST_SEND_COOLDOWN_MS = 15_000;
+const deferredTurnCompleteTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 // ─── Helpers ───
 
@@ -339,14 +340,24 @@ export function checkAllTasksComplete(ctx: SwarmCoordinatorContext): void {
 
   if (swarmCompleteCb) {
     ctx.log("checkAllTasksComplete: swarm complete callback is wired — calling synthesis");
-    const taskSummaries = tasks.map((t) => ({
-      sessionId: t.sessionId,
-      label: t.label,
-      agentType: t.agentType,
-      originalTask: t.originalTask,
-      status: t.status,
-      completionSummary: t.completionSummary ?? "",
-    }));
+    const taskSummaries = tasks.map((t) => {
+      // Fold in shared decisions relevant to this task so the synthesis
+      // prompt includes the agent's actual findings, not just PR URLs.
+      const decisions = ctx.sharedDecisions
+        .filter((sd) => sd.agentLabel === t.label)
+        .map((sd) => sd.summary);
+      const parts: string[] = [];
+      if (decisions.length > 0) parts.push(decisions.join("; "));
+      if (t.completionSummary) parts.push(t.completionSummary);
+      return {
+        sessionId: t.sessionId,
+        label: t.label,
+        agentType: t.agentType,
+        originalTask: t.originalTask,
+        status: t.status,
+        completionSummary: parts.join("\n") || "",
+      };
+    });
     // Wrap in Promise.resolve().then() to catch sync throws, and race against
     // a timeout to guard against callbacks that never settle.
     void withTimeout(
@@ -708,6 +719,8 @@ export async function handleTurnComplete(
   taskCtx: TaskContext,
   data: unknown,
 ): Promise<void> {
+  if (taskCtx.status !== "active") return;
+
   // If another decision (e.g. handleBlocked) is running for this session,
   // buffer the task_complete event so it's processed when the lock releases.
   // Without this, task_complete events are silently lost and sessions hang.
@@ -724,6 +737,29 @@ export async function handleTurnComplete(
   if (taskCtx.lastInputSentAt) {
     const elapsed = Date.now() - taskCtx.lastInputSentAt;
     if (elapsed < POST_SEND_COOLDOWN_MS) {
+      ctx.pendingTurnComplete.set(sessionId, data);
+      if (!deferredTurnCompleteTimers.has(sessionId)) {
+        const delayMs = POST_SEND_COOLDOWN_MS - elapsed + 50;
+        const timer = setTimeout(() => {
+          deferredTurnCompleteTimers.delete(sessionId);
+          const pendingData = ctx.pendingTurnComplete.get(sessionId);
+          if (!pendingData) return;
+          const currentTask = ctx.tasks.get(sessionId);
+          if (!currentTask || currentTask.status !== "active") {
+            ctx.pendingTurnComplete.delete(sessionId);
+            return;
+          }
+          void handleTurnComplete(
+            ctx,
+            sessionId,
+            currentTask,
+            pendingData,
+          ).catch((err) => {
+            ctx.log(`Deferred turn-complete replay failed for ${sessionId}: ${err}`);
+          });
+        }, delayMs);
+        deferredTurnCompleteTimers.set(sessionId, timer);
+      }
       ctx.log(
         `Suppressing turn-complete for "${taskCtx.label}" — ` +
         `${Math.round(elapsed / 1000)}s since last input (cooldown ${POST_SEND_COOLDOWN_MS / 1000}s)`,
@@ -731,6 +767,13 @@ export async function handleTurnComplete(
       return;
     }
   }
+
+  const deferredTimer = deferredTurnCompleteTimers.get(sessionId);
+  if (deferredTimer) {
+    clearTimeout(deferredTimer);
+    deferredTurnCompleteTimers.delete(sessionId);
+  }
+  ctx.pendingTurnComplete.delete(sessionId);
 
   ctx.inFlightDecisions.add(sessionId);
   try {
