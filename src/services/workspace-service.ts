@@ -571,7 +571,19 @@ export class CodingWorkspaceService {
     const baseDir = this.serviceConfig.baseDir as string;
     const suggestedName = this.sanitizeWorkspaceName(name || record.label);
     const targetPath = await this.allocatePromotedPath(baseDir, suggestedName);
-    await fs.rename(record.path, targetPath);
+    try {
+      await fs.rename(record.path, targetPath);
+    } catch (error) {
+      const isExdev =
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        (error as { code?: unknown }).code === "EXDEV";
+      if (!isExdev) throw error;
+      await fs.cp(record.path, targetPath, { recursive: true });
+      await fs.access(targetPath);
+      await fs.rm(record.path, { recursive: true, force: true });
+    }
 
     const next: ScratchWorkspaceRecord = {
       ...record,
@@ -641,11 +653,18 @@ export class CodingWorkspaceService {
   private scheduleScratchCleanup(sessionId: string, ttlMs: number): void {
     this.clearScratchCleanupTimer(sessionId);
     const timer = setTimeout(async () => {
-      const record = this.scratchBySession.get(sessionId);
-      if (!record || record.status !== "pending_decision") return;
-      await this.removeScratchDir(record.path);
-      this.scratchBySession.delete(sessionId);
-      this.scratchCleanupTimers.delete(sessionId);
+      try {
+        const record = this.scratchBySession.get(sessionId);
+        if (!record || record.status !== "pending_decision") return;
+        await this.removeScratchDir(record.path);
+      } catch (error) {
+        console.warn(
+          `[CodingWorkspaceService] scratch cleanup failed for ${sessionId}: ${String(error)}`,
+        );
+      } finally {
+        this.scratchBySession.delete(sessionId);
+        this.scratchCleanupTimers.delete(sessionId);
+      }
     }, ttlMs);
     this.scratchCleanupTimers.set(sessionId, timer);
   }

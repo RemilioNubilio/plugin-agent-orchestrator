@@ -365,5 +365,81 @@ describe("CodingWorkspaceService", () => {
       await scratchService.deleteScratchWorkspace("s-2");
       expect(scratchService.listScratchWorkspaces()).toHaveLength(0);
     });
+
+    it("falls back to copy+delete when promote rename fails with EXDEV", async () => {
+      const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "scratch-test-"));
+      const runtime = createMockRuntime({
+        CODING_WORKSPACE_CONFIG: { baseDir },
+      });
+      const scratchService = await CodingWorkspaceService.start(
+        runtime as unknown as IAgentRuntime,
+      );
+      const scratchPath = path.join(baseDir, "tmp-scratch-exdev");
+      await fs.mkdir(scratchPath, { recursive: true });
+      await fs.writeFile(path.join(scratchPath, "a.txt"), "hello");
+
+      await scratchService.registerScratchWorkspace(
+        "s-3",
+        scratchPath,
+        "cross-device",
+        "task_complete",
+      );
+
+      const renameSpy = jest.spyOn(fs, "rename").mockImplementationOnce(
+        async () => {
+          const err = new Error("Cross-device link not permitted");
+          (err as NodeJS.ErrnoException).code = "EXDEV";
+          throw err;
+        },
+      );
+
+      const promoted = await scratchService.promoteScratchWorkspace(
+        "s-3",
+        "feature-cross-device",
+      );
+
+      expect(renameSpy).toHaveBeenCalled();
+      await expect(fs.stat(promoted.path)).resolves.toBeDefined();
+      await expect(fs.stat(scratchPath)).rejects.toThrow();
+      renameSpy.mockRestore();
+    });
+
+    it("cleans retention maps even when timer cleanup remove fails", async () => {
+      const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "scratch-test-"));
+      const runtime = createMockRuntime({
+        CODING_WORKSPACE_CONFIG: { baseDir },
+        PARALLAX_SCRATCH_DECISION_TTL_MS: 10,
+      });
+      const scratchService = await CodingWorkspaceService.start(
+        runtime as unknown as IAgentRuntime,
+      );
+      const scratchPath = path.join(baseDir, "tmp-scratch-timer");
+      await fs.mkdir(scratchPath, { recursive: true });
+
+      const removeSpy = jest
+        .spyOn(scratchService, "removeScratchDir")
+        .mockRejectedValueOnce(new Error("rm failed"));
+      const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+      await scratchService.registerScratchWorkspace(
+        "s-4",
+        scratchPath,
+        "ttl-cleanup",
+        "task_complete",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 40));
+
+      expect(removeSpy).toHaveBeenCalled();
+      expect(scratchService.listScratchWorkspaces()).toHaveLength(0);
+      const timers = (
+        scratchService as unknown as {
+          scratchCleanupTimers: Map<string, ReturnType<typeof setTimeout>>;
+        }
+      ).scratchCleanupTimers;
+      expect(timers.size).toBe(0);
+
+      removeSpy.mockRestore();
+      warnSpy.mockRestore();
+    });
   });
 });
