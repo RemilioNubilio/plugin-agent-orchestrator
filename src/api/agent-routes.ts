@@ -154,6 +154,7 @@ async function runBenchmarkPreflight(workdir: string): Promise<void> {
   }
 
   const run = (async () => {
+    const pythonCommand = process.platform === "win32" ? "python" : "python3";
     const pythonInVenv = path.join(
       venvPath,
       process.platform === "win32" ? "Scripts" : "bin",
@@ -171,7 +172,7 @@ async function runBenchmarkPreflight(workdir: string): Promise<void> {
 
     const hasVenv = await fileExists(pythonInVenv);
     if (!hasVenv) {
-      await execFileAsync("python3", ["-m", "venv", venvPath], {
+      await execFileAsync(pythonCommand, ["-m", "venv", venvPath], {
         cwd: workdir,
         timeout: 120_000,
         maxBuffer: 8 * 1024 * 1024,
