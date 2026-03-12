@@ -120,23 +120,48 @@ describe("executeDecision cooldown tracking", () => {
 // handleTurnComplete suppression during cooldown
 // ---------------------------------------------------------------------------
 describe("handleTurnComplete cooldown suppression", () => {
+  beforeEach(() => {
+    jest.useRealTimers();
+  });
+
   it("suppresses turn-complete during cooldown window", async () => {
     const ctx = createMockCtx();
     const taskCtx = createTaskCtx({
+      sessionId: "s-cooldown-a",
       lastInputSentAt: Date.now(), // Just sent input
     });
-    ctx.tasks.set("s-1", taskCtx);
+    ctx.tasks.set("s-cooldown-a", taskCtx);
 
-    await handleTurnComplete(ctx as never, "s-1", taskCtx as never, {
+    await handleTurnComplete(ctx as never, "s-cooldown-a", taskCtx as never, {
       response: "I finished the task",
     });
 
     // Should NOT have called the LLM — event was suppressed
     expect(ctx.runtime.useModel).not.toHaveBeenCalled();
+    // Should be buffered for replay after cooldown
+    expect(ctx.pendingTurnComplete.has("s-cooldown-a")).toBe(true);
     // Should have logged suppression
     expect(ctx.log).toHaveBeenCalledWith(
       expect.stringContaining("Suppressing turn-complete"),
     );
+  });
+
+  it("replays suppressed turn-complete after cooldown elapses", async () => {
+    const ctx = createMockCtx();
+    const taskCtx = createTaskCtx({
+      sessionId: "s-cooldown-b",
+      // Keep cooldown almost expired so replay timer is short.
+      lastInputSentAt: Date.now() - (15_000 - 5),
+    });
+    ctx.tasks.set("s-cooldown-b", taskCtx);
+
+    await handleTurnComplete(ctx as never, "s-cooldown-b", taskCtx as never, {
+      response: "I finished the task",
+    });
+
+    expect(ctx.runtime.useModel).not.toHaveBeenCalled();
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    expect(ctx.runtime.useModel).toHaveBeenCalled();
   });
 
   it("allows turn-complete after cooldown expires", async () => {

@@ -10,8 +10,12 @@
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { access, readFile, realpath, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import * as os from "node:os";
 import * as path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { getCoordinator } from "../services/pty-service.js";
 import {
   isPiAgentType,
@@ -21,6 +25,10 @@ import {
 import type { RouteContext } from "./routes.js";
 import { parseBody, sendError, sendJson } from "./routes.js";
 
+const execFileAsync = promisify(execFile);
+const PREFLIGHT_DONE = new Set<string>();
+const PREFLIGHT_INFLIGHT = new Map<string, Promise<void>>();
+
 type JsonValue =
   | string
   | number
@@ -28,6 +36,184 @@ type JsonValue =
   | null
   | JsonValue[]
   | { [key: string]: JsonValue };
+
+function shouldAutoPreflight(): boolean {
+  if (process.env.PARALLAX_BENCHMARK_PREFLIGHT_AUTO === "1") return true;
+  return false;
+}
+
+function isPathInside(parent: string, candidate: string): boolean {
+  return candidate === parent || candidate.startsWith(`${parent}${path.sep}`);
+}
+
+async function resolveSafeVenvPath(
+  workdir: string,
+  venvDirRaw: string,
+): Promise<string> {
+  const venvDir = venvDirRaw.trim();
+  if (!venvDir) {
+    throw new Error("PARALLAX_BENCHMARK_PREFLIGHT_VENV must be non-empty");
+  }
+  if (path.isAbsolute(venvDir)) {
+    throw new Error(
+      "PARALLAX_BENCHMARK_PREFLIGHT_VENV must be relative to workdir",
+    );
+  }
+
+  const normalized = path.normalize(venvDir);
+  if (
+    normalized === "." ||
+    normalized === ".." ||
+    normalized.startsWith(`..${path.sep}`)
+  ) {
+    throw new Error(
+      "PARALLAX_BENCHMARK_PREFLIGHT_VENV must stay within workdir",
+    );
+  }
+
+  const workdirResolved = path.resolve(workdir);
+  const workdirReal = await realpath(workdirResolved);
+  const resolved = path.resolve(workdirReal, normalized);
+  if (!isPathInside(workdirReal, resolved)) {
+    throw new Error(
+      "PARALLAX_BENCHMARK_PREFLIGHT_VENV resolves outside workdir",
+    );
+  }
+  if (resolved === workdirReal) {
+    throw new Error(
+      "PARALLAX_BENCHMARK_PREFLIGHT_VENV must not resolve to workdir root",
+    );
+  }
+
+  // Canonicalize candidate when present to reject symlink escapes.
+  try {
+    const resolvedReal = await realpath(resolved);
+    if (!isPathInside(workdirReal, resolvedReal) || resolvedReal === workdirReal) {
+      throw new Error(
+        "PARALLAX_BENCHMARK_PREFLIGHT_VENV resolves outside workdir",
+      );
+    }
+  } catch (err) {
+    const maybeErr = err as NodeJS.ErrnoException;
+    if (maybeErr?.code !== "ENOENT") throw err;
+    const parentReal = await realpath(path.dirname(resolved));
+    if (!isPathInside(workdirReal, parentReal)) {
+      throw new Error(
+        "PARALLAX_BENCHMARK_PREFLIGHT_VENV parent resolves outside workdir",
+      );
+    }
+  }
+
+  return resolved;
+}
+
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function resolveRequirementsPath(workdir: string): Promise<string | null> {
+  const workdirReal = await realpath(path.resolve(workdir));
+  const candidates = [
+    path.join(workdir, "apps", "api", "requirements.txt"),
+    path.join(workdir, "requirements.txt"),
+  ];
+  for (const candidate of candidates) {
+    if (!(await fileExists(candidate))) continue;
+    try {
+      const candidateReal = await realpath(candidate);
+      if (isPathInside(workdirReal, candidateReal)) return candidateReal;
+    } catch {
+      // Ignore malformed candidate and keep scanning.
+    }
+  }
+  return null;
+}
+
+async function fingerprintRequirementsFile(requirementsPath: string): Promise<string> {
+  const file = await readFile(requirementsPath);
+  return createHash("sha256").update(file).digest("hex");
+}
+
+async function runBenchmarkPreflight(workdir: string): Promise<void> {
+  if (!shouldAutoPreflight()) return;
+
+  const requirementsPath = await resolveRequirementsPath(workdir);
+  if (!requirementsPath) return;
+  const requirementsFingerprint =
+    await fingerprintRequirementsFile(requirementsPath);
+
+  const mode =
+    process.env.PARALLAX_BENCHMARK_PREFLIGHT_MODE?.toLowerCase() === "warm"
+      ? "warm"
+      : "cold";
+  const venvDir = process.env.PARALLAX_BENCHMARK_PREFLIGHT_VENV || ".benchmark-venv";
+  const venvPath = await resolveSafeVenvPath(workdir, venvDir);
+  const pythonInVenv = path.join(
+    venvPath,
+    process.platform === "win32" ? "Scripts" : "bin",
+    process.platform === "win32" ? "python.exe" : "python",
+  );
+  const key = `${workdir}::${mode}::${venvPath}::${requirementsFingerprint}`;
+  if (PREFLIGHT_DONE.has(key)) {
+    if (await fileExists(pythonInVenv)) return;
+    PREFLIGHT_DONE.delete(key);
+  }
+  const existing = PREFLIGHT_INFLIGHT.get(key);
+  if (existing) {
+    await existing;
+    return;
+  }
+
+  const run = (async () => {
+    const pythonCommand = process.platform === "win32" ? "python" : "python3";
+
+    if (mode === "cold") {
+      await rm(venvPath, { recursive: true, force: true });
+    }
+
+    const hasVenv = await fileExists(pythonInVenv);
+    if (!hasVenv) {
+      await execFileAsync(pythonCommand, ["-m", "venv", venvPath], {
+        cwd: workdir,
+        timeout: 120_000,
+        maxBuffer: 8 * 1024 * 1024,
+      });
+    }
+
+    await execFileAsync(
+      pythonInVenv,
+      ["-m", "pip", "install", "--upgrade", "pip"],
+      {
+        cwd: workdir,
+        timeout: 300_000,
+        maxBuffer: 8 * 1024 * 1024,
+      },
+    );
+
+    await execFileAsync(
+      pythonInVenv,
+      ["-m", "pip", "install", "-r", requirementsPath],
+      {
+        cwd: workdir,
+        timeout: 600_000,
+        maxBuffer: 16 * 1024 * 1024,
+      },
+    );
+
+    PREFLIGHT_DONE.add(key);
+  })();
+  PREFLIGHT_INFLIGHT.set(key, run);
+  try {
+    await run;
+  } finally {
+    PREFLIGHT_INFLIGHT.delete(key);
+  }
+}
 
 /**
  * Handle coding agent routes (/api/coding-agents/*)
@@ -228,21 +414,25 @@ export async function handleAgentRoutes(
       } = body;
 
       // Validate workdir: must be within workspace base dir or cwd
-      const workspaceBaseDir = path.join(
-        os.homedir(),
-        ".milady",
-        "workspaces",
+      const workspaceBaseDir = path.join(os.homedir(), ".milady", "workspaces");
+      const workspaceBaseDirResolved = path.resolve(workspaceBaseDir);
+      const cwdResolved = path.resolve(process.cwd());
+      const workspaceBaseDirReal = await realpath(workspaceBaseDirResolved).catch(
+        () => workspaceBaseDirResolved,
       );
-      const allowedPrefixes = [
-        path.resolve(workspaceBaseDir),
-        path.resolve(process.cwd()),
-      ];
+      const cwdReal = await realpath(cwdResolved).catch(() => cwdResolved);
+      const allowedPrefixes = [workspaceBaseDirReal, cwdReal];
       let workdir = rawWorkdir as string | undefined;
       if (workdir) {
         const resolved = path.resolve(workdir);
+        const resolvedReal = await realpath(resolved).catch(() => null);
+        if (!resolvedReal) {
+          sendError(res, "workdir must exist", 403);
+          return true;
+        }
         const isAllowed = allowedPrefixes.some(
           (prefix) =>
-            resolved === prefix || resolved.startsWith(prefix + path.sep),
+            resolvedReal === prefix || resolvedReal.startsWith(prefix + path.sep),
         );
         if (!isAllowed) {
           sendError(
@@ -252,7 +442,7 @@ export async function handleAgentRoutes(
           );
           return true;
         }
-        workdir = resolved;
+        workdir = resolvedReal;
       }
 
       // Check concurrency limit before spawning
@@ -265,6 +455,17 @@ export async function handleAgentRoutes(
           429,
         );
         return true;
+      }
+
+      if (workdir) {
+        try {
+          await runBenchmarkPreflight(workdir);
+        } catch (preflightError) {
+          console.warn(
+            `[coding-agent] benchmark preflight failed for ${workdir}:`,
+            preflightError,
+          );
+        }
       }
 
       // Build credentials from runtime

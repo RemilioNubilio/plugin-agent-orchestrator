@@ -27,6 +27,7 @@ import type { PTYService } from "./pty-service.js";
 import type { CodingAgentType } from "./pty-types.js";
 import type { CoordinationLLMResponse, SharedDecision } from "./swarm-coordinator-prompts.js";
 import {
+  clearDeferredTurnCompleteTimers,
   checkAllTasksComplete,
   executeDecision as execDecision,
   handleBlocked,
@@ -103,6 +104,8 @@ export interface TaskContext {
   /** Timestamp of last coordinator-sent input. Used to suppress stall/turn-complete
    *  events for a grace period so the agent has time to process the input. */
   lastInputSentAt?: number;
+  /** Timestamp when the task was last transitioned to `stopped`. */
+  stoppedAt?: number;
 }
 
 export interface CoordinationDecision {
@@ -187,6 +190,8 @@ const IDLE_SCAN_INTERVAL_MS = 60 * 1000; // 1 minute
 
 /** How long to wait before auto-resuming a paused coordinator (ms). */
 const PAUSE_TIMEOUT_MS = 30_000;
+/** Grace window where a late task_complete can recover a recently-stopped task. */
+const STOPPED_RECOVERY_WINDOW_MS = 90_000;
 
 // ─── Service ───
 
@@ -371,6 +376,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
     this.pendingDecisions.clear();
     this.inFlightDecisions.clear();
     this.pendingTurnComplete.clear();
+    clearDeferredTurnCompleteTimers();
     this.lastBlockedPromptFingerprint.clear();
     this.pendingBlocked.clear();
     this.unregisteredBuffer.clear();
@@ -641,8 +647,26 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
     // Skip decision-making events for terminal states, but always allow
     // "stopped" and "error" through — they're definitive lifecycle signals
     // that the frontend needs to close consoles and clean up.
+    // Exception: allow a late "task_complete" to recover a recently-stopped task.
+    let recoveredFromStopped = false;
     if (taskCtx.status === "stopped" || taskCtx.status === "error" || taskCtx.status === "completed") {
-      if (event !== "stopped" && event !== "error") {
+      if (taskCtx.status === "stopped" && event === "task_complete") {
+        const stoppedAt = taskCtx.stoppedAt ?? 0;
+        const ageMs = Date.now() - stoppedAt;
+        if (stoppedAt > 0 && ageMs <= STOPPED_RECOVERY_WINDOW_MS) {
+          this.log(
+            `Recovering "${taskCtx.label}" from stopped on late task_complete (${Math.round(ageMs / 1000)}s old)`,
+          );
+          taskCtx.status = "active";
+          recoveredFromStopped = true;
+        } else {
+          this.log(
+            `Ignoring "${event}" for ${taskCtx.label} (status: stopped, age=${Math.round(ageMs / 1000)}s)`,
+          );
+          return;
+        }
+      }
+      if (!recoveredFromStopped && event !== "stopped" && event !== "error") {
         this.log(`Ignoring "${event}" for ${taskCtx.label} (status: ${taskCtx.status})`);
         return;
       }
@@ -719,6 +743,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
         // stopSession fires after executeDecision already marked the task.
         if (taskCtx.status !== "completed" && taskCtx.status !== "error") {
           taskCtx.status = "stopped";
+          taskCtx.stoppedAt = Date.now();
         }
         this.inFlightDecisions.delete(sessionId);
         this.broadcast({
