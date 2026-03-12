@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.14
+
+### Features
+
+- **Scratch workspace retention lifecycle**: Scratch workspaces are now registered at terminal agent events and managed by policy (`PARALLAX_SCRATCH_RETENTION` = `ephemeral` | `pending_decision` | `persistent`). Pending-decision mode retains workspaces temporarily for user choice instead of immediate deletion.
+- **Scratch management API routes**: Added `GET /api/coding-agents/scratch` and `POST /api/coding-agents/:id/scratch/(keep|delete|promote)` for listing retained scratch workspaces and explicitly keeping, deleting, or promoting them.
+
+### Fixed
+
+- **Scratch cleanup stability**: Workspace service now tracks scratch cleanup timers and clears them during service shutdown to avoid leaked timers and stale cleanup callbacks.
+- **Scratch promotion safety**: Promotion now sanitizes requested names and allocates unique in-base-directory paths before renaming, preventing collisions and unsafe destination resolution.
+
+### Deps
+
+- Bump `pty-manager` peer dependency from `1.9.8` -> `1.10.0`.
+
 ## 0.3.13
 
 ### Fixed

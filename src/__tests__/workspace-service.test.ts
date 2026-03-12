@@ -5,6 +5,9 @@
  */
 
 import { beforeEach, describe, expect, it, jest, mock } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 
 import type { IAgentRuntime } from "@elizaos/core";
 
@@ -301,6 +304,66 @@ describe("CodingWorkspaceService", () => {
 
       const retrieved = service.getWorkspace(workspace.id);
       expect(retrieved).toBeUndefined();
+    });
+  });
+
+  describe("scratch retention", () => {
+    it("registers scratch as pending_decision by default", async () => {
+      const runtime = createMockRuntime({
+        CODING_WORKSPACE_CONFIG: {
+          baseDir: await fs.mkdtemp(path.join(os.tmpdir(), "scratch-test-")),
+        },
+      });
+      const scratchService = await CodingWorkspaceService.start(
+        runtime as unknown as IAgentRuntime,
+      );
+      const scratchPath = path.join(
+        os.tmpdir(),
+        `scratch-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      );
+      await fs.mkdir(scratchPath, { recursive: true });
+
+      const record = await scratchService.registerScratchWorkspace(
+        "s-1",
+        scratchPath,
+        "scratch/test",
+        "task_complete",
+      );
+
+      expect(record?.status).toBe("pending_decision");
+      expect(scratchService.listScratchWorkspaces()).toHaveLength(1);
+    });
+
+    it("keeps, promotes, and deletes scratch workspaces", async () => {
+      const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "scratch-test-"));
+      const runtime = createMockRuntime({
+        CODING_WORKSPACE_CONFIG: { baseDir },
+      });
+      const scratchService = await CodingWorkspaceService.start(
+        runtime as unknown as IAgentRuntime,
+      );
+      const scratchPath = path.join(baseDir, "tmp-scratch");
+      await fs.mkdir(scratchPath, { recursive: true });
+
+      await scratchService.registerScratchWorkspace(
+        "s-2",
+        scratchPath,
+        "my feature",
+        "task_complete",
+      );
+      const kept = await scratchService.keepScratchWorkspace("s-2");
+      expect(kept.status).toBe("kept");
+
+      const promoted = await scratchService.promoteScratchWorkspace(
+        "s-2",
+        "feature-project",
+      );
+      expect(promoted.status).toBe("promoted");
+      expect(promoted.path).toContain("feature-project");
+      await expect(fs.stat(promoted.path)).resolves.toBeDefined();
+
+      await scratchService.deleteScratchWorkspace("s-2");
+      expect(scratchService.listScratchWorkspaces()).toHaveLength(0);
     });
   });
 });

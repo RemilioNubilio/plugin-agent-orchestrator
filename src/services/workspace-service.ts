@@ -12,6 +12,7 @@
 
 import * as os from "node:os";
 import * as path from "node:path";
+import * as fs from "node:fs/promises";
 import type { IAgentRuntime } from "@elizaos/core";
 import {
   type CreateIssueOptions,
@@ -76,6 +77,19 @@ import type {
 } from "./workspace-types.js";
 
 type WorkspaceEventCallback = (event: WorkspaceEvent) => void;
+type ScratchRetentionPolicy = "ephemeral" | "pending_decision" | "persistent";
+type ScratchTerminalEvent = "stopped" | "task_complete" | "error";
+
+export interface ScratchWorkspaceRecord {
+  sessionId: string;
+  label: string;
+  path: string;
+  status: "pending_decision" | "kept" | "promoted";
+  createdAt: number;
+  terminalAt: number;
+  terminalEvent: ScratchTerminalEvent;
+  expiresAt?: number;
+}
 
 export class CodingWorkspaceService {
   static serviceType = "CODING_WORKSPACE_SERVICE";
@@ -89,6 +103,8 @@ export class CodingWorkspaceService {
   private serviceConfig: CodingWorkspaceConfig;
   private workspaces: Map<string, WorkspaceResult> = new Map();
   private labels: Map<string, string> = new Map(); // label -> workspaceId
+  private scratchBySession: Map<string, ScratchWorkspaceRecord> = new Map();
+  private scratchCleanupTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
   private eventCallbacks: WorkspaceEventCallback[] = [];
   private authPromptCallback: AuthPromptCallback | null = null;
 
@@ -173,6 +189,10 @@ export class CodingWorkspaceService {
   }
 
   async stop(): Promise<void> {
+    for (const timer of this.scratchCleanupTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.scratchCleanupTimers.clear();
     for (const [id] of this.workspaces) {
       try {
         await this.removeWorkspace(id);
@@ -471,6 +491,99 @@ export class CodingWorkspaceService {
     );
   }
 
+  listScratchWorkspaces(): ScratchWorkspaceRecord[] {
+    return Array.from(this.scratchBySession.values()).sort(
+      (a, b) => b.terminalAt - a.terminalAt,
+    );
+  }
+
+  async registerScratchWorkspace(
+    sessionId: string,
+    dirPath: string,
+    label: string,
+    terminalEvent: ScratchTerminalEvent,
+  ): Promise<ScratchWorkspaceRecord | null> {
+    const now = Date.now();
+    const existing = this.scratchBySession.get(sessionId);
+    const base: ScratchWorkspaceRecord = existing ?? {
+      sessionId,
+      label,
+      path: dirPath,
+      createdAt: now,
+      terminalAt: now,
+      terminalEvent,
+      status: "pending_decision",
+    };
+
+    const policy = this.getScratchRetentionPolicy();
+    if (policy === "ephemeral") {
+      await this.removeScratchDir(dirPath);
+      this.scratchBySession.delete(sessionId);
+      this.clearScratchCleanupTimer(sessionId);
+      return null;
+    }
+
+    const record: ScratchWorkspaceRecord = {
+      ...base,
+      label,
+      path: dirPath,
+      terminalAt: now,
+      terminalEvent,
+      status: policy === "persistent" ? "kept" : "pending_decision",
+      expiresAt: undefined,
+    };
+    this.scratchBySession.set(sessionId, record);
+
+    if (record.status === "pending_decision") {
+      const ttlMs = this.getScratchDecisionTtlMs();
+      record.expiresAt = now + ttlMs;
+      this.scheduleScratchCleanup(sessionId, ttlMs);
+    } else {
+      this.clearScratchCleanupTimer(sessionId);
+    }
+    return record;
+  }
+
+  async keepScratchWorkspace(sessionId: string): Promise<ScratchWorkspaceRecord> {
+    const record = this.requireScratchWorkspace(sessionId);
+    const next: ScratchWorkspaceRecord = {
+      ...record,
+      status: "kept",
+      expiresAt: undefined,
+    };
+    this.scratchBySession.set(sessionId, next);
+    this.clearScratchCleanupTimer(sessionId);
+    return next;
+  }
+
+  async deleteScratchWorkspace(sessionId: string): Promise<void> {
+    const record = this.requireScratchWorkspace(sessionId);
+    await this.removeScratchDir(record.path);
+    this.scratchBySession.delete(sessionId);
+    this.clearScratchCleanupTimer(sessionId);
+  }
+
+  async promoteScratchWorkspace(
+    sessionId: string,
+    name?: string,
+  ): Promise<ScratchWorkspaceRecord> {
+    const record = this.requireScratchWorkspace(sessionId);
+    const baseDir = this.serviceConfig.baseDir as string;
+    const suggestedName = this.sanitizeWorkspaceName(name || record.label);
+    const targetPath = await this.allocatePromotedPath(baseDir, suggestedName);
+    await fs.rename(record.path, targetPath);
+
+    const next: ScratchWorkspaceRecord = {
+      ...record,
+      path: targetPath,
+      status: "promoted",
+      expiresAt: undefined,
+    };
+    this.scratchBySession.set(sessionId, next);
+    this.clearScratchCleanupTimer(sessionId);
+    return next;
+  }
+
   /** GC orphaned workspace directories older than workspaceTtlMs. */
   private async gcOrphanedWorkspaces(): Promise<void> {
     return gcOrphanedWorkspaces(
@@ -485,5 +598,87 @@ export class CodingWorkspaceService {
     if (this.serviceConfig.debug) {
       console.log(`[CodingWorkspaceService] ${message}`);
     }
+  }
+
+  private getScratchRetentionPolicy(): ScratchRetentionPolicy {
+    const setting = (
+      this.runtime.getSetting("PARALLAX_SCRATCH_RETENTION") ??
+      process.env.PARALLAX_SCRATCH_RETENTION
+    ) as string | undefined;
+    const normalized = setting?.trim().toLowerCase();
+    if (normalized === "ephemeral") return "ephemeral";
+    if (normalized === "persistent" || normalized === "keep") {
+      return "persistent";
+    }
+    return "pending_decision";
+  }
+
+  private getScratchDecisionTtlMs(): number {
+    const setting = this.runtime.getSetting(
+      "PARALLAX_SCRATCH_DECISION_TTL_MS",
+    ) as string | number | undefined;
+    const parsed = Number(setting ?? process.env.PARALLAX_SCRATCH_DECISION_TTL_MS);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    return 24 * 60 * 60 * 1000;
+  }
+
+  private requireScratchWorkspace(sessionId: string): ScratchWorkspaceRecord {
+    const record = this.scratchBySession.get(sessionId);
+    if (!record) {
+      throw new Error(`Scratch workspace for session ${sessionId} not found`);
+    }
+    return record;
+  }
+
+  private clearScratchCleanupTimer(sessionId: string): void {
+    const timer = this.scratchCleanupTimers.get(sessionId);
+    if (timer) {
+      clearTimeout(timer);
+      this.scratchCleanupTimers.delete(sessionId);
+    }
+  }
+
+  private scheduleScratchCleanup(sessionId: string, ttlMs: number): void {
+    this.clearScratchCleanupTimer(sessionId);
+    const timer = setTimeout(async () => {
+      const record = this.scratchBySession.get(sessionId);
+      if (!record || record.status !== "pending_decision") return;
+      await this.removeScratchDir(record.path);
+      this.scratchBySession.delete(sessionId);
+      this.scratchCleanupTimers.delete(sessionId);
+    }, ttlMs);
+    this.scratchCleanupTimers.set(sessionId, timer);
+  }
+
+  private sanitizeWorkspaceName(raw: string): string {
+    const compact = raw
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "");
+    return compact || `scratch-${Date.now().toString(36)}`;
+  }
+
+  private async allocatePromotedPath(
+    baseDir: string,
+    baseName: string,
+  ): Promise<string> {
+    const baseResolved = path.resolve(baseDir);
+    for (let i = 0; i < 1000; i++) {
+      const candidateName = i === 0 ? baseName : `${baseName}-${i}`;
+      const candidate = path.resolve(baseResolved, candidateName);
+      if (
+        candidate !== baseResolved &&
+        !candidate.startsWith(`${baseResolved}${path.sep}`)
+      ) {
+        continue;
+      }
+      try {
+        await fs.access(candidate);
+      } catch {
+        return candidate;
+      }
+    }
+    throw new Error("Unable to allocate promoted workspace path");
   }
 }

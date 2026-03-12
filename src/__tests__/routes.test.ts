@@ -7,6 +7,7 @@
 
 import { beforeEach, describe, expect, it, jest } from "bun:test";
 import { EventEmitter } from "node:events";
+import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -124,6 +125,18 @@ const createMockWorkspaceService = () => ({
   }),
   addComment: jest.fn().mockResolvedValue({ url: "https://..." }),
   closeIssue: jest.fn().mockResolvedValue({ number: 42, title: "test" }),
+  listScratchWorkspaces: jest.fn().mockReturnValue([]),
+  keepScratchWorkspace: jest.fn().mockResolvedValue({
+    sessionId: "s1",
+    status: "kept",
+    path: "/tmp/scratch-s1",
+  }),
+  deleteScratchWorkspace: jest.fn().mockResolvedValue(undefined),
+  promoteScratchWorkspace: jest.fn().mockResolvedValue({
+    sessionId: "s1",
+    status: "promoted",
+    path: "/tmp/project-s1",
+  }),
 });
 
 // biome-ignore lint/suspicious/noExplicitAny: test mock for IAgentRuntime
@@ -183,6 +196,7 @@ describe("handleCodingAgentRoutes", () => {
 
     it("accepts workdir inside workspace base directory with 201", async () => {
       const validDir = path.join(WORKSPACE_BASE, "my-project");
+      fs.mkdirSync(validDir, { recursive: true });
       const req = createMockReq("POST", "/api/coding-agents/spawn", {
         agentType: "claude",
         workdir: validDir,
@@ -204,6 +218,7 @@ describe("handleCodingAgentRoutes", () => {
         "workspaces-evil",
         "foo",
       );
+      fs.mkdirSync(evilDir, { recursive: true });
       const req = createMockReq("POST", "/api/coding-agents/spawn", {
         agentType: "claude",
         workdir: evilDir,
@@ -240,6 +255,7 @@ describe("handleCodingAgentRoutes", () => {
       );
 
       const validDir = path.join(WORKSPACE_BASE, "proj");
+      fs.mkdirSync(validDir, { recursive: true });
       const req = createMockReq("POST", "/api/coding-agents/spawn", {
         agentType: "claude",
         workdir: validDir,
@@ -254,6 +270,7 @@ describe("handleCodingAgentRoutes", () => {
 
     it("returns 201 when no sessions are active", async () => {
       const validDir = path.join(WORKSPACE_BASE, "proj");
+      fs.mkdirSync(validDir, { recursive: true });
       const req = createMockReq("POST", "/api/coding-agents/spawn", {
         agentType: "claude",
         workdir: validDir,
@@ -330,6 +347,83 @@ describe("handleCodingAgentRoutes", () => {
       expect(pty.getSessionOutput).toHaveBeenCalledWith("s1", 50);
       expect(res._getStatus()).toBe(200);
       expect(res._getJson().output).toBe("output text");
+    });
+  });
+
+  describe("scratch retention routes", () => {
+    it("GET /api/coding-agents/scratch returns scratch records", async () => {
+      const ws = asMock(ctx.workspaceService);
+      ws.listScratchWorkspaces.mockReturnValue([
+        { sessionId: "s1", status: "pending_decision", path: "/tmp/s1" },
+      ]);
+
+      const req = createMockReq("GET", "/api/coding-agents/scratch");
+      const res = createMockRes();
+
+      await handleCodingAgentRoutes(req, res, "/api/coding-agents/scratch", ctx);
+
+      expect(res._getStatus()).toBe(200);
+      expect(res._getJson()[0].sessionId).toBe("s1");
+    });
+
+    it("POST /api/coding-agents/:id/scratch/keep keeps scratch", async () => {
+      const ws = asMock(ctx.workspaceService);
+      const req = createMockReq("POST", "/api/coding-agents/s1/scratch/keep");
+      const res = createMockRes();
+
+      await handleCodingAgentRoutes(
+        req,
+        res,
+        "/api/coding-agents/s1/scratch/keep",
+        ctx,
+      );
+
+      expect(ws.keepScratchWorkspace).toHaveBeenCalledWith("s1");
+      expect(res._getStatus()).toBe(200);
+      expect(res._getJson().success).toBe(true);
+    });
+
+    it("POST /api/coding-agents/:id/scratch/promote promotes scratch", async () => {
+      const ws = asMock(ctx.workspaceService);
+      const req = createMockReq(
+        "POST",
+        "/api/coding-agents/s1/scratch/promote",
+        {
+          name: "feature-project",
+        },
+      );
+      const res = createMockRes();
+
+      await handleCodingAgentRoutes(
+        req,
+        res,
+        "/api/coding-agents/s1/scratch/promote",
+        ctx,
+      );
+
+      expect(ws.promoteScratchWorkspace).toHaveBeenCalledWith(
+        "s1",
+        "feature-project",
+      );
+      expect(res._getStatus()).toBe(200);
+      expect(res._getJson().scratch.status).toBe("promoted");
+    });
+
+    it("POST /api/coding-agents/:id/scratch/delete deletes scratch", async () => {
+      const ws = asMock(ctx.workspaceService);
+      const req = createMockReq("POST", "/api/coding-agents/s1/scratch/delete");
+      const res = createMockRes();
+
+      await handleCodingAgentRoutes(
+        req,
+        res,
+        "/api/coding-agents/s1/scratch/delete",
+        ctx,
+      );
+
+      expect(ws.deleteScratchWorkspace).toHaveBeenCalledWith("s1");
+      expect(res._getStatus()).toBe(200);
+      expect(res._getJson().deleted).toBe(true);
     });
   });
 
