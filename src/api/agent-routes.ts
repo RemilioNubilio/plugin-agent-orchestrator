@@ -10,7 +10,7 @@
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { access, realpath, rm, stat } from "node:fs/promises";
+import { access, realpath, rm } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { execFile } from "node:child_process";
@@ -162,12 +162,7 @@ async function runBenchmarkPreflight(workdir: string): Promise<void> {
     );
 
     if (mode === "cold") {
-      try {
-        await stat(venvPath);
-        await rm(venvPath, { recursive: true, force: true });
-      } catch {
-        // no-op: venv does not exist yet
-      }
+      await rm(venvPath, { recursive: true, force: true });
     }
 
     const hasVenv = await fileExists(pythonInVenv);
@@ -408,21 +403,25 @@ export async function handleAgentRoutes(
       } = body;
 
       // Validate workdir: must be within workspace base dir or cwd
-      const workspaceBaseDir = path.join(
-        os.homedir(),
-        ".milady",
-        "workspaces",
+      const workspaceBaseDir = path.join(os.homedir(), ".milady", "workspaces");
+      const workspaceBaseDirResolved = path.resolve(workspaceBaseDir);
+      const cwdResolved = path.resolve(process.cwd());
+      const workspaceBaseDirReal = await realpath(workspaceBaseDirResolved).catch(
+        () => workspaceBaseDirResolved,
       );
-      const allowedPrefixes = [
-        path.resolve(workspaceBaseDir),
-        path.resolve(process.cwd()),
-      ];
+      const cwdReal = await realpath(cwdResolved).catch(() => cwdResolved);
+      const allowedPrefixes = [workspaceBaseDirReal, cwdReal];
       let workdir = rawWorkdir as string | undefined;
       if (workdir) {
         const resolved = path.resolve(workdir);
+        const resolvedReal = await realpath(resolved).catch(() => null);
+        if (!resolvedReal) {
+          sendError(res, "workdir must exist", 403);
+          return true;
+        }
         const isAllowed = allowedPrefixes.some(
           (prefix) =>
-            resolved === prefix || resolved.startsWith(prefix + path.sep),
+            resolvedReal === prefix || resolvedReal.startsWith(prefix + path.sep),
         );
         if (!isAllowed) {
           sendError(
@@ -432,7 +431,7 @@ export async function handleAgentRoutes(
           );
           return true;
         }
-        workdir = resolved;
+        workdir = resolvedReal;
       }
 
       // Check concurrency limit before spawning
