@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.13
+
+### Fixed
+
+- **Swarm completion reliability**: Added late `task_complete` recovery for recently stopped tasks, deferred replay of cooldown-suppressed `turn_complete` events, and coordinator shutdown cleanup for deferred timers to prevent stale callbacks after stop.
+- **Trajectory feedback robustness**: Fast-path metadata insights are now validated/filtered before use, and slow-path detail loading is bounded by a time budget.
+- **Benchmark preflight safety and correctness**:
+  - Preflight now runs only after session capacity checks pass.
+  - In-flight preflight calls are deduplicated per key.
+  - Stale preflight cache entries are invalidated when the venv is missing.
+  - Cache key now includes a fingerprint of `requirements.txt` so dependency changes force reinstall.
+  - Workdir/venv/requirements path checks use canonical real paths to prevent symlink allowlist bypass.
+  - Cold-mode cleanup simplified to direct `rm(..., { recursive: true, force: true })`.
+  - Venv creation now uses a platform-aware Python command (`python` on Windows, `python3` otherwise).
+
 ## 0.3.11
 
 ### Features
