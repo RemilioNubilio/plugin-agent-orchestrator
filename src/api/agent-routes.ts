@@ -145,8 +145,16 @@ async function runBenchmarkPreflight(workdir: string): Promise<void> {
       : "cold";
   const venvDir = process.env.PARALLAX_BENCHMARK_PREFLIGHT_VENV || ".benchmark-venv";
   const venvPath = await resolveSafeVenvPath(workdir, venvDir);
+  const pythonInVenv = path.join(
+    venvPath,
+    process.platform === "win32" ? "Scripts" : "bin",
+    process.platform === "win32" ? "python.exe" : "python",
+  );
   const key = `${workdir}::${mode}::${venvPath}`;
-  if (PREFLIGHT_DONE.has(key)) return;
+  if (PREFLIGHT_DONE.has(key)) {
+    if (await fileExists(pythonInVenv)) return;
+    PREFLIGHT_DONE.delete(key);
+  }
   const existing = PREFLIGHT_INFLIGHT.get(key);
   if (existing) {
     await existing;
@@ -155,11 +163,6 @@ async function runBenchmarkPreflight(workdir: string): Promise<void> {
 
   const run = (async () => {
     const pythonCommand = process.platform === "win32" ? "python" : "python3";
-    const pythonInVenv = path.join(
-      venvPath,
-      process.platform === "win32" ? "Scripts" : "bin",
-      process.platform === "win32" ? "python.exe" : "python",
-    );
 
     if (mode === "cold") {
       await rm(venvPath, { recursive: true, force: true });
