@@ -427,7 +427,24 @@ describe("CodingWorkspaceService", () => {
         "ttl-cleanup",
         "task_complete",
       );
-      await new Promise((resolve) => setTimeout(resolve, 40));
+
+      const waitUntil = async (
+        predicate: () => boolean,
+        timeoutMs = 500,
+        intervalMs = 10,
+      ): Promise<void> => {
+        const startedAt = Date.now();
+        while (Date.now() - startedAt < timeoutMs) {
+          if (predicate()) return;
+          await new Promise((resolve) => setTimeout(resolve, intervalMs));
+        }
+        throw new Error("Timed out waiting for scratch cleanup condition");
+      };
+      await waitUntil(
+        () =>
+          removeSpy.mock.calls.length > 0 &&
+          scratchService.listScratchWorkspaces().length === 0,
+      );
 
       expect(removeSpy).toHaveBeenCalled();
       expect(scratchService.listScratchWorkspaces()).toHaveLength(0);
