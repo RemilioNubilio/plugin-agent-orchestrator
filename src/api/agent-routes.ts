@@ -258,6 +258,63 @@ export async function handleAgentRoutes(
     return true;
   }
 
+  // === Scratch Workspace Retention ===
+  // GET /api/coding-agents/scratch
+  if (method === "GET" && pathname === "/api/coding-agents/scratch") {
+    if (!ctx.workspaceService) {
+      sendError(res, "Workspace Service not available", 503);
+      return true;
+    }
+    sendJson(
+      res,
+      ctx.workspaceService.listScratchWorkspaces() as unknown as JsonValue,
+    );
+    return true;
+  }
+
+  // POST /api/coding-agents/:id/scratch/(keep|delete|promote)
+  const scratchActionMatch = pathname.match(
+    /^\/api\/coding-agents\/([^/]+)\/scratch\/(keep|delete|promote)$/,
+  );
+  if (method === "POST" && scratchActionMatch) {
+    if (!ctx.workspaceService) {
+      sendError(res, "Workspace Service not available", 503);
+      return true;
+    }
+    const sessionId = scratchActionMatch[1];
+    const action = scratchActionMatch[2];
+    try {
+      if (action === "keep") {
+        const scratch = await ctx.workspaceService.keepScratchWorkspace(
+          sessionId,
+        );
+        sendJson(res, { success: true, scratch } as unknown as JsonValue);
+        return true;
+      }
+      if (action === "delete") {
+        await ctx.workspaceService.deleteScratchWorkspace(sessionId);
+        sendJson(
+          res,
+          { success: true, deleted: true, sessionId } as unknown as JsonValue,
+        );
+        return true;
+      }
+      const body = await parseBody(req);
+      const promoteName =
+        typeof body.name === "string" ? body.name : undefined;
+      const scratch = await ctx.workspaceService.promoteScratchWorkspace(
+        sessionId,
+        promoteName,
+      );
+      sendJson(res, { success: true, scratch } as unknown as JsonValue);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const status = message.includes("not found") ? 404 : 500;
+      sendError(res, message, status);
+    }
+    return true;
+  }
+
   // === Workspace Files ===
   // GET /api/coding-agents/workspace-files?agentType=claude
   if (method === "GET" && pathname === "/api/coding-agents/workspace-files") {

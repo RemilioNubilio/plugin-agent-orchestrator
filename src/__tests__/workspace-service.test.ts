@@ -5,6 +5,9 @@
  */
 
 import { beforeEach, describe, expect, it, jest, mock } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 
 import type { IAgentRuntime } from "@elizaos/core";
 
@@ -301,6 +304,159 @@ describe("CodingWorkspaceService", () => {
 
       const retrieved = service.getWorkspace(workspace.id);
       expect(retrieved).toBeUndefined();
+    });
+  });
+
+  describe("scratch retention", () => {
+    it("registers scratch as pending_decision by default", async () => {
+      const runtime = createMockRuntime({
+        CODING_WORKSPACE_CONFIG: {
+          baseDir: await fs.mkdtemp(path.join(os.tmpdir(), "scratch-test-")),
+        },
+      });
+      const scratchService = await CodingWorkspaceService.start(
+        runtime as unknown as IAgentRuntime,
+      );
+      const scratchPath = path.join(
+        os.tmpdir(),
+        `scratch-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      );
+      await fs.mkdir(scratchPath, { recursive: true });
+
+      const record = await scratchService.registerScratchWorkspace(
+        "s-1",
+        scratchPath,
+        "scratch/test",
+        "task_complete",
+      );
+
+      expect(record?.status).toBe("pending_decision");
+      expect(scratchService.listScratchWorkspaces()).toHaveLength(1);
+    });
+
+    it("keeps, promotes, and deletes scratch workspaces", async () => {
+      const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "scratch-test-"));
+      const runtime = createMockRuntime({
+        CODING_WORKSPACE_CONFIG: { baseDir },
+      });
+      const scratchService = await CodingWorkspaceService.start(
+        runtime as unknown as IAgentRuntime,
+      );
+      const scratchPath = path.join(baseDir, "tmp-scratch");
+      await fs.mkdir(scratchPath, { recursive: true });
+
+      await scratchService.registerScratchWorkspace(
+        "s-2",
+        scratchPath,
+        "my feature",
+        "task_complete",
+      );
+      const kept = await scratchService.keepScratchWorkspace("s-2");
+      expect(kept.status).toBe("kept");
+
+      const promoted = await scratchService.promoteScratchWorkspace(
+        "s-2",
+        "feature-project",
+      );
+      expect(promoted.status).toBe("promoted");
+      expect(promoted.path).toContain("feature-project");
+      await expect(fs.stat(promoted.path)).resolves.toBeDefined();
+
+      await scratchService.deleteScratchWorkspace("s-2");
+      expect(scratchService.listScratchWorkspaces()).toHaveLength(0);
+    });
+
+    it("falls back to copy+delete when promote rename fails with EXDEV", async () => {
+      const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "scratch-test-"));
+      const runtime = createMockRuntime({
+        CODING_WORKSPACE_CONFIG: { baseDir },
+      });
+      const scratchService = await CodingWorkspaceService.start(
+        runtime as unknown as IAgentRuntime,
+      );
+      const scratchPath = path.join(baseDir, "tmp-scratch-exdev");
+      await fs.mkdir(scratchPath, { recursive: true });
+      await fs.writeFile(path.join(scratchPath, "a.txt"), "hello");
+
+      await scratchService.registerScratchWorkspace(
+        "s-3",
+        scratchPath,
+        "cross-device",
+        "task_complete",
+      );
+
+      const renameSpy = jest.spyOn(fs, "rename").mockImplementationOnce(
+        async () => {
+          const err = new Error("Cross-device link not permitted");
+          (err as NodeJS.ErrnoException).code = "EXDEV";
+          throw err;
+        },
+      );
+
+      const promoted = await scratchService.promoteScratchWorkspace(
+        "s-3",
+        "feature-cross-device",
+      );
+
+      expect(renameSpy).toHaveBeenCalled();
+      await expect(fs.stat(promoted.path)).resolves.toBeDefined();
+      await expect(fs.stat(scratchPath)).rejects.toThrow();
+      renameSpy.mockRestore();
+    });
+
+    it("cleans retention maps even when timer cleanup remove fails", async () => {
+      const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "scratch-test-"));
+      const runtime = createMockRuntime({
+        CODING_WORKSPACE_CONFIG: { baseDir },
+        PARALLAX_SCRATCH_DECISION_TTL_MS: 10,
+      });
+      const scratchService = await CodingWorkspaceService.start(
+        runtime as unknown as IAgentRuntime,
+      );
+      const scratchPath = path.join(baseDir, "tmp-scratch-timer");
+      await fs.mkdir(scratchPath, { recursive: true });
+
+      const removeSpy = jest
+        .spyOn(scratchService, "removeScratchDir")
+        .mockRejectedValueOnce(new Error("rm failed"));
+      const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+      await scratchService.registerScratchWorkspace(
+        "s-4",
+        scratchPath,
+        "ttl-cleanup",
+        "task_complete",
+      );
+
+      const waitUntil = async (
+        predicate: () => boolean,
+        timeoutMs = 500,
+        intervalMs = 10,
+      ): Promise<void> => {
+        const startedAt = Date.now();
+        while (Date.now() - startedAt < timeoutMs) {
+          if (predicate()) return;
+          await new Promise((resolve) => setTimeout(resolve, intervalMs));
+        }
+        throw new Error("Timed out waiting for scratch cleanup condition");
+      };
+      await waitUntil(
+        () =>
+          removeSpy.mock.calls.length > 0 &&
+          scratchService.listScratchWorkspaces().length === 0,
+      );
+
+      expect(removeSpy).toHaveBeenCalled();
+      expect(scratchService.listScratchWorkspaces()).toHaveLength(0);
+      const timers = (
+        scratchService as unknown as {
+          scratchCleanupTimers: Map<string, ReturnType<typeof setTimeout>>;
+        }
+      ).scratchCleanupTimers;
+      expect(timers.size).toBe(0);
+
+      removeSpy.mockRestore();
+      warnSpy.mockRestore();
     });
   });
 });

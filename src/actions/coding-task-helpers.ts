@@ -117,7 +117,8 @@ export function registerSessionEvents(
       }
     }
 
-    // Auto-cleanup scratch directories when the session exits (always runs)
+    // Scratch lifecycle: register terminal scratch workspaces for retention
+    // policy handling (ephemeral / pending_decision / persistent).
     if (
       (event === "stopped" || event === "task_complete" || event === "error") &&
       scratchDir
@@ -126,11 +127,18 @@ export function registerSessionEvents(
         "CODING_WORKSPACE_SERVICE",
       ) as unknown as CodingWorkspaceService | undefined;
       if (wsService) {
-        wsService.removeScratchDir(scratchDir).catch((err) => {
+        wsService
+          .registerScratchWorkspace(
+            sessionId,
+            scratchDir,
+            label,
+            event,
+          )
+          .catch((err) => {
           logger.warn(
-            `[START_CODING_TASK] Failed to cleanup scratch dir for "${label}": ${err}`,
+            `[START_CODING_TASK] Failed to register scratch workspace for "${label}": ${err}`,
           );
-        });
+          });
       }
     }
   });
