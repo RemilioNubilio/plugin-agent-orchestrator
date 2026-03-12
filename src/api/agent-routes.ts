@@ -10,7 +10,8 @@
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { access, realpath, rm } from "node:fs/promises";
+import { access, readFile, realpath, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import * as os from "node:os";
 import * as path from "node:path";
 import { execFile } from "node:child_process";
@@ -133,11 +134,18 @@ async function resolveRequirementsPath(workdir: string): Promise<string | null> 
   return null;
 }
 
+async function fingerprintRequirementsFile(requirementsPath: string): Promise<string> {
+  const file = await readFile(requirementsPath);
+  return createHash("sha256").update(file).digest("hex");
+}
+
 async function runBenchmarkPreflight(workdir: string): Promise<void> {
   if (!shouldAutoPreflight()) return;
 
   const requirementsPath = await resolveRequirementsPath(workdir);
   if (!requirementsPath) return;
+  const requirementsFingerprint =
+    await fingerprintRequirementsFile(requirementsPath);
 
   const mode =
     process.env.PARALLAX_BENCHMARK_PREFLIGHT_MODE?.toLowerCase() === "warm"
@@ -150,7 +158,7 @@ async function runBenchmarkPreflight(workdir: string): Promise<void> {
     process.platform === "win32" ? "Scripts" : "bin",
     process.platform === "win32" ? "python.exe" : "python",
   );
-  const key = `${workdir}::${mode}::${venvPath}`;
+  const key = `${workdir}::${mode}::${venvPath}::${requirementsFingerprint}`;
   if (PREFLIGHT_DONE.has(key)) {
     if (await fileExists(pythonInVenv)) return;
     PREFLIGHT_DONE.delete(key);
