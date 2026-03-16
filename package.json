@@ -1,6 +1,6 @@
 {
   "name": "@elizaos/plugin-agent-orchestrator",
-  "version": "0.3.14",
+  "version": "0.3.15",
   "description": "Coding agent orchestration plugin - spawn and manage CLI coding agents via PTY",
   "type": "module",
   "main": "dist/index.js",
@@ -17,6 +17,7 @@
   },
   "files": [
     "dist",
+    "scripts",
     "README.md",
     "package.json"
   ],
