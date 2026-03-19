@@ -115,39 +115,42 @@ Assistant:
 </params>`;
 
 /** Lightweight keyword check — does the user's message look coding-related? */
+
+// Phrases specific enough to match with simple inclusion
+const CODING_PHRASES = [
+  "coding",
+  "github",
+  "clone",
+  "spawn",
+  "workspace",
+  "pull request",
+  "fix bug",
+  "write test",
+  "coding task",
+  "start task",
+  "finalize",
+];
+
+// Strong single-word triggers unlikely to appear in casual conversation
+const STRONG_TRIGGERS = [/\bcode\b/, /\bagent\b/, /\brepo\b/, /\bdeploy\b/, /\bpr\b/];
+
+// Ambiguous words only count when used in coding-specific collocations
+const CODING_COLLOCATIONS = [
+  /\bgit\s+commit\b/,
+  /\bgit\s+branch\b/,
+  /\bgit\s+merge\b/,
+  /\bbuild\s+(app|project|repo|code|pipeline)\b/,
+  /\bmerge\s+(conflict|request|branch)\b/,
+  /\bcommit\s+(message|hash|history|change)\b/,
+  /\bbranch\s+(off|from|name|out)\b/,
+];
+
 function looksLikeCodingRequest(text: string): boolean {
   const lower = text.toLowerCase();
 
-  // Phrases specific enough to match with simple inclusion
-  const phrases = [
-    "coding",
-    "github",
-    "clone",
-    "spawn",
-    "workspace",
-    "pull request",
-    "fix bug",
-    "write test",
-    "coding task",
-    "start task",
-    "finalize",
-  ];
-  if (phrases.some((kw) => lower.includes(kw))) return true;
-
-  // Generic terms that need word-boundary matching to avoid false positives
-  // (e.g. "agent" in "reagent", "build" in "building rapport")
-  const boundaryWords = [
-    "code",
-    "agent",
-    "repo",
-    "deploy",
-    "build",
-    "commit",
-    "branch",
-    "merge",
-    "pr",
-  ];
-  return boundaryWords.some((w) => new RegExp(`\\b${w}\\b`).test(lower));
+  if (CODING_PHRASES.some((kw) => lower.includes(kw))) return true;
+  if (STRONG_TRIGGERS.some((re) => re.test(lower))) return true;
+  return CODING_COLLOCATIONS.some((re) => re.test(lower));
 }
 
 export const codingAgentExamplesProvider: Provider = {
