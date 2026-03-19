@@ -114,6 +114,45 @@ Assistant:
   </START_CODING_TASK>
 </params>`;
 
+/** Lightweight keyword check — does the user's message look coding-related? */
+
+// Multi-word phrases and unambiguous terms — word-boundary matched
+const CODING_PHRASES = [
+  /\bcoding\b/,
+  /\bgithub\b/,
+  /\bclone\b/,
+  /\bspawn\b/,
+  /\bworkspace\b/,
+  /\bpull request\b/,
+  /\bfix bug\b/,
+  /\bwrite test\b/,
+  /\bcoding task\b/,
+  /\bstart task\b/,
+  /\bfinalize\b/,
+];
+
+// Strong single-word triggers unlikely to appear in casual conversation
+const STRONG_TRIGGERS = [/\bcode\b/, /\bagent\b/, /\brepo\b/, /\bdeploy\b/, /\bpr\b/];
+
+// Ambiguous words only count when used in coding-specific collocations
+const CODING_COLLOCATIONS = [
+  /\bgit\s+commit\b/,
+  /\bgit\s+branch\b/,
+  /\bgit\s+merge\b/,
+  /\bbuild\s+(app|project|repo|code|pipeline)\b/,
+  /\bmerge\s+(conflict|request|branch)\b/,
+  /\bcommit\s+(message|hash|history|change)\b/,
+  /\bbranch\s+(off|from|name|out)\b/,
+];
+
+function looksLikeCodingRequest(text: string): boolean {
+  const lower = text.toLowerCase();
+
+  if (CODING_PHRASES.some((re) => re.test(lower))) return true;
+  if (STRONG_TRIGGERS.some((re) => re.test(lower))) return true;
+  return CODING_COLLOCATIONS.some((re) => re.test(lower));
+}
+
 export const codingAgentExamplesProvider: Provider = {
   name: "CODING_AGENT_EXAMPLES",
   description:
@@ -121,6 +160,23 @@ export const codingAgentExamplesProvider: Provider = {
   position: -1, // Low priority — supplementary context
 
   get: async (_runtime: IAgentRuntime, _message: Memory, _state: State) => {
+    // Skip full examples for non-coding conversations to save ~3.5k chars.
+    const userText =
+      (typeof _message.content === "string"
+        ? _message.content
+        : _message.content?.text) ?? "";
+    if (!looksLikeCodingRequest(userText)) {
+      const brief =
+        "Use START_CODING_TASK to launch coding agents (handles workspace setup automatically). " +
+        "Use SEND_TO_CODING_AGENT to interact with running agents. " +
+        "Use FINALIZE_WORKSPACE to create PRs from agent work.";
+      return {
+        data: { codingAgentExamples: [] },
+        values: { codingAgentExamples: brief },
+        text: brief,
+      };
+    }
+
     const examples = CODING_AGENT_EXAMPLES.map(formatExample).join("\n\n");
     const text = [
       "# Coding Agent Action Call Examples",
