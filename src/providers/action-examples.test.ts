@@ -61,4 +61,22 @@ describe("codingAgentExamplesProvider", () => {
     );
     expect(result.text).not.toContain("# Coding Agent Action Call Examples");
   });
+
+  it("handles string content type (not just object)", async () => {
+    const result = await codingAgentExamplesProvider.get(
+      mockRuntime,
+      { content: "Clone the repo and deploy it" } as never,
+      mockState,
+    );
+    expect(result.text).toContain("# Coding Agent Action Call Examples");
+  });
+
+  it("avoids false positives on generic words embedded in other words", async () => {
+    const result = await codingAgentExamplesProvider.get(
+      mockRuntime,
+      mockMessage("The reagent is building up in the container"),
+      mockState,
+    );
+    expect(result.text).not.toContain("# Coding Agent Action Call Examples");
+  });
 });

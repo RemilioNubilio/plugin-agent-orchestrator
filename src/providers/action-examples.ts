@@ -117,30 +117,37 @@ Assistant:
 /** Lightweight keyword check — does the user's message look coding-related? */
 function looksLikeCodingRequest(text: string): boolean {
   const lower = text.toLowerCase();
-  const keywords = [
-    "code",
+
+  // Phrases specific enough to match with simple inclusion
+  const phrases = [
     "coding",
-    "agent",
-    "repo",
     "github",
     "clone",
     "spawn",
     "workspace",
-    "pr ",
     "pull request",
     "fix bug",
     "write test",
+    "coding task",
+    "start task",
+    "finalize",
+  ];
+  if (phrases.some((kw) => lower.includes(kw))) return true;
+
+  // Generic terms that need word-boundary matching to avoid false positives
+  // (e.g. "agent" in "reagent", "build" in "building rapport")
+  const boundaryWords = [
+    "code",
+    "agent",
+    "repo",
     "deploy",
     "build",
     "commit",
     "branch",
     "merge",
-    "coding task",
-    "start task",
-    "send to",
-    "finalize",
+    "pr",
   ];
-  return keywords.some((kw) => lower.includes(kw));
+  return boundaryWords.some((w) => new RegExp(`\\b${w}\\b`).test(lower));
 }
 
 export const codingAgentExamplesProvider: Provider = {
