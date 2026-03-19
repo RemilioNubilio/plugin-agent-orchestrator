@@ -114,6 +114,35 @@ Assistant:
   </START_CODING_TASK>
 </params>`;
 
+/** Lightweight keyword check — does the user's message look coding-related? */
+function looksLikeCodingRequest(text: string): boolean {
+  const lower = text.toLowerCase();
+  const keywords = [
+    "code",
+    "coding",
+    "agent",
+    "repo",
+    "github",
+    "clone",
+    "spawn",
+    "workspace",
+    "pr ",
+    "pull request",
+    "fix bug",
+    "write test",
+    "deploy",
+    "build",
+    "commit",
+    "branch",
+    "merge",
+    "coding task",
+    "start task",
+    "send to",
+    "finalize",
+  ];
+  return keywords.some((kw) => lower.includes(kw));
+}
+
 export const codingAgentExamplesProvider: Provider = {
   name: "CODING_AGENT_EXAMPLES",
   description:
@@ -121,6 +150,23 @@ export const codingAgentExamplesProvider: Provider = {
   position: -1, // Low priority — supplementary context
 
   get: async (_runtime: IAgentRuntime, _message: Memory, _state: State) => {
+    // Skip full examples for non-coding conversations to save ~3.5k chars.
+    const userText =
+      (typeof _message.content === "string"
+        ? _message.content
+        : _message.content?.text) ?? "";
+    if (!looksLikeCodingRequest(userText)) {
+      const brief =
+        "Use START_CODING_TASK to launch coding agents (handles workspace setup automatically). " +
+        "Use SEND_TO_CODING_AGENT to interact with running agents. " +
+        "Use FINALIZE_WORKSPACE to create PRs from agent work.";
+      return {
+        data: { codingAgentExamples: [] },
+        values: { codingAgentExamples: brief },
+        text: brief,
+      };
+    }
+
     const examples = CODING_AGENT_EXAMPLES.map(formatExample).join("\n\n");
     const text = [
       "# Coding Agent Action Call Examples",
