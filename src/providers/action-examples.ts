@@ -116,19 +116,19 @@ Assistant:
 
 /** Lightweight keyword check — does the user's message look coding-related? */
 
-// Phrases specific enough to match with simple inclusion
+// Multi-word phrases and unambiguous terms — word-boundary matched
 const CODING_PHRASES = [
-  "coding",
-  "github",
-  "clone",
-  "spawn",
-  "workspace",
-  "pull request",
-  "fix bug",
-  "write test",
-  "coding task",
-  "start task",
-  "finalize",
+  /\bcoding\b/,
+  /\bgithub\b/,
+  /\bclone\b/,
+  /\bspawn\b/,
+  /\bworkspace\b/,
+  /\bpull request\b/,
+  /\bfix bug\b/,
+  /\bwrite test\b/,
+  /\bcoding task\b/,
+  /\bstart task\b/,
+  /\bfinalize\b/,
 ];
 
 // Strong single-word triggers unlikely to appear in casual conversation
@@ -148,7 +148,7 @@ const CODING_COLLOCATIONS = [
 function looksLikeCodingRequest(text: string): boolean {
   const lower = text.toLowerCase();
 
-  if (CODING_PHRASES.some((kw) => lower.includes(kw))) return true;
+  if (CODING_PHRASES.some((re) => re.test(lower))) return true;
   if (STRONG_TRIGGERS.some((re) => re.test(lower))) return true;
   return CODING_COLLOCATIONS.some((re) => re.test(lower));
 }
