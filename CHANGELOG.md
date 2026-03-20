@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.16
+
+### Features
+
+- **Conditional coding examples**: Coding example injection is now gated on message intent — examples are only included in coordinator prompts when the user's message contains coding-related keywords or phrases, reducing noise for non-coding conversations.
+
+### Fixed
+
+- **Keyword matching precision**: Generic keywords (`fix`, `run`, `build`, etc.) now use word-boundary matching and collocation patterns to avoid false positives on partial matches (e.g. "fixture" no longer triggers coding mode).
+
 ## 0.3.14
 
 ### Features
