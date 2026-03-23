@@ -199,6 +199,8 @@ const IDLE_SCAN_INTERVAL_MS = 60 * 1000; // 1 minute
 
 /** How long to wait before auto-resuming a paused coordinator (ms). */
 const PAUSE_TIMEOUT_MS = 30_000;
+/** Max events to buffer before WS bridge is wired. */
+const MAX_PRE_BRIDGE_BUFFER = 100;
 /** Grace window where a late task_complete can recover a recently-stopped task. */
 const STOPPED_RECOVERY_WINDOW_MS = 90_000;
 
@@ -422,6 +424,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 			this.pauseTimeout = null;
 		}
 		this.pauseBuffer = [];
+		this.preBridgeBroadcastBuffer.length = 0;
 		this.log("SwarmCoordinator stopped");
 	}
 
@@ -631,7 +634,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 		// Relay to WebSocket clients — buffer if bridge isn't wired yet
 		if (this.wsBroadcast) {
 			this.wsBroadcast(event);
-		} else {
+		} else if (this.preBridgeBroadcastBuffer.length < MAX_PRE_BRIDGE_BUFFER) {
 			this.preBridgeBroadcastBuffer.push(event);
 		}
 	}
