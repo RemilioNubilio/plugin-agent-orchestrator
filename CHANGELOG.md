@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.17
+
+### Fixed
+
+- **Pre-bridge WS broadcast buffering**: Events broadcast by the SwarmCoordinator before the server-side WebSocket bridge is wired are now buffered and replayed when `setWsBroadcast` is called. Previously, `task_registered` events were silently dropped during the async coordinator polling window, causing the UI to never learn about active coding agent sessions.
+- **Buffer lifecycle cleanup**: `preBridgeBroadcastBuffer` is cleared on `stop()` to prevent stale events replaying across coordinator lifecycle resets.
+- **Bounded buffer**: Pre-bridge buffer is capped at 100 events to prevent unbounded memory growth if the WS bridge is never wired.
+
 ## 0.3.16
 
 ### Features
