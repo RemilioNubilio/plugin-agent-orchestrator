@@ -286,6 +286,7 @@ export const spawnAgentAction: Action = {
       }
 
       // Store session info in state for subsequent actions
+
       if (state) {
         state.codingSession = {
           id: session.id,

@@ -1,8 +1,8 @@
 /**
  * Handler logic for the START_CODING_TASK action.
  *
- * - handleMultiAgent()  -- Multi-agent mode (pipe-delimited `agents` param)
- * - handleSingleAgent() -- Single-agent mode (standard handler path)
+ * handleMultiAgent() handles both multi-agent and single-agent modes.
+ * A single-agent call is just a length-1 agent spec.
  *
  * @module actions/coding-task-handlers
  */
@@ -139,6 +139,9 @@ async function generateSwarmContext(
     `Output ONLY the bullet points, no preamble.`;
 
   try {
+    // Disable streaming so planning output doesn't pipe to the user's chat.
+    // The action handler runs inside a streaming context; without stream:false,
+    // the planning LLM response would be forwarded as chat text.
     const result = await withTrajectoryContext(
       runtime,
       { source: "orchestrator", decisionType: "swarm-context-generation" },
@@ -146,6 +149,7 @@ async function generateSwarmContext(
         runtime.useModel(ModelType.TEXT_SMALL, {
           prompt,
           temperature: 0.3,
+          stream: false,
         }),
     );
     return result?.trim() || "";
@@ -202,18 +206,15 @@ export async function handleMultiAgent(
   } = ctx;
 
   // Parse pipe-delimited agent specs: "task1 | task2 | agentType:task3"
+  // A single empty string means "spawn one agent with no initial task".
   const agentSpecs = agentsParam
     .split("|")
     .map((s) => s.trim())
     .filter(Boolean);
 
+  // If nothing parsed (e.g. empty string), treat as one agent with no task
   if (agentSpecs.length === 0) {
-    if (callback) {
-      await callback({
-        text: "No agent tasks provided in agents parameter.",
-      });
-    }
-    return { success: false, error: "EMPTY_AGENTS_PARAM" };
+    agentSpecs.push("");
   }
 
   // Cap multi-agent count to the concurrency limit
@@ -466,220 +467,3 @@ export async function handleMultiAgent(
   };
 }
 
-/**
- * Single-agent mode handler.
- *
- * Provisions a workspace (clone or scratch) and spawns a single coding agent.
- */
-export async function handleSingleAgent(
-  ctx: CodingTaskContext,
-  task: string | undefined,
-): Promise<ActionResult | undefined> {
-  logger.debug(
-    `[START_CODING_TASK] handleSingleAgent called, agentType=${ctx.defaultAgentType}, task=${task ? "yes" : "none"}, repo=${ctx.repo ?? "none"}`,
-  );
-  const {
-    runtime,
-    ptyService,
-    wsService,
-    credentials,
-    customCredentials,
-    callback,
-    message,
-    state,
-    repo,
-    defaultAgentType: agentType,
-    rawAgentType,
-    memoryContent,
-    approvalPreset,
-    explicitLabel,
-  } = ctx;
-
-  // Generate or use explicit label
-  const label = explicitLabel || generateLabel(repo, task);
-
-  // --- Step 1: Resolve workspace directory ---
-  let workdir: string;
-  let workspaceId: string | undefined;
-  let branch: string | undefined;
-
-  if (repo) {
-    if (!wsService) {
-      if (callback) {
-        await callback({
-          text: "Workspace Service is not available. Cannot clone repository.",
-        });
-      }
-      return { success: false, error: "WORKSPACE_SERVICE_UNAVAILABLE" };
-    }
-
-    try {
-      if (callback) {
-        await callback({ text: `Cloning ${repo}...` });
-      }
-
-      const workspace = await wsService.provisionWorkspace({ repo });
-      workdir = workspace.path;
-      workspaceId = workspace.id;
-      branch = workspace.branch;
-
-      wsService.setLabel(workspace.id, label);
-
-      if (state) {
-        state.codingWorkspace = {
-          id: workspace.id,
-          path: workspace.path,
-          branch: workspace.branch,
-          isWorktree: workspace.isWorktree,
-          label,
-        };
-      }
-    } catch (error) {
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
-      if (callback) {
-        await callback({
-          text: `Failed to clone repository: ${errorMessage}`,
-        });
-      }
-      return { success: false, error: errorMessage };
-    }
-  } else {
-    workdir = createScratchDir();
-  }
-
-  // --- Step 2: Spawn the agent ---
-  logger.debug(
-    `[START_CODING_TASK] Spawning ${agentType} agent, task: ${task ? `"${task.slice(0, 80)}..."` : "(none)"}, workdir: ${workdir}`,
-  );
-  try {
-    if (agentType !== "shell" && agentType !== "pi") {
-      const [preflight] = await ptyService.checkAvailableAgents([
-        agentType as Exclude<CodingAgentType, "shell" | "pi">,
-      ]);
-      if (preflight && !preflight.installed) {
-        logger.warn(
-          `[START_CODING_TASK] ${preflight.adapter} CLI not installed`,
-        );
-        if (callback) {
-          await callback({
-            text: `${preflight.adapter} CLI is not installed.\nInstall with: ${preflight.installCommand}\nDocs: ${preflight.docsUrl}`,
-          });
-        }
-        return { success: false, error: "AGENT_NOT_INSTALLED" };
-      }
-      logger.debug(
-        `[START_CODING_TASK] Preflight OK: ${preflight?.adapter} installed`,
-      );
-    }
-
-    const piRequested = isPiAgentType(rawAgentType);
-    const initialTask = piRequested ? toPiCommand(task) : task;
-    const displayType = piRequested ? "pi" : agentType;
-
-    // Query past experience for trajectory feedback injection
-    const pastExperience = await queryPastExperience(runtime, {
-      taskDescription: task,
-      lookbackHours: 48,
-      maxEntries: 6,
-      repo,
-    });
-    const pastExperienceBlock = formatPastExperience(pastExperience);
-    const agentMemory = [memoryContent, pastExperienceBlock]
-      .filter(Boolean)
-      .join("\n\n") || undefined;
-
-    // Check if coordinator is active — route blocking prompts through it
-    const coordinator = getCoordinator(runtime);
-
-    logger.debug(
-      `[START_CODING_TASK] Calling spawnSession (${agentType}, coordinator=${!!coordinator})`,
-    );
-    const session: SessionInfo = await ptyService.spawnSession({
-      name: `coding-${Date.now()}`,
-      agentType,
-      workdir,
-      initialTask,
-      memoryContent: agentMemory,
-      credentials,
-      approvalPreset:
-        (approvalPreset as ApprovalPreset | undefined) ??
-        ptyService.defaultApprovalPreset,
-      customCredentials,
-      ...(coordinator ? { skipAdapterAutoResponse: true } : {}),
-      metadata: {
-        requestedType: rawAgentType,
-        messageId: message.id,
-        userId: (message as unknown as Record<string, unknown>).userId,
-        workspaceId,
-        label,
-      },
-    });
-    logger.debug(
-      `[START_CODING_TASK] Session spawned: ${session.id} (${session.status})`,
-    );
-
-    // Register event handler
-    const isScratchWorkspace = !repo;
-    const scratchDir = isScratchWorkspace ? workdir : null;
-    registerSessionEvents(
-      ptyService,
-      runtime,
-      session.id,
-      label,
-      scratchDir,
-      callback,
-      !!coordinator,
-    );
-    if (coordinator && task) {
-      coordinator.registerTask(session.id, {
-        agentType,
-        label,
-        originalTask: task,
-        workdir,
-        repo,
-      });
-    }
-
-    if (state) {
-      state.codingSession = {
-        id: session.id,
-        agentType: session.agentType,
-        workdir: session.workdir,
-        status: session.status,
-      };
-    }
-
-    const summary = repo
-      ? `Cloned ${repo} and started ${displayType} agent as "${label}"${task ? ` with task: "${task}"` : ""}`
-      : `Started ${displayType} agent as "${label}" in scratch workspace${task ? ` with task: "${task}"` : ""}`;
-
-    if (callback) {
-      await callback({ text: `${summary}\nSession ID: ${session.id}` });
-    }
-
-    return {
-      success: true,
-      text: summary,
-      data: {
-        sessionId: session.id,
-        agentType: displayType,
-        workdir: session.workdir,
-        workspaceId,
-        branch,
-        label,
-        status: session.status,
-      },
-    };
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    logger.error("[START_CODING_TASK] Failed to spawn agent:", errorMessage);
-
-    if (callback) {
-      await callback({
-        text: `Failed to start coding agent: ${errorMessage}`,
-      });
-    }
-    return { success: false, error: errorMessage };
-  }
-}

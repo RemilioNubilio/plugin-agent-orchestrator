@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.19
+
+### Fixed
+
+- **Swarm planning text leaking to chat**: `generateSwarmContext` LLM call ran inside the action's streaming context, causing the planning output (bullet points, coordination brief) to pipe directly into the user's chat as visible text. Fixed by setting `stream: false` on the planning model call.
+- **Removed `handleSingleAgent` duplication**: Consolidated single-agent and multi-agent paths into `handleMultiAgent`, which already handles length-1 specs. Eliminates ~215 lines of duplicated workspace provisioning, agent spawning, and session registration logic.
+
 ## 0.3.18
 
 ### Fixed

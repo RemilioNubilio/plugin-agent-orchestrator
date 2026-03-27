@@ -30,7 +30,6 @@ import type { CodingWorkspaceService } from "../services/workspace-service.js";
 import {
   type CodingTaskContext,
   handleMultiAgent,
-  handleSingleAgent,
 } from "./coding-task-handlers.js";
 
 export const startCodingTaskAction: Action = {
@@ -200,7 +199,7 @@ export const startCodingTaskAction: Action = {
       explicitLabel,
     };
 
-    // --- Check for multi-agent mode ---
+    // --- Dispatch: build a pipe-delimited agents string for handleMultiAgent ---
     const agentsParam =
       (params?.agents as string) ?? (content.agents as string);
 
@@ -208,9 +207,11 @@ export const startCodingTaskAction: Action = {
       return handleMultiAgent(ctx, agentsParam);
     }
 
-    // --- Single-agent mode ---
+    // Single-agent mode: build a single-element agents string so we can
+    // reuse handleMultiAgent (which handles length-1 specs fine).
     const task = (params?.task as string) ?? (content.task as string);
-    return handleSingleAgent(ctx, task);
+    const singleAgentSpec = task || "";
+    return handleMultiAgent(ctx, singleAgentSpec);
   },
 
   parameters: [
