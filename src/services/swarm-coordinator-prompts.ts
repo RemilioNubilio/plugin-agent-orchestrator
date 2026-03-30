@@ -300,20 +300,21 @@ export function buildTurnCompletePrompt(
     `---\n${turnOutput.slice(-3000)}\n---\n\n` +
     `The agent completed a turn. Decide if the task is done or needs more work.\n\n` +
     `Options:\n` +
-    `1. "complete" — A pull request was created, OR the agent says the work is done. ` +
-    `This is the goal state. Mark complete as soon as a PR URL or "Created pull request" appears.\n` +
-    `2. "respond" — The agent needs to do more work (no PR yet, or code not committed).\n` +
+    `1. "complete" — The task objectives have been met. For repo tasks, this means a PR was created. ` +
+    `For scratch/research tasks, this means the agent produced its deliverable (summary, file, analysis). ` +
+    `Mark complete as soon as a PR creation signal or a clear "done" statement appears.\n` +
+    `2. "respond" — The agent needs to do more work.\n` +
     `3. "escalate" — Something is wrong. Let the human decide.\n` +
     `4. "ignore" — The agent is still working (e.g., spinner text like "Germinating...", "Frosting..."). ` +
     `Wait for the next turn.\n\n` +
     `CRITICAL RULES:\n` +
-    `- If a PR was created (URL or "Created pull request #N" in output), use "complete" IMMEDIATELY.\n` +
-    `- Do NOT ask the agent to review, verify, or re-check a PR it already created.\n` +
-    `- Do NOT send "Review your PR" or any verification instructions.\n` +
+    `- If a PR was created ("Created pull request #N" in output), use "complete" IMMEDIATELY.\n` +
+    `- For scratch/research tasks (no repo), "complete" when the agent delivers its output.\n` +
+    `- Do NOT ask the agent to review, verify, or re-check work it already completed.\n` +
     `- If the agent confirms work is already done, use "complete".\n` +
     `- If output is only spinner text (single words like "Germinating...", "Frosting..."), ` +
     `the agent is still working — use "ignore" and wait for the next turn.\n` +
-    `- Only use "respond" when the agent genuinely hasn't started or hasn't created a PR yet.\n\n` +
+    `- Only use "respond" when the agent genuinely hasn't started the core work yet.\n\n` +
     `If the agent's output reveals a significant decision, include "keyDecision" with a brief summary.\n\n` +
     `Respond with ONLY a JSON object:\n` +
     `{"action": "respond|complete|escalate|ignore", "response": "...", "useKeys": false, "keys": [], "reasoning": "...", "keyDecision": "..."}`

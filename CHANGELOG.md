@@ -10,7 +10,7 @@
 - **Session event queue**: `SessionEventQueue` class for per-session async serialization (staged for future integration into decision loop).
 - **Repo fallback chain**: When no repo is provided, checks coordinator memory → disk history → workspace service for the most recently used repo.
 - **Stale session filter**: Events from PTY sessions created before the coordinator's startup are silently ignored.
-- **PR fast-path completion**: If turn output contains a PR URL, mark task complete immediately without LLM assessment.
+- **PR fast-path completion**: If turn output contains an explicit PR creation signal ("Created pull request", "gh pr create"), mark task complete immediately without LLM assessment.
 
 ### Fixed
 

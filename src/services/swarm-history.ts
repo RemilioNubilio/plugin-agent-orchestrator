@@ -30,6 +30,8 @@ export class SwarmHistory {
 	private pendingTruncation = false;
 	/** In-memory counter to avoid reading the file on every append. */
 	private appendCount = 0;
+	/** Entries buffered during truncation to prevent data loss. */
+	private truncationBuffer: HistoryEntry[] = [];
 
 	constructor(stateDir?: string) {
 		const dir =
@@ -42,13 +44,19 @@ export class SwarmHistory {
 
 	async append(entry: HistoryEntry): Promise<void> {
 		try {
+			// If truncation is in progress, buffer the entry to avoid race
+			if (this.pendingTruncation) {
+				this.truncationBuffer.push(entry);
+				return;
+			}
+
 			const dir = path.dirname(this.filePath);
 			await fs.mkdir(dir, { recursive: true });
 			await fs.appendFile(this.filePath, `${JSON.stringify(entry)}\n`, "utf-8");
 			this.appendCount++;
 
 			// Only check truncation after enough appends to potentially exceed MAX_ENTRIES
-			if (!this.pendingTruncation && this.appendCount >= MAX_ENTRIES - TRUNCATE_TO) {
+			if (this.appendCount >= MAX_ENTRIES - TRUNCATE_TO) {
 				const content = await fs.readFile(this.filePath, "utf-8");
 				const lineCount = content.split("\n").filter((l) => l.trim() !== "").length;
 				if (lineCount > MAX_ENTRIES) {
@@ -104,6 +112,14 @@ export class SwarmHistory {
 			const content = kept.map((e) => JSON.stringify(e)).join("\n") + "\n";
 			await fs.writeFile(this.filePath, content, "utf-8");
 			this.appendCount = 0;
+
+			// Flush any entries that were buffered during truncation
+			if (this.truncationBuffer.length > 0) {
+				const buffered = this.truncationBuffer.splice(0);
+				const lines = buffered.map((e) => JSON.stringify(e)).join("\n") + "\n";
+				await fs.appendFile(this.filePath, lines, "utf-8");
+				this.appendCount = buffered.length;
+			}
 		} finally {
 			this.pendingTruncation = false;
 		}
