@@ -28,6 +28,8 @@ const TRUNCATE_TO = 100;
 export class SwarmHistory {
 	private filePath: string;
 	private pendingTruncation = false;
+	/** In-memory counter to avoid reading the file on every append. */
+	private appendCount = 0;
 
 	constructor(stateDir?: string) {
 		const dir =
@@ -43,9 +45,10 @@ export class SwarmHistory {
 			const dir = path.dirname(this.filePath);
 			await fs.mkdir(dir, { recursive: true });
 			await fs.appendFile(this.filePath, `${JSON.stringify(entry)}\n`, "utf-8");
+			this.appendCount++;
 
-			// Check if truncation is needed
-			if (!this.pendingTruncation) {
+			// Only check truncation after enough appends to potentially exceed MAX_ENTRIES
+			if (!this.pendingTruncation && this.appendCount >= MAX_ENTRIES - TRUNCATE_TO) {
 				const content = await fs.readFile(this.filePath, "utf-8");
 				const lineCount = content.split("\n").filter((l) => l.trim() !== "").length;
 				if (lineCount > MAX_ENTRIES) {
@@ -53,7 +56,7 @@ export class SwarmHistory {
 				}
 			}
 		} catch {
-			// Fire-and-forget: never throw
+			// Fire-and-forget: never throw from append
 		}
 	}
 
@@ -78,6 +81,7 @@ export class SwarmHistory {
 			) {
 				return [];
 			}
+			console.error("[swarm-history] readAll failed:", err);
 			return [];
 		}
 	}
@@ -99,6 +103,7 @@ export class SwarmHistory {
 			const kept = entries.slice(-maxEntries);
 			const content = kept.map((e) => JSON.stringify(e)).join("\n") + "\n";
 			await fs.writeFile(this.filePath, content, "utf-8");
+			this.appendCount = 0;
 		} finally {
 			this.pendingTruncation = false;
 		}

@@ -109,9 +109,8 @@ describe("SwarmHistory", () => {
 		}
 
 		const entries = await history.readAll();
-		// After truncation, should have 100 entries (the last 100)
-		expect(entries.length).toBeLessThanOrEqual(101);
-		expect(entries.length).toBeGreaterThanOrEqual(100);
+		// After truncation, should have exactly 100 entries (TRUNCATE_TO)
+		expect(entries.length).toBe(100);
 
 		// The kept entries should be the most recent ones
 		const lastEntry = entries[entries.length - 1];

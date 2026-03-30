@@ -22,12 +22,6 @@
 
 - **Dependency bumps**: pty-manager 1.10.0→1.10.2, git-workspace-service 0.4.4→0.4.5, coding-agent-adapters 0.12.0→0.15.0
 
-## 0.3.20
-
-### Fixed
-
-- **Removed PR verification loop**: Coordinator no longer forces agents to re-verify PRs after creation, eliminating 2-3 extra LLM round trips per agent on trivial tasks. Agents are marked complete once a PR is created.
-
 ## 0.3.19
 
 ### Fixed

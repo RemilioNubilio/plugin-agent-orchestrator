@@ -484,7 +484,7 @@ export async function executeDecision(
       const taskCtx = ctx.tasks.get(sessionId);
       if (taskCtx) {
         taskCtx.status = "completed";
-        // Log to persistent history (fire-and-forget)
+        // Log to persistent history (non-blocking but observed)
         (ctx as { history?: { append: (e: unknown) => Promise<void> } }).history?.append({
           timestamp: Date.now(),
           type: "task_completed",
@@ -494,7 +494,9 @@ export async function executeDecision(
           repo: taskCtx.repo,
           workdir: taskCtx.workdir,
           completionSummary: decision.reasoning,
-        }).catch(() => {});
+        }).catch((err) => {
+          ctx.log(`Failed to persist task completion for "${taskCtx.label}" (${sessionId}): ${err}`);
+        });
       }
       ctx.broadcast({
         type: "task_complete",
@@ -812,8 +814,9 @@ export async function handleTurnComplete(
     // the task is done — skip the LLM assessment entirely. The LLM (especially
     // Gemini Flash) tends to ignore "do not verify" instructions and sends
     // unnecessary verification follow-ups, adding 2-5 extra rounds per agent.
+    // Only match explicit PR creation signals — not references to existing PRs.
     const PR_CREATED_RE =
-      /Created pull request #\d+|https?:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/i;
+      /(?:Created|Opened)\s+pull\s+request\s+#?\d+|gh\s+pr\s+create/i;
     if (PR_CREATED_RE.test(turnOutput)) {
       const fastDecision: CoordinationLLMResponse = {
         action: "complete",

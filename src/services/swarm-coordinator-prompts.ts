@@ -303,7 +303,9 @@ export function buildTurnCompletePrompt(
     `1. "complete" — A pull request was created, OR the agent says the work is done. ` +
     `This is the goal state. Mark complete as soon as a PR URL or "Created pull request" appears.\n` +
     `2. "respond" — The agent needs to do more work (no PR yet, or code not committed).\n` +
-    `3. "escalate" — Something is wrong. Let the human decide.\n\n` +
+    `3. "escalate" — Something is wrong. Let the human decide.\n` +
+    `4. "ignore" — The agent is still working (e.g., spinner text like "Germinating...", "Frosting..."). ` +
+    `Wait for the next turn.\n\n` +
     `CRITICAL RULES:\n` +
     `- If a PR was created (URL or "Created pull request #N" in output), use "complete" IMMEDIATELY.\n` +
     `- Do NOT ask the agent to review, verify, or re-check a PR it already created.\n` +

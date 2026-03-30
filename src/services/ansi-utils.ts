@@ -61,11 +61,11 @@ const TUI_DECORATIVE =
 /**
  * Lines that are just CLI loading/thinking status — no meaningful content.
  * Claude Code uses random gerund spinner words ("Tomfoolering…", "Recombobulating…")
- * that rotate frequently, so we match the general pattern: a single capitalized
- * word (optionally hyphenated) followed by ellipsis and optional parenthetical status.
+ * that rotate frequently. Requires an ellipsis (…/...) or status suffix
+ * (parenthetical / "for Ns") — plain words like "Completed" won't match.
  */
 const LOADING_LINE =
-  /^\s*(?:[A-Z][a-z]+(?:-[a-z]+)?(?:ing|ed)\w*|thinking|Loading|processing)(?:…|\.{3})?(?:\s*\(.*\)|\s+for\s+\d+[smh](?:\s+\d+[smh])*)?\s*$/;
+  /^\s*(?:[A-Z][a-z]+(?:-[a-z]+)?(?:ing|ed)\w*|thinking|Loading|processing)(?:…|\.{3})(?:\s*\(.*\)|\s+for\s+\d+[smh](?:\s+\d+[smh])*)?\s*$|^\s*(?:[A-Z][a-z]+(?:-[a-z]+)?(?:ing|ed)\w*|thinking|Loading|processing)\s+for\s+\d+[smh](?:\s+\d+[smh])*\s*$/;
 
 /** Lines that are just token/timing metadata from the spinner status bar. */
 const STATUS_LINE =

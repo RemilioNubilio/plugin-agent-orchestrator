@@ -143,16 +143,26 @@ export const startCodingTaskAction: Action = {
       }
     }
 
-    // Fallback chain: coordinator memory → disk history → workspace service
-    if (!repo) {
+    // Fallback chain: coordinator memory → disk history → workspace service.
+    // Only use these fallbacks when the request implies working on an existing
+    // project (e.g. "in the same repo", "continue", "fix this") rather than a
+    // fresh scratch task. The reuseRepo flag or same-project language triggers it.
+    const reuseRepo =
+      (params?.reuseRepo as boolean) ??
+      (content.reuseRepo as boolean) ??
+      // Implicit intent: task text references an existing context
+      /\b(same\s+repo|same\s+project|continue|that\s+repo|the\s+repo|this\s+repo|in\s+the\s+repo)\b/i.test(
+        (content.text as string) ?? "",
+      );
+
+    if (!repo && reuseRepo) {
       const coordinator = getCoordinator(runtime);
       const lastRepo = await coordinator?.getLastUsedRepoAsync();
       if (lastRepo) {
         repo = lastRepo;
       }
     }
-    // Last resort: check workspace service for any tracked workspace with a repo
-    if (!repo) {
+    if (!repo && reuseRepo) {
       const wsService = runtime.getService("CODING_WORKSPACE_SERVICE") as
         unknown as CodingWorkspaceService | undefined;
       if (wsService && typeof wsService.listWorkspaces === "function") {
