@@ -23,6 +23,7 @@ import type { ServerResponse } from "node:http";
 import type { IAgentRuntime } from "@elizaos/core";
 import { logger } from "@elizaos/core";
 import { extractDevServerUrl } from "./ansi-utils.js";
+import { SwarmHistory } from "./swarm-history.js";
 import type { PTYService } from "./pty-service.js";
 import type { CodingAgentType } from "./pty-types.js";
 import type {
@@ -192,7 +193,13 @@ export interface SwarmCoordinatorContext {
 // ─── Constants ───
 
 /** Time to buffer events for unregistered sessions (ms). */
-const UNREGISTERED_BUFFER_MS = 2000;
+/** Exponential backoff delays for unregistered session buffer retries. */
+const UNREGISTERED_RETRY_DELAYS = [2000, 4000, 8000, 16000];
+/** Absolute maximum wait time before discarding unregistered events. */
+const UNREGISTERED_MAX_TOTAL_MS = 30_000;
+
+/** Coalesce rapid turn-complete events within this window (ms). */
+const TURN_COMPLETE_COALESCE_MS = 500;
 
 /** How often the idle watchdog scans for idle sessions (ms). */
 const IDLE_SCAN_INTERVAL_MS = 60 * 1000; // 1 minute
@@ -288,6 +295,24 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 
 	/** Auto-resume timeout handle. */
 	private pauseTimeout: ReturnType<typeof setTimeout> | null = null;
+
+	/** Coordinator startup timestamp — ignore events from sessions created before this. */
+	private readonly startedAt = Date.now();
+
+	/** Active retry timers for unregistered session buffers. */
+	private unregisteredRetryTimers: Map<
+		string,
+		ReturnType<typeof setTimeout>
+	> = new Map();
+
+	/** Turn-complete coalescing timers — debounces rapid events per session. */
+	private turnCompleteCoalesceTimers: Map<
+		string,
+		ReturnType<typeof setTimeout>
+	> = new Map();
+
+	/** Persistent swarm history — JSONL log that survives restarts. */
+	readonly history = new SwarmHistory();
 
 	constructor(runtime: IAgentRuntime) {
 		this.runtime = runtime;
@@ -411,6 +436,14 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 		this.lastBlockedPromptFingerprint.clear();
 		this.pendingBlocked.clear();
 		this.unregisteredBuffer.clear();
+		for (const timer of this.unregisteredRetryTimers.values()) {
+			clearTimeout(timer);
+		}
+		this.unregisteredRetryTimers.clear();
+		for (const timer of this.turnCompleteCoalesceTimers.values()) {
+			clearTimeout(timer);
+		}
+		this.turnCompleteCoalesceTimers.clear();
 		this.lastSeenOutput.clear();
 		this.lastToolNotification.clear();
 		this.agentDecisionCb = null;
@@ -540,6 +573,23 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 			lastSeenDecisionIndex: 0,
 		});
 
+		// Persist last used repo so it survives task cleanup
+		if (context.repo) {
+			this._lastUsedRepo = context.repo;
+		}
+
+		// Log to persistent history (fire-and-forget)
+		this.history.append({
+			timestamp: Date.now(),
+			type: "task_registered",
+			sessionId,
+			label: context.label,
+			agentType: context.agentType,
+			repo: context.repo,
+			workdir: context.workdir,
+			originalTask: context.originalTask,
+		}).catch(() => {});
+
 		this.broadcast({
 			type: "task_registered",
 			sessionId,
@@ -551,7 +601,12 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 			},
 		});
 
-		// Flush any buffered events for this session
+		// Cancel any pending retry timer and flush buffered events
+		const retryTimer = this.unregisteredRetryTimers.get(sessionId);
+		if (retryTimer) {
+			clearTimeout(retryTimer);
+			this.unregisteredRetryTimers.delete(sessionId);
+		}
 		const buffered = this.unregisteredBuffer.get(sessionId);
 		if (buffered) {
 			this.unregisteredBuffer.delete(sessionId);
@@ -569,14 +624,35 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 	 * Return the repo URL from the most recently registered task that had one.
 	 * Useful as a fallback when the user says "in the same repo" without a URL.
 	 */
+	/**
+	 * Persisted separately from tasks so it survives task cleanup.
+	 * Updated whenever a task with a repo is registered.
+	 */
+	private _lastUsedRepo: string | undefined;
+
 	getLastUsedRepo(): string | undefined {
+		// Check active tasks first (freshest), fall back to in-memory persisted value
 		let latest: TaskContext | undefined;
 		for (const task of this.tasks.values()) {
 			if (task.repo && (!latest || task.registeredAt > latest.registeredAt)) {
 				latest = task;
 			}
 		}
-		return latest?.repo;
+		return latest?.repo ?? this._lastUsedRepo;
+	}
+
+	/**
+	 * Async version that also checks disk history — survives process restarts.
+	 * Callers that can await should prefer this over the sync version.
+	 */
+	async getLastUsedRepoAsync(): Promise<string | undefined> {
+		const memoryRepo = this.getLastUsedRepo();
+		if (memoryRepo) return memoryRepo;
+		try {
+			return await this.history.getLastUsedRepo();
+		} catch {
+			return undefined;
+		}
 	}
 
 	getTaskContext(sessionId: string): TaskContext | undefined {
@@ -585,6 +661,61 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 
 	getAllTaskContexts(): TaskContext[] {
 		return Array.from(this.tasks.values());
+	}
+
+	// ─── Unregistered Buffer Retry ───
+
+	/**
+	 * Schedule a retry check for buffered events from an unregistered session.
+	 * Uses exponential backoff: 2s → 4s → 8s → 16s, max 30s total.
+	 */
+	private scheduleUnregisteredRetry(
+		sessionId: string,
+		attempt: number,
+	): void {
+		const delay =
+			UNREGISTERED_RETRY_DELAYS[
+				Math.min(attempt, UNREGISTERED_RETRY_DELAYS.length - 1)
+			];
+
+		const timer = setTimeout(() => {
+			this.unregisteredRetryTimers.delete(sessionId);
+			const stillBuffered = this.unregisteredBuffer.get(sessionId);
+			if (!stillBuffered || stillBuffered.length === 0) return;
+
+			const ctx = this.tasks.get(sessionId);
+			if (ctx) {
+				// Task was registered — flush
+				this.unregisteredBuffer.delete(sessionId);
+				for (const entry of stillBuffered) {
+					this.handleSessionEvent(
+						sessionId,
+						entry.event,
+						entry.data,
+					).catch(() => {});
+				}
+				return;
+			}
+
+			// Check if we've exceeded the absolute max wait
+			const oldest = stillBuffered[0].receivedAt;
+			const totalElapsed = Date.now() - oldest;
+			if (totalElapsed >= UNREGISTERED_MAX_TOTAL_MS) {
+				this.unregisteredBuffer.delete(sessionId);
+				this.log(
+					`Discarding ${stillBuffered.length} buffered events for unregistered session ${sessionId} after ${Math.round(totalElapsed / 1000)}s`,
+				);
+				return;
+			}
+
+			// Schedule next retry
+			this.log(
+				`Retry ${attempt + 1} for unregistered session ${sessionId} (next in ${delay}ms)`,
+			);
+			this.scheduleUnregisteredRetry(sessionId, attempt + 1);
+		}, delay);
+
+		this.unregisteredRetryTimers.set(sessionId, timer);
 	}
 
 	// ─── SSE Client Management ───
@@ -654,9 +785,22 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 		event: string,
 		data: unknown,
 	): Promise<void> {
+		// Ignore events from sessions created before this coordinator started.
+		// Session IDs are formatted as "pty-{timestamp}-{hex}" — extract the timestamp.
+		const tsMatch = sessionId.match(/^pty-(\d+)-/);
+		if (tsMatch) {
+			const sessionCreatedAt = Number(tsMatch[1]);
+			if (sessionCreatedAt < this.startedAt - 60_000) {
+				// Session is from before this coordinator's lifetime (with 1min grace)
+				return;
+			}
+		}
+
 		const taskCtx = this.tasks.get(sessionId);
 
-		// Buffer events for unregistered sessions (race condition guard)
+		// Buffer events for unregistered sessions with exponential backoff retry.
+		// Events arriving before registerTask() are buffered and retried at
+		// 2s → 4s → 8s → 16s intervals (max 30s total) before being discarded.
 		if (!taskCtx) {
 			if (
 				event === "blocked" ||
@@ -670,30 +814,10 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 				}
 				buffer.push({ event, data, receivedAt: Date.now() });
 
-				// Re-check after delay
-				setTimeout(() => {
-					const stillBuffered = this.unregisteredBuffer.get(sessionId);
-					if (stillBuffered && stillBuffered.length > 0) {
-						const ctx = this.tasks.get(sessionId);
-						if (ctx) {
-							// Task was registered — flush
-							this.unregisteredBuffer.delete(sessionId);
-							for (const entry of stillBuffered) {
-								this.handleSessionEvent(
-									sessionId,
-									entry.event,
-									entry.data,
-								).catch(() => {});
-							}
-						} else {
-							// Still no task context — discard
-							this.unregisteredBuffer.delete(sessionId);
-							this.log(
-								`Discarding ${stillBuffered.length} buffered events for unregistered session ${sessionId}`,
-							);
-						}
-					}
-				}, UNREGISTERED_BUFFER_MS);
+				// Only schedule retry if not already retrying for this session
+				if (!this.unregisteredRetryTimers.has(sessionId)) {
+					this.scheduleUnregisteredRetry(sessionId, 0);
+				}
 			}
 			return;
 		}
@@ -767,9 +891,9 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 				break;
 
 			case "task_complete": {
-				// The adapter detected a turn completion (agent back at idle prompt).
-				// Don't immediately stop — ask the LLM if the overall task is done
-				// or if the agent needs more turns.
+				// Broadcast immediately for UI visibility, but coalesce the
+				// expensive LLM assessment — rapid turn-complete events within
+				// 500ms are debounced so only the last one triggers an LLM call.
 				this.broadcast({
 					type: "turn_complete",
 					sessionId,
@@ -777,7 +901,26 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 					data,
 				});
 
-				await handleTurnComplete(this, sessionId, taskCtx, data);
+				const existingCoalesce =
+					this.turnCompleteCoalesceTimers.get(sessionId);
+				if (existingCoalesce) clearTimeout(existingCoalesce);
+
+				const coalescedData = data;
+				const coalesceTimer = setTimeout(() => {
+					this.turnCompleteCoalesceTimers.delete(sessionId);
+					const currentTask = this.tasks.get(sessionId);
+					if (currentTask && currentTask.status === "active") {
+						handleTurnComplete(
+							this,
+							sessionId,
+							currentTask,
+							coalescedData,
+						).catch((err) => {
+							this.log(`Coalesced turn-complete failed: ${err}`);
+						});
+					}
+				}, TURN_COMPLETE_COALESCE_MS);
+				this.turnCompleteCoalesceTimers.set(sessionId, coalesceTimer);
 				break;
 			}
 

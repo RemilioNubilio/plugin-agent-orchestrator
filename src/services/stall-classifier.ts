@@ -316,7 +316,7 @@ export function buildCombinedClassifyDecidePrompt(
     `- For TUI menus, use "keys:enter" for default or "keys:down,enter" for non-default.\n` +
     `- If the prompt asks for information NOT in the original task, set suggestedResponse to null ` +
     `(this will escalate to the human).\n` +
-    `- If a PR was just created, respond to review & verify test plan items before completing.\n\n` +
+    `- If a PR was just created, the task is likely done — classify as "task_complete".\n\n` +
     `Respond with ONLY a JSON object:\n` +
     `{"state": "...", "prompt": "...", "suggestedResponse": "..."}`
   );

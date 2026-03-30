@@ -410,7 +410,9 @@ describe("startCodingTaskAction", () => {
       );
 
       expect(result?.success).toBe(false);
-      expect(result?.error).toBe("AGENT_NOT_INSTALLED");
+      // handleMultiAgent returns errors per-agent in data.agents, not at top level
+      const agents = (result as { data?: { agents?: Array<{ error?: string }> } })?.data?.agents;
+      expect(agents?.[0]?.error).toContain("not installed");
       expect(callback).toHaveBeenCalledWith(
         expect.objectContaining({
           text: expect.stringContaining("not installed"),

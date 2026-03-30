@@ -208,6 +208,8 @@ describe("SwarmCoordinator", () => {
 
 		it("handles task_complete by routing through LLM decision", async () => {
 			// task_complete now goes through handleTurnComplete — mock LLM to say "complete"
+			// Turn-complete events are coalesced with a 500ms debounce, so we need
+			// to wait for the coalesce timer to fire before checking the outcome.
 			mockRuntime.useModel.mockResolvedValue(
 				'{"action":"complete","reasoning":"All objectives met"}',
 			);
@@ -215,6 +217,9 @@ describe("SwarmCoordinator", () => {
 			await coordinator.handleSessionEvent("s-1", "task_complete", {
 				response: "Done",
 			});
+
+			// Wait for coalesce timer (500ms) + LLM call to settle
+			await new Promise((r) => setTimeout(r, 700));
 
 			const ctx = coordinator.getTaskContext("s-1");
 			expect(ctx.status).toBe("completed");
@@ -333,6 +338,9 @@ describe("SwarmCoordinator", () => {
 			await coordinator.handleSessionEvent("s-1", "task_complete", {
 				response: "Done",
 			});
+
+			// Wait for coalesce timer (500ms) + LLM call to settle
+			await new Promise((r) => setTimeout(r, 700));
 
 			expect(ctx.status).toBe("completed");
 			expect(mockRuntime.useModel).toHaveBeenCalled();
