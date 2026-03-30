@@ -313,7 +313,7 @@ export function buildTurnCompletePrompt(
     `- For scratch/research tasks: use "complete" when the agent delivers its output.\n` +
     `- Do NOT ask the agent to review, verify, or re-check work it already completed.\n` +
     `- If output is only spinner text, use "ignore" and wait for the next turn.\n` +
-    `- Only use "respond" when the agent genuinely hasn't started the core work yet.\n\n` +
+    `- Use "respond" when the agent hasn't started, or when code was written but not yet committed/pushed/PR'd.\n\n` +
     `If the agent's output reveals a significant decision, include "keyDecision" with a brief summary.\n\n` +
     `Respond with ONLY a JSON object:\n` +
     `{"action": "respond|complete|escalate|ignore", "response": "...", "useKeys": false, "keys": [], "reasoning": "...", "keyDecision": "..."}`

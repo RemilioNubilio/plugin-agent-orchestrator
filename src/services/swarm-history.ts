@@ -97,12 +97,13 @@ export class SwarmHistory {
 		try {
 			const content = await fs.readFile(this.filePath, "utf-8");
 			const entries: HistoryEntry[] = [];
-			for (const line of content.split("\n")) {
-				if (line.trim() === "") continue;
+			const lines = content.split("\n");
+			for (let i = 0; i < lines.length; i++) {
+				if (lines[i].trim() === "") continue;
 				try {
-					entries.push(JSON.parse(line) as HistoryEntry);
+					entries.push(JSON.parse(lines[i]) as HistoryEntry);
 				} catch {
-					console.warn(`[swarm-history] skipping corrupted line: ${line.slice(0, 80)}`);
+					console.warn(`[swarm-history] skipping corrupted line at index ${i} (length=${lines[i].length})`);
 				}
 			}
 			return entries;
@@ -132,6 +133,19 @@ export class SwarmHistory {
 	/** Called while holding the mutex — no external callers. */
 	private async truncateInner(maxEntries: number): Promise<void> {
 		const entries = await this.readAll();
+		// If readAll returned empty but the file exists, a read error occurred —
+		// don't overwrite the file or we'd erase valid history.
+		if (entries.length === 0) {
+			try {
+				await fs.stat(this.filePath);
+				// File exists but readAll returned [] — read error, bail
+				console.error("[swarm-history] truncate aborted: file exists but readAll returned empty");
+				return;
+			} catch {
+				// File doesn't exist — nothing to truncate
+				return;
+			}
+		}
 		const kept = entries.slice(-maxEntries);
 		const content = kept.map((e) => JSON.stringify(e)).join("\n") + "\n";
 		await fs.writeFile(this.filePath, content, "utf-8");
