@@ -25,13 +25,40 @@ export interface HistoryEntry {
 const MAX_ENTRIES = 150;
 const TRUNCATE_TO = 100;
 
+/**
+ * Simple async mutex — serializes all file mutations so concurrent
+ * append() and truncate() calls don't interleave reads and writes.
+ */
+class WriteMutex {
+	private queue: Array<() => void> = [];
+	private locked = false;
+
+	async acquire(): Promise<void> {
+		if (!this.locked) {
+			this.locked = true;
+			return;
+		}
+		return new Promise<void>((resolve) => {
+			this.queue.push(resolve);
+		});
+	}
+
+	release(): void {
+		const next = this.queue.shift();
+		if (next) {
+			next();
+		} else {
+			this.locked = false;
+		}
+	}
+}
+
 export class SwarmHistory {
 	private filePath: string;
-	private pendingTruncation = false;
 	/** In-memory counter to avoid reading the file on every append. */
 	private appendCount = 0;
-	/** Entries buffered during truncation to prevent data loss. */
-	private truncationBuffer: HistoryEntry[] = [];
+	/** Serializes all file mutations. */
+	private mutex = new WriteMutex();
 
 	constructor(stateDir?: string) {
 		const dir =
@@ -43,13 +70,8 @@ export class SwarmHistory {
 	}
 
 	async append(entry: HistoryEntry): Promise<void> {
+		await this.mutex.acquire();
 		try {
-			// If truncation is in progress, buffer the entry to avoid race
-			if (this.pendingTruncation) {
-				this.truncationBuffer.push(entry);
-				return;
-			}
-
 			const dir = path.dirname(this.filePath);
 			await fs.mkdir(dir, { recursive: true });
 			await fs.appendFile(this.filePath, `${JSON.stringify(entry)}\n`, "utf-8");
@@ -60,11 +82,14 @@ export class SwarmHistory {
 				const content = await fs.readFile(this.filePath, "utf-8");
 				const lineCount = content.split("\n").filter((l) => l.trim() !== "").length;
 				if (lineCount > MAX_ENTRIES) {
-					await this.truncate(TRUNCATE_TO);
+					await this.truncateInner(TRUNCATE_TO);
 				}
 			}
-		} catch {
-			// Fire-and-forget: never throw from append
+		} catch (err) {
+			console.error("[swarm-history] append failed:", err);
+			throw err;
+		} finally {
+			this.mutex.release();
 		}
 	}
 
@@ -104,24 +129,12 @@ export class SwarmHistory {
 		return undefined;
 	}
 
-	private async truncate(maxEntries: number): Promise<void> {
-		this.pendingTruncation = true;
-		try {
-			const entries = await this.readAll();
-			const kept = entries.slice(-maxEntries);
-			const content = kept.map((e) => JSON.stringify(e)).join("\n") + "\n";
-			await fs.writeFile(this.filePath, content, "utf-8");
-			this.appendCount = 0;
-
-			// Flush any entries that were buffered during truncation
-			if (this.truncationBuffer.length > 0) {
-				const buffered = this.truncationBuffer.splice(0);
-				const lines = buffered.map((e) => JSON.stringify(e)).join("\n") + "\n";
-				await fs.appendFile(this.filePath, lines, "utf-8");
-				this.appendCount = buffered.length;
-			}
-		} finally {
-			this.pendingTruncation = false;
-		}
+	/** Called while holding the mutex — no external callers. */
+	private async truncateInner(maxEntries: number): Promise<void> {
+		const entries = await this.readAll();
+		const kept = entries.slice(-maxEntries);
+		const content = kept.map((e) => JSON.stringify(e)).join("\n") + "\n";
+		await fs.writeFile(this.filePath, content, "utf-8");
+		this.appendCount = 0;
 	}
 }

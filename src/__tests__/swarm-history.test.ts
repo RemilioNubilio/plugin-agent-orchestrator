@@ -117,15 +117,19 @@ describe("SwarmHistory", () => {
 		expect(lastEntry.sessionId).toBe("sess-150");
 	});
 
-	it("append is fire-and-forget safe (doesn't throw)", async () => {
-		// Use a path that will cause write failures (file inside nonexistent deeply nested path
-		// with a file acting as directory)
+	it("append propagates errors to callers", async () => {
+		// Use a path that will cause write failures (file acting as directory)
 		const blocker = path.join(tmpDir, "blocker");
 		await fs.writeFile(blocker, "I am a file", "utf-8");
-		// Now try to use "blocker" as a directory — mkdir should fail
 		const history = new SwarmHistory(path.join(blocker, "deep", "nested"));
 
-		// This should not throw
-		await history.append(makeEntry());
+		// append should throw, allowing callers' .catch() to handle
+		let threw = false;
+		try {
+			await history.append(makeEntry());
+		} catch {
+			threw = true;
+		}
+		expect(threw).toBe(true);
 	});
 });

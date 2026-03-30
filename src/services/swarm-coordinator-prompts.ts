@@ -300,20 +300,19 @@ export function buildTurnCompletePrompt(
     `---\n${turnOutput.slice(-3000)}\n---\n\n` +
     `The agent completed a turn. Decide if the task is done or needs more work.\n\n` +
     `Options:\n` +
-    `1. "complete" — The task objectives have been met. For repo tasks, this means a PR was created. ` +
-    `For scratch/research tasks, this means the agent produced its deliverable (summary, file, analysis). ` +
-    `Mark complete as soon as a PR creation signal or a clear "done" statement appears.\n` +
+    `1. "complete" — The task objectives have been met.\n` +
+    `   - For repo tasks: ONLY when a PR creation signal appears ("Created pull request #N"). ` +
+    `A generic "done" or "finished" statement is NOT sufficient for repo tasks — a PR must exist.\n` +
+    `   - For scratch/research tasks (no repo): when the agent has produced its deliverable.\n` +
     `2. "respond" — The agent needs to do more work.\n` +
     `3. "escalate" — Something is wrong. Let the human decide.\n` +
     `4. "ignore" — The agent is still working (e.g., spinner text like "Germinating...", "Frosting..."). ` +
     `Wait for the next turn.\n\n` +
     `CRITICAL RULES:\n` +
-    `- If a PR was created ("Created pull request #N" in output), use "complete" IMMEDIATELY.\n` +
-    `- For scratch/research tasks (no repo), "complete" when the agent delivers its output.\n` +
+    `- For repo tasks: use "complete" ONLY when "Created pull request #N" appears in output.\n` +
+    `- For scratch/research tasks: use "complete" when the agent delivers its output.\n` +
     `- Do NOT ask the agent to review, verify, or re-check work it already completed.\n` +
-    `- If the agent confirms work is already done, use "complete".\n` +
-    `- If output is only spinner text (single words like "Germinating...", "Frosting..."), ` +
-    `the agent is still working — use "ignore" and wait for the next turn.\n` +
+    `- If output is only spinner text, use "ignore" and wait for the next turn.\n` +
     `- Only use "respond" when the agent genuinely hasn't started the core work yet.\n\n` +
     `If the agent's output reveals a significant decision, include "keyDecision" with a brief summary.\n\n` +
     `Respond with ONLY a JSON object:\n` +
@@ -417,15 +416,14 @@ export function buildTurnCompleteEventMessage(
     `Decide if the overall task is done or if the agent needs more work.\n\n` +
     `Options:\n` +
     `- "respond" — send a follow-up instruction (DEFAULT for intermediate steps)\n` +
-    `- "complete" — The task is done. A PR was created or the agent confirms work is done.\n` +
+    `- "complete" — For repo tasks: ONLY when "Created pull request #N" appears. ` +
+    `For scratch/research tasks: when the agent delivers its output.\n` +
     `- "escalate" — something looks wrong, ask the user\n` +
-    `- "ignore" — should not normally be used here\n\n` +
+    `- "ignore" — spinner/loading output, agent still working\n\n` +
     `Guidelines:\n` +
-    `- If a PR was created or the agent says the work is done, use "complete".\n` +
+    `- For repo tasks, a generic "done" is NOT enough — require a PR creation signal.\n` +
     `- If code was written but not committed/pushed/PR'd, respond with next step.\n` +
-    `- If a PR was just created, the task is done — use "complete".\n` +
-    `- When asking agents to verify work, prefer CLI tools (gh, curl, cat, etc.) over browser automation.\n` +
-    `- Do NOT ask the agent to re-verify work it already confirmed.\n` +
+    `- Do NOT ask the agent to re-verify work it already completed.\n` +
     `- If the agent's output reveals a significant creative or architectural decision, include "keyDecision" with a brief summary.\n` +
     `- Look for explicit "DECISION:" markers in the agent's output — always capture these as keyDecision.\n\n` +
     `Include a JSON action block at the end of your response:\n` +
