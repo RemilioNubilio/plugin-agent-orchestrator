@@ -58,13 +58,26 @@ export function stripAnsi(raw: string): string {
 const TUI_DECORATIVE =
   /[│╭╰╮╯─═╌║╔╗╚╝╠╣╦╩╬┌┐└┘├┤┬┴┼●○❮❯▶◀⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⣾⣽⣻⢿⡿⣟⣯⣷✽✻✶✳✢⏺←→↑↓⬆⬇◆▪▫■□▲△▼▽◈⟨⟩⌘⏎⏏⌫⌦⇧⇪⌥·⎿✔◼]/g;
 
-/** Lines that are just CLI loading/thinking status — no meaningful content. */
+/**
+ * Lines that are just CLI loading/thinking status — no meaningful content.
+ * Claude Code uses random gerund spinner words ("Tomfoolering…", "Recombobulating…")
+ * that rotate frequently, so we match the general pattern: a single capitalized
+ * word (optionally hyphenated) followed by ellipsis and optional parenthetical status.
+ */
 const LOADING_LINE =
-  /^\s*(?:thinking|Forging|Shenaniganing|Inferring|Cooking|Brewing|Loading|Scheming|Pondering|Conjuring|Manifesting|Reflecting|Synthesizing|Vibing|Summoning|Compiling|processing|Elucidating|Cogitat\w+|Bak\w+)(?:…|\.{3})?(?:\s*\(.*\))?\s*$/i;
+  /^\s*(?:[A-Z][a-z]+(?:-[a-z]+)?(?:ing|ed)\w*|thinking|Loading|processing)(?:…|\.{3})?(?:\s*\(.*\)|\s+for\s+\d+[smh](?:\s+\d+[smh])*)?\s*$/;
 
 /** Lines that are just token/timing metadata from the spinner status bar. */
 const STATUS_LINE =
   /^\s*(?:\d+[smh]\s+\d+s?\s*·|↓\s*[\d.]+k?\s*tokens|·\s*↓|esc\s+to\s+interrupt|[Uu]pdate available|ate available|Run:\s+brew|brew\s+upgrade|\d+\s+files?\s+\+\d+\s+-\d+|ctrl\+\w|\+\d+\s+lines|Wrote\s+\d+\s+lines\s+to|\?\s+for\s+shortcuts|Cooked for|Baked for|Cogitated for)/i;
+
+/** Claude Code tool execution markers — not meaningful for coordination decisions. */
+const TOOL_MARKER_LINE =
+  /^\s*(?:Bash|Write|Read|Edit|Glob|Grep|Search|TodoWrite|Agent)\s*\(.*\)\s*$/;
+
+/** Git status/diff noise that's not meaningful for coordination. */
+const GIT_NOISE_LINE =
+  /^\s*(?:On branch\s+\w|Your branch is|modified:|new file:|deleted:|renamed:|Untracked files:|Changes (?:not staged|to be committed)|\d+\s+files?\s+changed.*(?:insertion|deletion))/i;
 
 /**
  * Clean terminal output for display in chat messages.
@@ -86,8 +99,12 @@ export function cleanForChat(raw: string): string {
       if (!trimmed) return false; // blank line — will re-add separators below
       if (LOADING_LINE.test(trimmed)) return false;
       if (STATUS_LINE.test(trimmed)) return false;
+      if (TOOL_MARKER_LINE.test(trimmed)) return false;
+      if (GIT_NOISE_LINE.test(trimmed)) return false;
       // Lines with only whitespace/punctuation and no alphanumeric content
       if (!/[a-zA-Z0-9]/.test(trimmed)) return false;
+      // Very short lines (≤3 chars) are likely TUI fragments
+      if (trimmed.length <= 3) return false;
       return true;
     })
     .map((line) => line.replace(/ {2,}/g, " ").trim())

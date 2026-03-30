@@ -171,9 +171,7 @@ export function buildCoordinationPrompt(
     `- For Y/n confirmations that align with the original task, respond "y".\n` +
     `- For design questions or choices that could go either way, escalate.\n` +
     `- For error recovery prompts, try to respond if the path forward is clear.\n` +
-    `- If the output shows a PR was just created (e.g. "Created pull request #N"), do NOT use "complete" yet. ` +
-    `Instead respond with "Review your PR, run each test plan item to verify it works, update the PR to check off each item, then confirm all items pass".\n` +
-    `- Only use "complete" if the agent confirmed it verified ALL test plan items after creating the PR.\n` +
+    `- If the output shows a PR was just created (e.g. "Created pull request #N"), use "complete" — the task is done.\n` +
     `- If the agent is asking for information that was NOT provided in the original task ` +
     `(e.g. which repository to use, project requirements, credentials), ESCALATE. ` +
     `The coordinator does not have this information — the human must provide it.\n` +
@@ -300,51 +298,21 @@ export function buildTurnCompletePrompt(
     historySection +
     `\nOutput from this turn:\n` +
     `---\n${turnOutput.slice(-3000)}\n---\n\n` +
-    `The agent completed a turn. Decide if the OVERALL task is done or if more work is needed.\n\n` +
-    `IMPORTANT: Coding agents work in multiple turns. A single turn completing does NOT mean ` +
-    `the task is done. You must verify that EVERY objective in the original task has been addressed ` +
-    `in the output before declaring "complete".\n\n` +
-    `Your options:\n\n` +
-    `1. "respond" — The agent finished a step but the overall task is NOT done yet. ` +
-    `Send a follow-up instruction to continue. Set "response" to the next instruction ` +
-    `(e.g. "Now run the tests", "Create a PR with these changes", "Continue with the next part"). ` +
-    `THIS IS THE DEFAULT — most turns are intermediate steps, not the final result.\n\n` +
-    `2. "complete" — The original task objectives have ALL been fully met. For repo-based tasks, ` +
-    `this means code was written, changes were committed, pushed, AND a pull request was created. ` +
-    `Only use this when you can point to specific evidence in the output for EVERY objective ` +
-    `(e.g. "Created pull request #N" in the output).\n\n` +
-    `3. "escalate" — Something looks wrong or you're unsure whether the task is complete. ` +
-    `Let the human decide.\n\n` +
-    `4. "ignore" — Should not normally be used here.\n\n` +
-    `Guidelines:\n` +
-    `- BEFORE choosing "complete", enumerate each objective from the original task and verify ` +
-    `evidence in the output. If ANY objective lacks evidence, use "respond" with the missing work.\n` +
-    `- A PR being created does NOT mean the task is done — check that the PR covers ALL requested changes.\n` +
-    `- If the task mentions multiple features/fixes, verify EACH one is addressed, not just the first.\n` +
-    `- If the agent only analyzed code or read files, it hasn't done the actual work yet — send a follow-up.\n` +
-    `- If the agent wrote code but didn't test it and testing seems appropriate, ask it to run tests.\n` +
-    `- If the output shows errors or failed tests, send a follow-up to fix them.\n` +
-    `- IMPORTANT: If the working directory is a git repository clone (not a scratch dir), the agent ` +
-    `MUST commit its changes, push them, and create a pull request before the task can be "complete". ` +
-    `If the output only shows code edits with no git commit or PR, respond with "Now commit your changes, push, and create a pull request".\n` +
-    `- IMPORTANT: Creating a PR is NOT the final step. If this is the turn where the PR was created ` +
-    `(i.e. "Created pull request" or a PR URL appears for the FIRST time and no previous decision ` +
-    `already sent a review follow-up), respond with "Review your PR, run each test plan item to verify ` +
-    `it works, update the PR to check off each item, then confirm all items pass".\n` +
-    `- If a previous decision ALREADY sent a review/verification follow-up (check the decision history), ` +
-    `and the agent has now responded with its review results, you MAY mark "complete" if the agent ` +
-    `indicates the work is done (e.g. "Done", "verified", "all checks pass", "Here's what I did", ` +
-    `or a clear summary of completed work). Do NOT require exact phrases — use judgment.\n` +
-    `- Keep follow-up instructions concise and specific.\n` +
-    `- When asking agents to verify work, prefer CLI tools (gh, curl, cat, git diff, etc.) over ` +
-    `browser automation. Browser tools may not be available in headless environments and can cause delays.\n` +
-    `- Default to "respond" — only use "complete" when you're certain ALL work is done.\n` +
-    `- If the agent's output reveals a significant decision that sibling agents should know about ` +
-    `(e.g. chose a library, designed an API shape, picked a UI pattern, established a writing style, ` +
-    `narrowed a research scope, made any choice that affects the shared project), ` +
-    `include "keyDecision" with a brief one-line summary. Skip this for routine tool approvals.\n` +
-    `- Look for explicit "DECISION:" markers in the agent's output — these are the agent deliberately ` +
-    `surfacing design choices. Always capture these as keyDecision.\n\n` +
+    `The agent completed a turn. Decide if the task is done or needs more work.\n\n` +
+    `Options:\n` +
+    `1. "complete" — A pull request was created, OR the agent says the work is done. ` +
+    `This is the goal state. Mark complete as soon as a PR URL or "Created pull request" appears.\n` +
+    `2. "respond" — The agent needs to do more work (no PR yet, or code not committed).\n` +
+    `3. "escalate" — Something is wrong. Let the human decide.\n\n` +
+    `CRITICAL RULES:\n` +
+    `- If a PR was created (URL or "Created pull request #N" in output), use "complete" IMMEDIATELY.\n` +
+    `- Do NOT ask the agent to review, verify, or re-check a PR it already created.\n` +
+    `- Do NOT send "Review your PR" or any verification instructions.\n` +
+    `- If the agent confirms work is already done, use "complete".\n` +
+    `- If output is only spinner text (single words like "Germinating...", "Frosting..."), ` +
+    `the agent is still working — use "ignore" and wait for the next turn.\n` +
+    `- Only use "respond" when the agent genuinely hasn't started or hasn't created a PR yet.\n\n` +
+    `If the agent's output reveals a significant decision, include "keyDecision" with a brief summary.\n\n` +
     `Respond with ONLY a JSON object:\n` +
     `{"action": "respond|complete|escalate|ignore", "response": "...", "useKeys": false, "keys": [], "reasoning": "...", "keyDecision": "..."}`
   );
@@ -399,7 +367,7 @@ export function buildBlockedEventMessage(
     `- For tool approvals / Y/n that align with the task, respond "y" or keys:["enter"].\n` +
     `- If the prompt asks for info NOT in the original task, escalate.\n` +
     `- Decline access to paths outside ${taskCtx.workdir}.\n` +
-    `- If a PR was just created, respond to review & verify test plan items before completing.\n` +
+    `- If a PR was just created, the task is done — use "complete".\n` +
     `- When in doubt, escalate.\n\n` +
     `If the agent's output reveals a significant decision that sibling agents should know about, include "keyDecision" with a brief summary.\n` +
     `Look for explicit "DECISION:" markers in the agent's output — always capture these as keyDecision.\n\n` +
@@ -446,15 +414,15 @@ export function buildTurnCompleteEventMessage(
     `Decide if the overall task is done or if the agent needs more work.\n\n` +
     `Options:\n` +
     `- "respond" — send a follow-up instruction (DEFAULT for intermediate steps)\n` +
-    `- "complete" — ALL task objectives met (code written, committed, PR created & verified)\n` +
+    `- "complete" — The task is done. A PR was created or the agent confirms work is done.\n` +
     `- "escalate" — something looks wrong, ask the user\n` +
     `- "ignore" — should not normally be used here\n\n` +
     `Guidelines:\n` +
-    `- Verify evidence for EVERY objective before using "complete".\n` +
+    `- If a PR was created or the agent says the work is done, use "complete".\n` +
     `- If code was written but not committed/pushed/PR'd, respond with next step.\n` +
-    `- If a PR was just created, respond to review & verify test plan items.\n` +
+    `- If a PR was just created, the task is done — use "complete".\n` +
     `- When asking agents to verify work, prefer CLI tools (gh, curl, cat, etc.) over browser automation.\n` +
-    `- Default to "respond" — only "complete" when certain ALL work is done.\n` +
+    `- Do NOT ask the agent to re-verify work it already confirmed.\n` +
     `- If the agent's output reveals a significant creative or architectural decision, include "keyDecision" with a brief summary.\n` +
     `- Look for explicit "DECISION:" markers in the agent's output — always capture these as keyDecision.\n\n` +
     `Include a JSON action block at the end of your response:\n` +

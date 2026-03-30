@@ -484,6 +484,17 @@ export async function executeDecision(
       const taskCtx = ctx.tasks.get(sessionId);
       if (taskCtx) {
         taskCtx.status = "completed";
+        // Log to persistent history (fire-and-forget)
+        (ctx as { history?: { append: (e: unknown) => Promise<void> } }).history?.append({
+          timestamp: Date.now(),
+          type: "task_completed",
+          sessionId,
+          label: taskCtx.label,
+          agentType: taskCtx.agentType,
+          repo: taskCtx.repo,
+          workdir: taskCtx.workdir,
+          completionSummary: decision.reasoning,
+        }).catch(() => {});
       }
       ctx.broadcast({
         type: "task_complete",
@@ -795,6 +806,39 @@ export async function handleTurnComplete(
     if (!turnOutput) {
       const raw = await fetchRecentOutput(ctx, sessionId);
       turnOutput = cleanForChat(raw);
+    }
+
+    // Fast-path: if the turn output contains a PR URL or "Created pull request",
+    // the task is done — skip the LLM assessment entirely. The LLM (especially
+    // Gemini Flash) tends to ignore "do not verify" instructions and sends
+    // unnecessary verification follow-ups, adding 2-5 extra rounds per agent.
+    const PR_CREATED_RE =
+      /Created pull request #\d+|https?:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/i;
+    if (PR_CREATED_RE.test(turnOutput)) {
+      const fastDecision: CoordinationLLMResponse = {
+        action: "complete",
+        reasoning: "PR detected in turn output — task complete.",
+      };
+      ctx.log(
+        `Turn assessment for "${taskCtx.label}": complete (fast-path: PR detected in output)`,
+      );
+      taskCtx.decisions.push({
+        timestamp: Date.now(),
+        event: "turn_complete",
+        promptText: "Agent finished a turn",
+        decision: "complete",
+        response: "",
+        reasoning: fastDecision.reasoning,
+      });
+      recordKeyDecision(ctx, taskCtx.label, fastDecision);
+      ctx.broadcast({
+        type: "turn_assessment",
+        sessionId,
+        timestamp: Date.now(),
+        data: { action: "complete", reasoning: fastDecision.reasoning },
+      });
+      await executeDecision(ctx, sessionId, fastDecision);
+      return;
     }
 
     // Turn completions always use the fast small-LLM path.

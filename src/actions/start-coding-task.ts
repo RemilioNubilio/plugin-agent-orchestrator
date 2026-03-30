@@ -143,13 +143,25 @@ export const startCodingTaskAction: Action = {
       }
     }
 
-    // Fallback: if no repo was explicitly provided, check the coordinator for
-    // the most recently used repo. Handles "in the same repo" style requests.
+    // Fallback chain: coordinator memory → disk history → workspace service
     if (!repo) {
       const coordinator = getCoordinator(runtime);
-      const lastRepo = coordinator?.getLastUsedRepo();
+      const lastRepo = await coordinator?.getLastUsedRepoAsync();
       if (lastRepo) {
         repo = lastRepo;
+      }
+    }
+    // Last resort: check workspace service for any tracked workspace with a repo
+    if (!repo) {
+      const wsService = runtime.getService("CODING_WORKSPACE_SERVICE") as
+        unknown as CodingWorkspaceService | undefined;
+      if (wsService && typeof wsService.listWorkspaces === "function") {
+        const withRepo = wsService
+          .listWorkspaces()
+          .find((ws) => ws.repo);
+        if (withRepo) {
+          repo = withRepo.repo;
+        }
       }
     }
 

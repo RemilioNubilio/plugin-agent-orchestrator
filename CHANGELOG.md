@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.4.0
+
+### Added
+
+- **Turn-complete coalescing (500ms)**: Rapid turn-complete events within 500ms are debounced — only the last one triggers an LLM assessment. Prevents duplicate coordinator calls when Claude Code emits multiple task_complete signals.
+- **Completion retry with exponential backoff**: Unregistered session events now retry at 2s→4s→8s→16s (max 30s total) instead of being discarded after a hard 2s timeout.
+- **Persistent swarm history**: JSONL log at `~/.milady/swarm-history.jsonl` records task registrations, completions, and key decisions. Survives process restarts. `getLastUsedRepoAsync()` checks disk history when in-memory state is empty.
+- **Session event queue**: `SessionEventQueue` class for per-session async serialization (staged for future integration into decision loop).
+- **Repo fallback chain**: When no repo is provided, checks coordinator memory → disk history → workspace service for the most recently used repo.
+- **Stale session filter**: Events from PTY sessions created before the coordinator's startup are silently ignored.
+- **PR fast-path completion**: If turn output contains a PR URL, mark task complete immediately without LLM assessment.
+
+### Fixed
+
+- **Removed PR verification loop**: All coordinator prompts rewritten to mark complete on PR creation instead of forcing agents through re-verification cycles.
+- **Garbled TUI output in assessments**: `cleanForChat` now strips Claude Code tool markers (`Bash(...)`, `Write(...)`), git status noise, and very short TUI fragments (≤3 chars).
+- **Spinner text in coordinator decisions**: `LOADING_LINE` regex now matches all Claude Code spinner words generically (any capitalized `-ing`/`-ed` word + optional duration).
+
+### Changed
+
+- **Dependency bumps**: pty-manager 1.10.0→1.10.2, git-workspace-service 0.4.4→0.4.5, coding-agent-adapters 0.12.0→0.15.0
+
+## 0.3.20
+
+### Fixed
+
+- **Removed PR verification loop**: Coordinator no longer forces agents to re-verify PRs after creation, eliminating 2-3 extra LLM round trips per agent on trivial tasks. Agents are marked complete once a PR is created.
+
 ## 0.3.19
 
 ### Fixed
