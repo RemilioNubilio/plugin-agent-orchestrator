@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.2
+
+### Fixed
+
+- **Swarm history size rotation**: File size capped at 1 MB via byte-budget-aware truncation. Drops oldest entries until both entry count (≤100) and file size (≤1 MB) constraints are satisfied.
+
 ## 0.4.1
 
 ### Fixed
