@@ -117,6 +117,23 @@ describe("SwarmHistory", () => {
 		expect(lastEntry.sessionId).toBe("sess-150");
 	});
 
+	it("truncates when file exceeds 1 MB", async () => {
+		const history = new SwarmHistory(tmpDir);
+		// Write entries with ~10KB payload each — 110 entries ≈ 1.1MB
+		const bigTask = "x".repeat(10_000);
+		for (let i = 0; i < 110; i++) {
+			await history.append(
+				makeEntry({ sessionId: `big-${i}`, originalTask: bigTask }),
+			);
+		}
+		const entries = await history.readAll();
+		// Should have been truncated — well under the 110 we wrote
+		expect(entries.length).toBeLessThanOrEqual(105);
+		expect(entries.length).toBeGreaterThanOrEqual(100);
+		// Last entry should be the most recent
+		expect(entries[entries.length - 1].sessionId).toBe("big-109");
+	});
+
 	it("append propagates errors to callers", async () => {
 		// Use a path that will cause write failures (file acting as directory)
 		const blocker = path.join(tmpDir, "blocker");

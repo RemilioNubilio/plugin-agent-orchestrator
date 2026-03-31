@@ -24,6 +24,8 @@ export interface HistoryEntry {
 
 const MAX_ENTRIES = 150;
 const TRUNCATE_TO = 100;
+/** Maximum file size in bytes before forced truncation (1 MB). */
+const MAX_FILE_SIZE_BYTES = 1_048_576;
 
 /**
  * Simple async mutex — serializes all file mutations so concurrent
@@ -77,7 +79,18 @@ export class SwarmHistory {
 			await fs.appendFile(this.filePath, `${JSON.stringify(entry)}\n`, "utf-8");
 			this.appendCount++;
 
-			// Only check truncation after enough appends to potentially exceed MAX_ENTRIES
+			// Size-based rotation: truncate if file exceeds 1 MB regardless of line count
+			try {
+				const stat = await fs.stat(this.filePath);
+				if (stat.size > MAX_FILE_SIZE_BYTES) {
+					await this.truncateInner(TRUNCATE_TO);
+					return;
+				}
+			} catch {
+				// stat failed — skip size check, fall through to line-count check
+			}
+
+			// Line-count check after enough appends to potentially exceed MAX_ENTRIES
 			if (this.appendCount >= MAX_ENTRIES - TRUNCATE_TO) {
 				const content = await fs.readFile(this.filePath, "utf-8");
 				const lineCount = content.split("\n").filter((l) => l.trim() !== "").length;
@@ -138,16 +151,26 @@ export class SwarmHistory {
 		if (entries.length === 0) {
 			try {
 				await fs.stat(this.filePath);
-				// File exists but readAll returned [] — read error, bail
 				console.error("[swarm-history] truncate aborted: file exists but readAll returned empty");
 				return;
 			} catch {
-				// File doesn't exist — nothing to truncate
 				return;
 			}
 		}
-		const kept = entries.slice(-maxEntries);
-		const content = kept.map((e) => JSON.stringify(e)).join("\n") + "\n";
+		// First enforce entry count, then enforce byte budget.
+		// This ensures the file is both under MAX_ENTRIES and MAX_FILE_SIZE_BYTES.
+		let kept = entries.slice(-maxEntries);
+		let content = kept.map((e) => JSON.stringify(e)).join("\n") + "\n";
+
+		// If still over size budget, drop oldest entries until it fits
+		while (
+			Buffer.byteLength(content, "utf-8") > MAX_FILE_SIZE_BYTES &&
+			kept.length > 1
+		) {
+			kept = kept.slice(Math.max(1, Math.floor(kept.length * 0.2)));
+			content = kept.map((e) => JSON.stringify(e)).join("\n") + "\n";
+		}
+
 		await fs.writeFile(this.filePath, content, "utf-8");
 		this.appendCount = 0;
 	}
