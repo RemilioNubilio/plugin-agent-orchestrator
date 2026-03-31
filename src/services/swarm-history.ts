@@ -24,6 +24,8 @@ export interface HistoryEntry {
 
 const MAX_ENTRIES = 150;
 const TRUNCATE_TO = 100;
+/** Maximum file size in bytes before forced truncation (1 MB). */
+const MAX_FILE_SIZE_BYTES = 1_048_576;
 
 /**
  * Simple async mutex — serializes all file mutations so concurrent
@@ -77,7 +79,18 @@ export class SwarmHistory {
 			await fs.appendFile(this.filePath, `${JSON.stringify(entry)}\n`, "utf-8");
 			this.appendCount++;
 
-			// Only check truncation after enough appends to potentially exceed MAX_ENTRIES
+			// Size-based rotation: truncate if file exceeds 1 MB regardless of line count
+			try {
+				const stat = await fs.stat(this.filePath);
+				if (stat.size > MAX_FILE_SIZE_BYTES) {
+					await this.truncateInner(TRUNCATE_TO);
+					return;
+				}
+			} catch {
+				// stat failed — skip size check, fall through to line-count check
+			}
+
+			// Line-count check after enough appends to potentially exceed MAX_ENTRIES
 			if (this.appendCount >= MAX_ENTRIES - TRUNCATE_TO) {
 				const content = await fs.readFile(this.filePath, "utf-8");
 				const lineCount = content.split("\n").filter((l) => l.trim() !== "").length;
