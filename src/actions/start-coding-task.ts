@@ -231,8 +231,11 @@ export const startCodingTaskAction: Action = {
 
     // Single-agent mode: build a single-element agents string so we can
     // reuse handleMultiAgent (which handles length-1 specs fine).
+    // Fall back to the user's message text when params extraction fails —
+    // the user's request IS the task (e.g. "build me a todo app").
     const task = (params?.task as string) ?? (content.task as string);
-    const singleAgentSpec = task || "";
+    const userText = (content.text as string)?.trim() || "";
+    const singleAgentSpec = task || userText;
     return handleMultiAgent(ctx, singleAgentSpec);
   },
 

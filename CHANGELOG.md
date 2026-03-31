@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1
+
+### Fixed
+
+- **Scratch agents receive task**: When action params aren't extracted by the core, the agent now receives the user's original message text as its task instead of spawning with empty instructions. Ensures coordinator registration and task delivery for all spawn paths.
+
 ## 0.4.0
 
 ### Added
