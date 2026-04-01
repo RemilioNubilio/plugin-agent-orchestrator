@@ -13,7 +13,6 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
-import { readFileSync } from "node:fs";
 import type { IAgentRuntime } from "@elizaos/core";
 import {
   type CreateIssueOptions,
@@ -56,6 +55,7 @@ import {
   gcOrphanedWorkspaces,
   removeScratchDir,
 } from "./workspace-lifecycle.js";
+import { readConfigEnvKey } from "./config-env.js";
 
 export type {
   CodingWorkspaceConfig,
@@ -499,11 +499,16 @@ export class CodingWorkspaceService {
 
   /** Remove a scratch directory — allowed under base dir or user coding directory. */
   async removeScratchDir(dirPath: string): Promise<void> {
-    const codingDir =
+    const rawCodingDir =
       (this.runtime.getSetting("PARALLAX_CODING_DIRECTORY") as string) ??
       this.readConfigEnvKey("PARALLAX_CODING_DIRECTORY") ??
       process.env.PARALLAX_CODING_DIRECTORY;
-    const allowedDirs = codingDir?.trim() ? [codingDir.trim()] : undefined;
+    const codingDir = rawCodingDir?.trim()
+      ? rawCodingDir.trim().startsWith("~")
+        ? path.join(os.homedir(), rawCodingDir.trim().slice(1))
+        : path.resolve(rawCodingDir.trim())
+      : undefined;
+    const allowedDirs = codingDir ? [codingDir] : undefined;
     return removeScratchDir(
       dirPath,
       this.serviceConfig.baseDir as string,
@@ -645,22 +650,7 @@ export class CodingWorkspaceService {
 
   /** Read a key from the config file's env section (live, no restart needed). */
   private readConfigEnvKey(key: string): string | undefined {
-    try {
-      const configPath = path.join(
-        process.env.MILADY_STATE_DIR ??
-          process.env.ELIZA_STATE_DIR ??
-          path.join(os.homedir(), ".milady"),
-        process.env.ELIZA_NAMESPACE === "milady" || !process.env.ELIZA_NAMESPACE
-          ? "milady.json"
-          : `${process.env.ELIZA_NAMESPACE}.json`,
-      );
-      const raw = readFileSync(configPath, "utf-8");
-      const config = JSON.parse(raw);
-      const val = config?.env?.[key];
-      return typeof val === "string" ? val : undefined;
-    } catch {
-      return undefined;
-    }
+    return readConfigEnvKey(key);
   }
 
   private getScratchRetentionPolicy(): ScratchRetentionPolicy {

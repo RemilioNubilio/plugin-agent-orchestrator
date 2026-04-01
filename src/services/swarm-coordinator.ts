@@ -343,9 +343,18 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 		if (wsService?.setScratchDecisionCallback) {
 			const chatCb = this.chatCallback;
 			wsService.setScratchDecisionCallback(async (record) => {
+				const ttlNote = record.expiresAt
+					? (() => {
+						const remainMs = record.expiresAt - Date.now();
+						const hours = Math.round(remainMs / (60 * 60 * 1000));
+						return hours >= 1
+							? `It will be automatically cleaned up in ~${hours} hour${hours === 1 ? "" : "s"}.`
+							: `It will be automatically cleaned up shortly.`;
+					})()
+					: "It will be automatically cleaned up after the configured retention period.";
 				await chatCb(
 					`Task "${record.label}" finished. Code is at \`${record.path}\`.\n` +
-					`It will be automatically cleaned up in 24 hours. To keep it, say "keep the workspace" or manage it in Settings → Coding Agents.`,
+					`${ttlNote} To keep it, say "keep the workspace" or manage it in Settings → Coding Agents.`,
 					"coding-agent",
 				);
 			});

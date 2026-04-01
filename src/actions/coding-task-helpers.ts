@@ -19,6 +19,7 @@ import {
 } from "@elizaos/core";
 import type { PTYService } from "../services/pty-service.js";
 import type { CodingWorkspaceService } from "../services/workspace-service.js";
+import { readConfigEnvKey } from "../services/config-env.js";
 
 /**
  * Sanitize a label into a safe directory name.
@@ -54,31 +55,6 @@ function resolveNonColliding(baseDir: string, name: string): string {
  * named subdir like `~/Projects/todo-app/` derived from the task label.
  * Otherwise falls back to `~/.milady/workspaces/{uuid}`.
  */
-/**
- * Read a setting from the eliza config env section.
- * runtime.getSetting() checks character.settings but NOT the config's env
- * section which is where the UI writes settings. This reads the config
- * file directly so settings take effect without restart.
- */
-function readConfigEnv(key: string): string | undefined {
-  try {
-    const configPath = path.join(
-      process.env.MILADY_STATE_DIR ??
-        process.env.ELIZA_STATE_DIR ??
-        path.join(os.homedir(), ".milady"),
-      process.env.ELIZA_NAMESPACE === "milady" || !process.env.ELIZA_NAMESPACE
-        ? "milady.json"
-        : `${process.env.ELIZA_NAMESPACE}.json`,
-    );
-    const raw = fs.readFileSync(configPath, "utf-8");
-    const config = JSON.parse(raw);
-    const val = config?.env?.[key];
-    return typeof val === "string" ? val : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 export function createScratchDir(
   runtime?: IAgentRuntime,
   label?: string,
@@ -89,7 +65,7 @@ export function createScratchDir(
   // the config env section, and process.env is only set at boot time.
   const codingDir =
     (runtime?.getSetting("PARALLAX_CODING_DIRECTORY") as string) ??
-    readConfigEnv("PARALLAX_CODING_DIRECTORY") ??
+    readConfigEnvKey("PARALLAX_CODING_DIRECTORY") ??
     process.env.PARALLAX_CODING_DIRECTORY;
 
   if (codingDir?.trim()) {
@@ -206,7 +182,6 @@ export function registerSessionEvents(
       scratchDir &&
       !scratchRegistered
     ) {
-      scratchRegistered = true;
       logger.info(
         `[scratch-lifecycle] Terminal event "${event}" for "${label}" — registering scratch workspace at ${scratchDir}`,
       );
@@ -217,19 +192,18 @@ export function registerSessionEvents(
         logger.warn(
           `[scratch-lifecycle] CODING_WORKSPACE_SERVICE not found — cannot register scratch workspace`,
         );
-      }
-      if (wsService) {
+        // Leave scratchRegistered false so a later event can retry
+      } else {
         wsService
-          .registerScratchWorkspace(
-            sessionId,
-            scratchDir,
-            label,
-            event,
-          )
+          .registerScratchWorkspace(sessionId, scratchDir, label, event)
+          .then(() => {
+            scratchRegistered = true;
+          })
           .catch((err) => {
-          logger.warn(
-            `[START_CODING_TASK] Failed to register scratch workspace for "${label}": ${err}`,
-          );
+            logger.warn(
+              `[START_CODING_TASK] Failed to register scratch workspace for "${label}": ${err}`,
+            );
+            // Leave scratchRegistered false so a later event can retry
           });
       }
     }
