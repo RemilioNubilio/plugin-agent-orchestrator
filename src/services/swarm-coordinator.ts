@@ -339,7 +339,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 	private wireScratchDecisionCallback(): void {
 		if (this.scratchDecisionWired || !this.chatCallback) return;
 		const wsService = this.runtime.getService("CODING_WORKSPACE_SERVICE") as
-			unknown as { setScratchDecisionCallback?: (cb: (record: { label: string; path: string }) => Promise<void>) => void } | undefined;
+			unknown as { setScratchDecisionCallback?: (cb: (record: { label: string; path: string; expiresAt?: number }) => Promise<void>) => void } | undefined;
 		if (wsService?.setScratchDecisionCallback) {
 			const chatCb = this.chatCallback;
 			wsService.setScratchDecisionCallback(async (record) => {
