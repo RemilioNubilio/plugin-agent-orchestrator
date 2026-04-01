@@ -19,9 +19,66 @@ import {
 } from "@elizaos/core";
 import type { PTYService } from "../services/pty-service.js";
 import type { CodingWorkspaceService } from "../services/workspace-service.js";
+import { readConfigEnvKey } from "../services/config-env.js";
 
-/** Create a scratch sandbox directory for non-repo tasks */
-export function createScratchDir(): string {
+/**
+ * Sanitize a label into a safe directory name.
+ * Strips non-alphanumeric chars (keeps hyphens), lowercases, truncates to 60 chars.
+ */
+function sanitizeDirName(label: string): string {
+  return label
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, "-")
+    .replace(/-{2,}/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 60) || "scratch";
+}
+
+/**
+ * Find a non-colliding directory path by appending -2, -3, etc. if needed.
+ */
+function resolveNonColliding(baseDir: string, name: string): string {
+  let candidate = path.join(baseDir, name);
+  if (!fs.existsSync(candidate)) return candidate;
+  for (let i = 2; i < 100; i++) {
+    candidate = path.join(baseDir, `${name}-${i}`);
+    if (!fs.existsSync(candidate)) return candidate;
+  }
+  // Fallback to uuid to guarantee uniqueness
+  return path.join(baseDir, `${name}-${randomUUID().slice(0, 8)}`);
+}
+
+/**
+ * Create a scratch sandbox directory for non-repo tasks.
+ *
+ * When `PARALLAX_CODING_DIRECTORY` is set (e.g. `~/Projects`), creates a
+ * named subdir like `~/Projects/todo-app/` derived from the task label.
+ * Otherwise falls back to `~/.milady/workspaces/{uuid}`.
+ */
+export function createScratchDir(
+  runtime?: IAgentRuntime,
+  label?: string,
+): string {
+  // Check for user-configured coding directory.
+  // Try runtime settings → config file env → process.env (in priority order).
+  // Config file is checked directly because runtime.getSetting() doesn't read
+  // the config env section, and process.env is only set at boot time.
+  const codingDir =
+    (runtime?.getSetting("PARALLAX_CODING_DIRECTORY") as string) ??
+    readConfigEnvKey("PARALLAX_CODING_DIRECTORY") ??
+    process.env.PARALLAX_CODING_DIRECTORY;
+
+  if (codingDir?.trim()) {
+    const resolved = codingDir.startsWith("~")
+      ? path.join(os.homedir(), codingDir.slice(1))
+      : path.resolve(codingDir);
+    const dirName = label ? sanitizeDirName(label) : `scratch-${randomUUID().slice(0, 8)}`;
+    const scratchDir = resolveNonColliding(resolved, dirName);
+    fs.mkdirSync(scratchDir, { recursive: true });
+    return scratchDir;
+  }
+
+  // Default: ephemeral UUID-based dir
   const baseDir = path.join(os.homedir(), ".milady", "workspaces");
   const scratchId = randomUUID();
   const scratchDir = path.join(baseDir, scratchId);
@@ -82,6 +139,7 @@ export function registerSessionEvents(
   callback?: HandlerCallback,
   coordinatorActive = false,
 ): void {
+  let scratchRegistered = false;
   ptyService.onSessionEvent((sid, event, data) => {
     if (sid !== sessionId) return;
 
@@ -121,23 +179,31 @@ export function registerSessionEvents(
     // policy handling (ephemeral / pending_decision / persistent).
     if (
       (event === "stopped" || event === "task_complete" || event === "error") &&
-      scratchDir
+      scratchDir &&
+      !scratchRegistered
     ) {
+      logger.info(
+        `[scratch-lifecycle] Terminal event "${event}" for "${label}" — registering scratch workspace at ${scratchDir}`,
+      );
       const wsService = runtime.getService(
         "CODING_WORKSPACE_SERVICE",
       ) as unknown as CodingWorkspaceService | undefined;
-      if (wsService) {
+      if (!wsService) {
+        logger.warn(
+          `[scratch-lifecycle] CODING_WORKSPACE_SERVICE not found — cannot register scratch workspace`,
+        );
+        // Leave scratchRegistered false so a later event can retry
+      } else {
         wsService
-          .registerScratchWorkspace(
-            sessionId,
-            scratchDir,
-            label,
-            event,
-          )
+          .registerScratchWorkspace(sessionId, scratchDir, label, event)
+          .then(() => {
+            scratchRegistered = true;
+          })
           .catch((err) => {
-          logger.warn(
-            `[START_CODING_TASK] Failed to register scratch workspace for "${label}": ${err}`,
-          );
+            logger.warn(
+              `[START_CODING_TASK] Failed to register scratch workspace for "${label}": ${err}`,
+            );
+            // Leave scratchRegistered false so a later event can retry
           });
       }
     }

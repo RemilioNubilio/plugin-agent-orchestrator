@@ -7,6 +7,7 @@
  */
 
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 
 /**
@@ -17,15 +18,22 @@ export async function removeScratchDir(
   dirPath: string,
   baseDir: string,
   log: (msg: string) => void,
+  allowedDirs?: string[],
 ): Promise<void> {
   const resolved = path.resolve(dirPath);
-  const resolvedBase = path.resolve(baseDir) + path.sep;
-  if (
-    !resolved.startsWith(resolvedBase) &&
-    resolved !== path.resolve(baseDir)
-  ) {
+
+  // Safety: only remove if under baseDir or one of the allowed directories
+  const expandTilde = (p: string) =>
+    p.startsWith("~") ? path.join(os.homedir(), p.slice(1)) : p;
+  const allAllowed = [baseDir, ...(allowedDirs ?? [])];
+  const isAllowed = allAllowed.some((dir) => {
+    const resolvedDir = path.resolve(expandTilde(dir)) + path.sep;
+    return resolved.startsWith(resolvedDir) || resolved === path.resolve(expandTilde(dir));
+  });
+
+  if (!isAllowed) {
     console.warn(
-      `[CodingWorkspaceService] Refusing to remove dir outside base: ${resolved}`,
+      `[CodingWorkspaceService] Refusing to remove dir outside allowed paths: ${resolved}`,
     );
     return;
   }

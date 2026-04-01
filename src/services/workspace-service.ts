@@ -55,6 +55,7 @@ import {
   gcOrphanedWorkspaces,
   removeScratchDir,
 } from "./workspace-lifecycle.js";
+import { readConfigEnvKey } from "./config-env.js";
 
 export type {
   CodingWorkspaceConfig,
@@ -107,6 +108,10 @@ export class CodingWorkspaceService {
   private scratchCleanupTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
   private eventCallbacks: WorkspaceEventCallback[] = [];
   private authPromptCallback: AuthPromptCallback | null = null;
+  /** Callback fired when a scratch workspace enters pending_decision state. */
+  private scratchDecisionCallback:
+    | ((record: ScratchWorkspaceRecord) => Promise<void>)
+    | null = null;
 
   constructor(runtime: IAgentRuntime, config: CodingWorkspaceConfig = {}) {
     this.runtime = runtime;
@@ -380,6 +385,16 @@ export class CodingWorkspaceService {
     this.authPromptCallback = callback;
   }
 
+  /**
+   * Register a callback fired when a scratch workspace enters pending_decision.
+   * Used to prompt the user via chat: "Want to keep this code?"
+   */
+  setScratchDecisionCallback(
+    callback: (record: ScratchWorkspaceRecord) => Promise<void>,
+  ): void {
+    this.scratchDecisionCallback = callback;
+  }
+
   async createIssue(
     repo: string,
     options: CreateIssueOptions,
@@ -482,12 +497,23 @@ export class CodingWorkspaceService {
     }
   }
 
-  /** Remove a scratch directory (non-git workspace) under the workspaces base dir. */
+  /** Remove a scratch directory — allowed under base dir or user coding directory. */
   async removeScratchDir(dirPath: string): Promise<void> {
+    const rawCodingDir =
+      (this.runtime.getSetting("PARALLAX_CODING_DIRECTORY") as string) ??
+      this.readConfigEnvKey("PARALLAX_CODING_DIRECTORY") ??
+      process.env.PARALLAX_CODING_DIRECTORY;
+    const codingDir = rawCodingDir?.trim()
+      ? rawCodingDir.trim().startsWith("~")
+        ? path.join(os.homedir(), rawCodingDir.trim().slice(1))
+        : path.resolve(rawCodingDir.trim())
+      : undefined;
+    const allowedDirs = codingDir ? [codingDir] : undefined;
     return removeScratchDir(
       dirPath,
       this.serviceConfig.baseDir as string,
       (msg) => this.log(msg),
+      allowedDirs,
     );
   }
 
@@ -516,6 +542,7 @@ export class CodingWorkspaceService {
     };
 
     const policy = this.getScratchRetentionPolicy();
+    this.log(`Scratch retention policy: "${policy}" for "${label}"`);
     if (policy === "ephemeral") {
       await this.removeScratchDir(dirPath);
       this.scratchBySession.delete(sessionId);
@@ -538,6 +565,15 @@ export class CodingWorkspaceService {
       const ttlMs = this.getScratchDecisionTtlMs();
       record.expiresAt = now + ttlMs;
       this.scheduleScratchCleanup(sessionId, ttlMs);
+      // Prompt user via chat: "Want to keep this code?"
+      if (this.scratchDecisionCallback) {
+        this.log(`Firing scratch decision prompt for "${label}" at ${dirPath}`);
+        this.scratchDecisionCallback(record).catch((err) => {
+          console.warn(`[workspace] Failed to send scratch decision prompt: ${err}`);
+        });
+      } else {
+        this.log(`No scratch decision callback wired — skipping prompt for "${label}"`);
+      }
     } else {
       this.clearScratchCleanupTimer(sessionId);
     }
@@ -612,15 +648,31 @@ export class CodingWorkspaceService {
     }
   }
 
+  /** Read a key from the config file's env section (live, no restart needed). */
+  private readConfigEnvKey(key: string): string | undefined {
+    return readConfigEnvKey(key);
+  }
+
   private getScratchRetentionPolicy(): ScratchRetentionPolicy {
     const setting = (
       this.runtime.getSetting("PARALLAX_SCRATCH_RETENTION") ??
+      this.readConfigEnvKey("PARALLAX_SCRATCH_RETENTION") ??
       process.env.PARALLAX_SCRATCH_RETENTION
     ) as string | undefined;
     const normalized = setting?.trim().toLowerCase();
     if (normalized === "ephemeral") return "ephemeral";
     if (normalized === "persistent" || normalized === "keep") {
       return "persistent";
+    }
+    // When a coding directory is configured and no explicit retention was set,
+    // default to persistent — users don't expect named folders in ~/Projects
+    // to auto-delete. If the user explicitly chose pending_decision, respect it.
+    if (!normalized) {
+      const codingDir =
+        (this.runtime.getSetting("PARALLAX_CODING_DIRECTORY") as string) ??
+        this.readConfigEnvKey("PARALLAX_CODING_DIRECTORY") ??
+        process.env.PARALLAX_CODING_DIRECTORY;
+      if (codingDir?.trim()) return "persistent";
     }
     return "pending_decision";
   }

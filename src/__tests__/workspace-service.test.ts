@@ -313,6 +313,7 @@ describe("CodingWorkspaceService", () => {
         CODING_WORKSPACE_CONFIG: {
           baseDir: await fs.mkdtemp(path.join(os.tmpdir(), "scratch-test-")),
         },
+        PARALLAX_SCRATCH_RETENTION: "pending_decision",
       });
       const scratchService = await CodingWorkspaceService.start(
         runtime as unknown as IAgentRuntime,
@@ -332,6 +333,62 @@ describe("CodingWorkspaceService", () => {
 
       expect(record?.status).toBe("pending_decision");
       expect(scratchService.listScratchWorkspaces()).toHaveLength(1);
+    });
+
+    it("defaults to persistent when coding directory is configured", async () => {
+      const runtime = createMockRuntime({
+        CODING_WORKSPACE_CONFIG: {
+          baseDir: await fs.mkdtemp(path.join(os.tmpdir(), "scratch-test-")),
+        },
+        PARALLAX_CODING_DIRECTORY: "/some/coding/dir",
+      });
+      const scratchService = await CodingWorkspaceService.start(
+        runtime as unknown as IAgentRuntime,
+      );
+      const scratchPath = path.join(
+        os.tmpdir(),
+        `scratch-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      );
+      await fs.mkdir(scratchPath, { recursive: true });
+
+      const record = await scratchService.registerScratchWorkspace(
+        "s-persistent",
+        scratchPath,
+        "scratch/coding-dir-test",
+        "task_complete",
+      );
+
+      expect(record?.status).toBe("kept");
+    });
+
+    it("fires scratchDecisionCallback on pending_decision", async () => {
+      const runtime = createMockRuntime({
+        CODING_WORKSPACE_CONFIG: {
+          baseDir: await fs.mkdtemp(path.join(os.tmpdir(), "scratch-test-")),
+        },
+        PARALLAX_SCRATCH_RETENTION: "pending_decision",
+      });
+      const scratchService = await CodingWorkspaceService.start(
+        runtime as unknown as IAgentRuntime,
+      );
+      const callbackFn = jest.fn().mockResolvedValue(undefined);
+      scratchService.setScratchDecisionCallback(callbackFn);
+
+      const scratchPath = path.join(
+        os.tmpdir(),
+        `scratch-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      );
+      await fs.mkdir(scratchPath, { recursive: true });
+
+      await scratchService.registerScratchWorkspace(
+        "s-callback",
+        scratchPath,
+        "scratch/callback-test",
+        "task_complete",
+      );
+
+      expect(callbackFn).toHaveBeenCalledTimes(1);
+      expect(callbackFn.mock.calls[0][0].label).toBe("scratch/callback-test");
     });
 
     it("keeps, promotes, and deletes scratch workspaces", async () => {
@@ -409,6 +466,7 @@ describe("CodingWorkspaceService", () => {
       const runtime = createMockRuntime({
         CODING_WORKSPACE_CONFIG: { baseDir },
         PARALLAX_SCRATCH_DECISION_TTL_MS: 10,
+        PARALLAX_SCRATCH_RETENTION: "pending_decision",
       });
       const scratchService = await CodingWorkspaceService.start(
         runtime as unknown as IAgentRuntime,

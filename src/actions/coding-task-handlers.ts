@@ -322,7 +322,7 @@ export async function handleMultiAgent(
         branch = workspace.branch;
         wsService.setLabel(workspace.id, specLabel);
       } else {
-        workdir = createScratchDir();
+        workdir = createScratchDir(runtime, specLabel);
       }
 
       // Preflight check

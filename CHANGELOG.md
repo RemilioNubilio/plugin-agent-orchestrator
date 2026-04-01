@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.3
+
+### Added
+
+- **Local coding directory**: When `PARALLAX_CODING_DIRECTORY` is set (e.g. `~/Projects`), scratch tasks create named subdirs like `~/Projects/todo-app/` instead of `~/.milady/workspaces/{uuid}`. Labels are sanitized to safe directory names with collision avoidance.
+- **Save prompt before cleanup**: When `pending_decision` retention is active, a chat message prompts the user to keep, delete, or promote scratch workspaces. TTL message is computed from the configured decision TTL instead of hardcoded.
+- **Scratch decision callback**: `setScratchDecisionCallback` on workspace service allows external wiring (e.g. swarm coordinator → chat) for save prompts.
+- **Shared config-env utility**: `readConfigEnvKey()` extracted into `services/config-env.ts` — reads the milady.json env section directly so settings take effect without restart.
+
+### Fixed
+
+- **Tilde expansion in allowed dirs**: `removeScratchDir` safety check now expands `~` via `os.homedir()` before path comparison, fixing false refusals for dirs under user-configured coding directory.
+- **Scratch registration retry on failure**: `scratchRegistered` flag is only set after successful `registerScratchWorkspace()` resolve, allowing later terminal events to retry if the service was unavailable or registration failed.
+- **Test filesystem isolation**: `start-coding-task` tests now mock `readConfigEnvKey` and use temp dirs to prevent host filesystem modification.
+
 ## 0.4.2
 
 ### Fixed

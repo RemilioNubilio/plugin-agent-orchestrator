@@ -2,8 +2,17 @@
  * START_CODING_TASK action tests
  */
 
-import { beforeEach, describe, expect, it, jest } from "bun:test";
+import { afterAll, beforeEach, describe, expect, it, jest, mock } from "bun:test";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import type { IAgentRuntime, Memory } from "@elizaos/core";
+
+// Isolate scratch dir creation from host filesystem: mock readConfigEnvKey
+// so it never reads the real milady.json config file.
+mock.module("../services/config-env.js", () => ({
+  readConfigEnvKey: () => undefined,
+}));
 
 // Dynamic import after preload mocks are registered
 const { startCodingTaskAction } = await import(
@@ -202,8 +211,13 @@ describe("startCodingTaskAction", () => {
     });
 
     it("should create scratch dir when no repo provided", async () => {
+      // Use a temp dir so no host filesystem is modified
+      const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), "scratch-test-"));
       const ptyService = createMockPTYService();
       const runtime = createMockRuntime(ptyService);
+      runtime.getSetting.mockImplementation((key: string) =>
+        key === "PARALLAX_CODING_DIRECTORY" ? tmpBase : undefined,
+      );
       const message = createMockMessage({ text: "Research React patterns" });
       const callback = jest.fn();
 
@@ -216,9 +230,12 @@ describe("startCodingTaskAction", () => {
       );
 
       expect(result?.success).toBe(true);
-      // Scratch dir is under home directory
       const spawnCall = mockSpawnSession.mock.calls[0][0];
-      expect(spawnCall.workdir).toContain(".milady");
+      expect(spawnCall.workdir).toBeTruthy();
+      // Verify scratch dir was created inside the temp base
+      expect(spawnCall.workdir).toContain(tmpBase);
+      // Cleanup
+      fs.rmSync(tmpBase, { recursive: true, force: true });
     });
 
     it("should extract repo URL from text content", async () => {
