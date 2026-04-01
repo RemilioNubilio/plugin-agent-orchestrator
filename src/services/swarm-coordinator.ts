@@ -321,9 +321,37 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 	// ─── Chat Callback ───
 
 	/** Inject a callback (from server.ts) to route messages to the user's chat UI. */
+	/** Track whether we've already wired the scratch decision callback. */
+	private scratchDecisionWired = false;
+
 	setChatCallback(cb: ChatMessageCallback): void {
 		this.chatCallback = cb;
 		this.log("Chat callback wired");
+		// Try wiring scratch decision callback now, retry lazily if service not ready
+		this.wireScratchDecisionCallback();
+	}
+
+	/**
+	 * Wire the scratch workspace save prompt callback.
+	 * Called eagerly from setChatCallback and lazily from handleSessionEvent
+	 * in case the workspace service wasn't ready at chat-callback time.
+	 */
+	private wireScratchDecisionCallback(): void {
+		if (this.scratchDecisionWired || !this.chatCallback) return;
+		const wsService = this.runtime.getService("CODING_WORKSPACE_SERVICE") as
+			unknown as { setScratchDecisionCallback?: (cb: (record: { label: string; path: string }) => Promise<void>) => void } | undefined;
+		if (wsService?.setScratchDecisionCallback) {
+			const chatCb = this.chatCallback;
+			wsService.setScratchDecisionCallback(async (record) => {
+				await chatCb(
+					`Task "${record.label}" finished. Code is at \`${record.path}\`.\n` +
+					`It will be automatically cleaned up in 24 hours. To keep it, say "keep the workspace" or manage it in Settings → Coding Agents.`,
+					"coding-agent",
+				);
+			});
+			this.scratchDecisionWired = true;
+			this.log("Scratch decision callback wired");
+		}
 	}
 
 	/** Inject a callback (from server.ts) to relay events to WebSocket clients. */
@@ -785,6 +813,11 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 		event: string,
 		data: unknown,
 	): Promise<void> {
+		// Lazy-wire scratch decision callback if not yet connected
+		if (!this.scratchDecisionWired) {
+			this.wireScratchDecisionCallback();
+		}
+
 		// Ignore events from sessions created before this coordinator started.
 		// Session IDs are formatted as "pty-{timestamp}-{hex}" — extract the timestamp.
 		const tsMatch = sessionId.match(/^pty-(\d+)-/);
