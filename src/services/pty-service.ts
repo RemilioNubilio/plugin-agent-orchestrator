@@ -103,11 +103,21 @@ export class PTYService {
   private manager: PTYManager | BunCompatiblePTYManager | null = null;
   private usingBunWorker: boolean = false;
   private serviceConfig: PTYServiceConfig;
+  private sessionNames: Map<string, string> = new Map();
   private sessionMetadata: Map<string, Record<string, unknown>> = new Map();
   private sessionWorkdirs: Map<string, string> = new Map();
   private eventCallbacks: SessionEventCallback[] = [];
   private outputUnsubscribers: Map<string, () => void> = new Map();
   private sessionOutputBuffers: Map<string, string[]> = new Map();
+  private terminalSessionStates: Map<
+    string,
+    {
+      status: SessionInfo["status"];
+      createdAt: Date;
+      lastActivityAt: Date;
+      reason?: string;
+    }
+  > = new Map();
   private adapterCache: Map<string, BaseCodingAdapter> = new Map();
   /** Tracks the buffer index when a task was sent, so we can capture the response on completion */
   private taskResponseMarkers: Map<string, number> = new Map();
@@ -128,7 +138,7 @@ export class PTYService {
       debug: config.debug ?? false,
       registerCodingAdapters: config.registerCodingAdapters ?? true,
       maxConcurrentSessions: config.maxConcurrentSessions ?? 8,
-      defaultApprovalPreset: config.defaultApprovalPreset ?? "permissive",
+      defaultApprovalPreset: config.defaultApprovalPreset ?? "autonomous",
     };
   }
 
@@ -193,6 +203,7 @@ export class PTYService {
       traceEntries: this.traceEntries,
       maxTraceEntries: PTYService.MAX_TRACE_ENTRIES,
       log: (msg) => this.log(msg),
+      handleWorkerExit: (info) => this.handleWorkerExit(info),
       hasActiveTask: (sessionId) => {
         const coordinator = this.coordinator;
         if (!coordinator) return false;
@@ -256,6 +267,7 @@ export class PTYService {
       this.manager = null;
     }
     this.sessionMetadata.clear();
+    this.sessionNames.clear();
     this.sessionWorkdirs.clear();
     this.sessionOutputBuffers.clear();
     this.log("PTYService shutdown complete");
@@ -291,6 +303,9 @@ export class PTYService {
     const resolvedInitialTask = piRequested
       ? toPiCommand(options.initialTask)
       : options.initialTask;
+    const effectiveApprovalPreset =
+      options.approvalPreset ??
+      (resolvedAgentType !== "shell" ? this.defaultApprovalPreset : undefined);
 
     const maxSessions = this.serviceConfig.maxConcurrentSessions ?? 8;
     const activeSessions = (await this.listSessions()).length;
@@ -321,7 +336,7 @@ export class PTYService {
     }
 
     // Write approval config files to workspace before spawn
-    if (options.approvalPreset && resolvedAgentType !== "shell") {
+    if (effectiveApprovalPreset && resolvedAgentType !== "shell") {
       try {
         const written = await this.getAdapter(
           resolvedAgentType as AdapterType,
@@ -329,10 +344,10 @@ export class PTYService {
           name: options.name,
           type: resolvedAgentType,
           workdir,
-          adapterConfig: { approvalPreset: options.approvalPreset },
+          adapterConfig: { approvalPreset: effectiveApprovalPreset },
         } as SpawnConfig);
         this.log(
-          `Wrote approval config (${options.approvalPreset}) for ${resolvedAgentType}: ${written.join(", ")}`,
+          `Wrote approval config (${effectiveApprovalPreset}) for ${resolvedAgentType}: ${written.join(", ")}`,
         );
       } catch (err) {
         this.log(`Failed to write approval config: ${err}`);
@@ -427,10 +442,13 @@ export class PTYService {
         ...options,
         agentType: resolvedAgentType,
         initialTask: resolvedInitialTask,
+        approvalPreset: effectiveApprovalPreset,
       },
       workdir,
     );
     const session = await this.manager.spawn(spawnConfig);
+    this.terminalSessionStates.delete(session.id);
+    this.sessionNames.set(session.id, options.name);
 
     // Store metadata separately (always include agentType for stall classification)
     this.sessionMetadata.set(session.id, {
@@ -589,7 +607,7 @@ export class PTYService {
     ) {
       return fromEnv as ApprovalPreset;
     }
-    return this.serviceConfig.defaultApprovalPreset ?? "permissive";
+    return this.serviceConfig.defaultApprovalPreset ?? "autonomous";
   }
 
   /** Agent selection strategy — env var takes precedence. */
@@ -636,7 +654,7 @@ export class PTYService {
   getSession(sessionId: string): SessionInfo | undefined {
     if (!this.manager) return undefined;
     const session = this.manager.get(sessionId);
-    if (!session) return undefined;
+    if (!session) return this.toTerminalSessionInfo(sessionId);
     return this.toSessionInfo(session, this.sessionWorkdirs.get(sessionId));
   }
 
@@ -645,9 +663,14 @@ export class PTYService {
     const sessions = this.usingBunWorker
       ? await (this.manager as BunCompatiblePTYManager).list()
       : (this.manager as PTYManager).list(filter);
-    return sessions.map((s) =>
+    const liveSessions = sessions.map((s) =>
       this.toSessionInfo(s, this.sessionWorkdirs.get(s.id)),
     );
+    const terminalSessions = Array.from(this.terminalSessionStates.keys())
+      .filter((sessionId) => !sessions.some((session) => session.id === sessionId))
+      .map((sessionId) => this.toTerminalSessionInfo(sessionId))
+      .filter((session): session is SessionInfo => session !== undefined);
+    return [...liveSessions, ...terminalSessions];
   }
 
   subscribeToOutput(
@@ -1009,7 +1032,60 @@ export class PTYService {
     };
   }
 
+  private toTerminalSessionInfo(sessionId: string): SessionInfo | undefined {
+    const terminal = this.terminalSessionStates.get(sessionId);
+    if (!terminal) return undefined;
+    const metadata = this.sessionMetadata.get(sessionId);
+    const requestedType =
+      typeof metadata?.requestedType === "string"
+        ? metadata.requestedType
+        : undefined;
+    const storedAgentType =
+      typeof metadata?.agentType === "string" ? metadata.agentType : "unknown";
+    const displayAgentType =
+      storedAgentType === "shell" && isPiAgentType(requestedType)
+        ? "pi"
+        : storedAgentType;
+    return {
+      id: sessionId,
+      name:
+        this.sessionNames.get(sessionId) ?? sessionId,
+      agentType: displayAgentType,
+      workdir: this.sessionWorkdirs.get(sessionId) ?? process.cwd(),
+      status: terminal.status,
+      createdAt: terminal.createdAt,
+      lastActivityAt: terminal.lastActivityAt,
+      metadata,
+    };
+  }
+
   private emitEvent(sessionId: string, event: string, data: unknown): void {
+    if (event === "stopped" || event === "error") {
+      const liveSession = this.manager?.get(sessionId);
+      const createdAt =
+        liveSession?.startedAt instanceof Date
+          ? liveSession.startedAt
+          : liveSession?.startedAt
+            ? new Date(liveSession.startedAt)
+            : new Date();
+      const lastActivityAt =
+        liveSession?.lastActivityAt instanceof Date
+          ? liveSession.lastActivityAt
+          : liveSession?.lastActivityAt
+            ? new Date(liveSession.lastActivityAt)
+            : new Date();
+      const reason =
+        event === "stopped"
+          ? (data as { reason?: string } | undefined)?.reason
+          : (data as { message?: string } | undefined)?.message;
+      this.terminalSessionStates.set(sessionId, {
+        status: event,
+        createdAt,
+        lastActivityAt,
+        reason,
+      });
+    }
+
     for (const callback of this.eventCallbacks) {
       try {
         callback(sessionId, event, data);
@@ -1027,5 +1103,36 @@ export class PTYService {
 
   private log(message: string): void {
     logger.debug(`[PTYService] ${message}`);
+  }
+
+  private handleWorkerExit(info: {
+    code: number | null;
+    signal: string | null;
+  }): void {
+    const trackedSessionIds = new Set([
+      ...this.sessionMetadata.keys(),
+      ...this.sessionWorkdirs.keys(),
+    ]);
+    if (trackedSessionIds.size === 0) {
+      return;
+    }
+
+    const reason = info.signal
+      ? `PTY worker exited unexpectedly (signal ${info.signal})`
+      : `PTY worker exited unexpectedly (code ${info.code ?? "unknown"})`;
+
+    for (const sessionId of trackedSessionIds) {
+      const terminalState = this.terminalSessionStates.get(sessionId);
+      if (
+        terminalState?.status === "stopped" ||
+        terminalState?.status === "error"
+      ) {
+        continue;
+      }
+      this.emitEvent(sessionId, "error", {
+        message: reason,
+        workerExit: info,
+      });
+    }
   }
 }

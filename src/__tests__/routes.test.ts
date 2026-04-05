@@ -73,7 +73,7 @@ const createMockPTYService = () => ({
   checkAvailableAgents: jest.fn().mockResolvedValue([]),
   getAgentMetrics: jest.fn().mockReturnValue({}),
   listSessions: jest.fn().mockResolvedValue([]),
-  defaultApprovalPreset: "permissive",
+  defaultApprovalPreset: "autonomous",
   agentSelectionStrategy: "fixed",
   defaultAgentType: "claude",
   spawnSession: jest.fn().mockResolvedValue({
@@ -368,7 +368,7 @@ describe("handleCodingAgentRoutes", () => {
       expect(res._getStatus()).toBe(200);
       expect(res._getJson()).toEqual(
         expect.objectContaining({
-          defaultApprovalPreset: "permissive",
+          defaultApprovalPreset: "autonomous",
           agentSelectionStrategy: "fixed",
           defaultAgentType: "claude",
           preferredAgentType: expect.any(String),

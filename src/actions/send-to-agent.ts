@@ -16,7 +16,8 @@ import type {
   Memory,
   State,
 } from "@elizaos/core";
-import type { PTYService } from "../services/pty-service.js";
+import { getCoordinator, type PTYService } from "../services/pty-service.js";
+import { normalizeAgentType } from "../services/pty-types.js";
 
 export const sendToAgentAction: Action = {
   name: "SEND_TO_AGENT",
@@ -33,7 +34,7 @@ export const sendToAgentAction: Action = {
 
   description:
     "Send text input or key presses to a running task-agent session. " +
-    "Use this to respond to agent prompts, provide feedback, or give new instructions.",
+    "Use this to respond to agent prompts, provide feedback, continue a task, or assign a fresh tracked task to an existing agent.",
 
   examples: [
     [
@@ -114,6 +115,8 @@ export const sendToAgentAction: Action = {
       sessionId?: string;
       input?: string;
       keys?: string;
+      task?: string;
+      label?: string;
     };
 
     // Get session ID from content or state
@@ -148,7 +151,9 @@ export const sendToAgentAction: Action = {
 
     try {
       const keys = (params?.keys as string) ?? content.keys;
-      const input = (params?.input as string) ?? content.input;
+      const trackedTask = (params?.task as string) ?? content.task;
+      const taskLabel = (params?.label as string) ?? content.label;
+      const input = (params?.input as string) ?? content.input ?? trackedTask;
 
       if (keys) {
         // Send special key sequence
@@ -166,20 +171,38 @@ export const sendToAgentAction: Action = {
       } else if (input) {
         // Send text input
         await ptyService.sendToSession(sessionId, input);
+        if (trackedTask) {
+          const coordinator = getCoordinator(runtime);
+          const existingTask = coordinator?.getTaskContext(sessionId);
+          coordinator?.registerTask(sessionId, {
+            agentType: normalizeAgentType(session.agentType),
+            label:
+              taskLabel ||
+              existingTask?.label ||
+              (typeof session.metadata?.label === "string"
+                ? session.metadata.label
+                : `agent-${sessionId.slice(-8)}`),
+            originalTask: trackedTask,
+            workdir: session.workdir,
+            ...(existingTask?.repo ? { repo: existingTask.repo } : {}),
+          });
+        }
         if (callback) {
           await callback({
-            text: `Sent to task agent: "${input}"`,
+            text: trackedTask
+              ? `Assigned new tracked task to task agent: "${trackedTask}"`
+              : `Sent to task agent: "${input}"`,
           });
         }
         return {
           success: true,
-          text: "Sent input to agent",
-          data: { sessionId, input },
+          text: trackedTask ? "Assigned new task to agent" : "Sent input to agent",
+          data: { sessionId, input, ...(trackedTask ? { task: trackedTask } : {}) },
         };
       } else {
         if (callback) {
           await callback({
-            text: "No input provided. Specify 'input' or 'keys' parameter.",
+            text: "No input provided. Specify 'input', 'task', or 'keys' parameter.",
           });
         }
         return { success: false, error: "NO_INPUT" };
@@ -207,6 +230,20 @@ export const sendToAgentAction: Action = {
     {
       name: "input",
       description: "Text input to send to the running task agent.",
+      required: false,
+      schema: { type: "string" as const },
+    },
+    {
+      name: "task",
+      description:
+        "New tracked task to assign to the existing agent. This is also sent as the next input so LIST_AGENTS and provider status reflect the new assignment.",
+      required: false,
+      schema: { type: "string" as const },
+    },
+    {
+      name: "label",
+      description:
+        "Optional label to use when tracking a newly assigned task on an existing agent.",
       required: false,
       schema: { type: "string" as const },
     },

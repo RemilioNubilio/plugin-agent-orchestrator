@@ -14,12 +14,17 @@ const mockSendToSession = jest.fn();
 const mockSendKeysToSession = jest.fn();
 const mockGetSession = jest.fn();
 const mockListSessions = jest.fn();
+const mockRegisterTask = jest.fn();
 
-const createMockPTYService = (sessions: { id: string }[] = []) => ({
+const createMockPTYService = (
+  sessions: { id: string }[] = [],
+  coordinator: unknown = undefined,
+) => ({
   sendToSession: mockSendToSession,
   sendKeysToSession: mockSendKeysToSession,
   getSession: mockGetSession,
   listSessions: mockListSessions.mockReturnValue(sessions),
+  coordinator,
 });
 
 const createMockRuntime = (ptyService: unknown = null) => ({
@@ -40,9 +45,13 @@ describe("sendToAgentAction", () => {
     jest.clearAllMocks();
     mockSendToSession.mockResolvedValue(undefined);
     mockSendKeysToSession.mockResolvedValue(undefined);
+    mockRegisterTask.mockReset();
     mockGetSession.mockReturnValue({
       id: "session-123",
       status: "running",
+      agentType: "claude",
+      workdir: "/tmp/session-123",
+      metadata: { label: "research-agent" },
     });
   });
 
@@ -143,6 +152,42 @@ describe("sendToAgentAction", () => {
       );
 
       expect(mockSendToSession).toHaveBeenCalledWith("session-123", "continue");
+    });
+
+    it("tracks a newly assigned task on an existing agent", async () => {
+      const runtime = createMockRuntime(
+        createMockPTYService([{ id: "session-123" }], {
+          registerTask: mockRegisterTask,
+          getTaskContext: jest.fn().mockReturnValue({
+            label: "existing-agent",
+            repo: "https://github.com/example/repo",
+          }),
+        }),
+      );
+
+      const result = await sendToAgentAction.handler(
+        runtime as unknown as IAgentRuntime,
+        createMockMessage({
+          sessionId: "session-123",
+          task: "Research the benchmark harness and write a summary",
+        }) as unknown as Memory,
+        undefined,
+        {},
+        jest.fn(),
+      );
+
+      expect(result?.success).toBe(true);
+      expect(mockSendToSession).toHaveBeenCalledWith(
+        "session-123",
+        "Research the benchmark harness and write a summary",
+      );
+      expect(mockRegisterTask).toHaveBeenCalledWith("session-123", {
+        agentType: "claude",
+        label: "existing-agent",
+        originalTask: "Research the benchmark harness and write a summary",
+        workdir: "/tmp/session-123",
+        repo: "https://github.com/example/repo",
+      });
     });
 
     it("uses session from state if not specified", async () => {

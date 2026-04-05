@@ -74,6 +74,10 @@ export const activeWorkspaceContextProvider: Provider = {
     const tasks = uniqueTasks(
       ((coordinator?.getAllTaskContexts?.() ?? []) as TaskLike[]).slice(),
     );
+    const reusableSessions = sessions.filter((session) => {
+      const currentTask = tasks.find((task) => task.sessionId === session.id);
+      return !currentTask || currentTask.status !== "active";
+    });
 
     const lines: string[] = ["# Active Workspaces & Task Agents"];
     lines.push(
@@ -156,12 +160,26 @@ export const activeWorkspaceContextProvider: Provider = {
           );
         }
       }
+
+      if (reusableSessions.length > 0) {
+        lines.push("");
+        lines.push(`## Reusable Agents (${reusableSessions.length})`);
+        for (const session of reusableSessions) {
+          const label =
+            typeof session.metadata?.label === "string"
+              ? session.metadata.label
+              : session.name;
+          lines.push(
+            `- "${label}" (${session.agentType}) is ${formatTaskAgentStatus(session.status)} and can take a new tracked task via SEND_TO_AGENT`,
+          );
+        }
+      }
     }
 
     if (sessions.length > 0 || tasks.length > 0) {
       lines.push("");
       lines.push(
-        "Use SEND_TO_AGENT to unblock a running agent, LIST_AGENTS to inspect progress, STOP_AGENT to cancel, and FINALIZE_WORKSPACE when the work should be published or wrapped up.",
+        "Use SEND_TO_AGENT to unblock a running agent or assign it a new tracked task, LIST_AGENTS to inspect progress, STOP_AGENT to cancel, and FINALIZE_WORKSPACE when the work should be published or wrapped up.",
       );
     }
 

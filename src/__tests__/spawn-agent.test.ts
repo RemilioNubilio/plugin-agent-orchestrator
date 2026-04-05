@@ -19,7 +19,7 @@ const createMockPTYService = () => ({
   listSessions: jest.fn().mockReturnValue([]),
   checkAvailableAgents: mockCheckAvailableAgents,
   resolveAgentType: mockResolveAgentType,
-  defaultApprovalPreset: "permissive",
+  defaultApprovalPreset: "autonomous",
 });
 
 const createMockRuntime = (ptyService: unknown = null) => ({
@@ -130,7 +130,7 @@ describe("spawnAgentAction", () => {
         workdir: validWorkdir,
         initialTask: "Fix the bug",
         credentials: expect.any(Object),
-        approvalPreset: "permissive",
+        approvalPreset: "autonomous",
         customCredentials: undefined,
         metadata: expect.objectContaining({
           requestedType: "claude",

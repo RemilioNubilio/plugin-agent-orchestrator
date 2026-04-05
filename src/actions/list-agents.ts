@@ -165,6 +165,26 @@ export const listAgentsAction: Action = {
       }
     }
 
+    const reusableSessions = sessions.filter((session) => {
+      const currentTask = tasks.find((task) => task.sessionId === session.id);
+      return !currentTask || currentTask.status !== "active";
+    });
+    if (reusableSessions.length > 0) {
+      if (lines.length > 0) lines.push("");
+      lines.push(
+        `Reusable task agents (${reusableSessions.length}): assign a new tracked task with SEND_TO_AGENT.`,
+      );
+      for (const session of reusableSessions) {
+        const label =
+          typeof session.metadata?.label === "string"
+            ? session.metadata.label
+            : session.name;
+        lines.push(
+          `- "${label}" (${session.agentType}) is ${formatTaskAgentStatus(session.status)} and can take a new task`,
+        );
+      }
+    }
+
     const pending = coordinator?.getPendingConfirmations?.() ?? [];
     if (pending.length > 0) {
       lines.push("");

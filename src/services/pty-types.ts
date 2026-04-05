@@ -20,23 +20,23 @@ export interface PTYServiceConfig {
   maxLogLines?: number;
   /** Enable debug logging */
   debug?: boolean;
-  /** Auto-register coding agent adapters (default: true) */
+  /** Auto-register task-agent adapters (default: true) */
   registerCodingAdapters?: boolean;
   /** Maximum concurrent PTY sessions (default: 8) */
   maxConcurrentSessions?: number;
   /**
-   * Default approval preset for coding agents when not specified per-spawn.
+   * Default approval preset for task agents when not specified per-spawn.
    * Controls what tools the agent can use without asking for permission.
    *   - "readonly"   — Read-only tools only
    *   - "standard"   — Read + write, asks for shell/network
    *   - "permissive" — Most tools auto-approved, asks for destructive ops
    *   - "autonomous" — All tools auto-approved (yolo mode)
-   * Default: "permissive"
+   * Default: "autonomous"
    */
   defaultApprovalPreset?: ApprovalPreset;
 }
 
-/** Available coding agent types */
+/** Available task-agent types */
 export type CodingAgentType = "shell" | "pi" | AdapterType;
 
 const PI_AGENT_ALIASES = new Set([

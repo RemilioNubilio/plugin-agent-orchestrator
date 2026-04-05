@@ -106,6 +106,7 @@ describe("PTYService", () => {
   describe("initialization", () => {
     it("should initialize with default config", async () => {
       expect(service).toBeInstanceOf(PTYService);
+      expect(service.defaultApprovalPreset).toBe("autonomous");
     });
 
     it("should accept custom config from runtime settings", async () => {
@@ -118,6 +119,17 @@ describe("PTYService", () => {
         runtime as unknown as IAgentRuntime,
       );
       expect(customService).toBeInstanceOf(PTYService);
+    });
+
+    it("should honor an explicit approval preset override from runtime settings", async () => {
+      const runtime = createMockRuntime({
+        PARALLAX_DEFAULT_APPROVAL_PRESET: "standard",
+      });
+      const customService = await PTYService.start(
+        runtime as unknown as IAgentRuntime,
+      );
+
+      expect(customService.defaultApprovalPreset).toBe("standard");
     });
   });
 
@@ -197,6 +209,34 @@ describe("PTYService", () => {
       mockManager.get.mockReturnValueOnce(undefined);
       const session = service.getSession("unknown-id");
       expect(session).toBeUndefined();
+    });
+
+    it("should preserve terminal session state when the live session disappears", async () => {
+      const spawned = await service.spawnSession({
+        name: "test-session",
+        agentType: "shell",
+        workdir: "/test",
+      });
+
+      mockManager.get.mockReturnValueOnce({
+        id: spawned.id,
+        name: "test-session",
+        type: "shell",
+        status: "running",
+        startedAt: new Date("2026-01-01T00:00:00Z"),
+        lastActivityAt: new Date("2026-01-01T00:00:01Z"),
+      });
+
+      (
+        service as unknown as {
+          emitEvent: (sessionId: string, event: string, data: unknown) => void;
+        }
+      ).emitEvent(spawned.id, "error", { message: "worker crashed" });
+
+      mockManager.get.mockReturnValue(undefined);
+      const retrieved = service.getSession(spawned.id);
+      expect(retrieved?.status).toBe("error");
+      expect(retrieved?.name).toBe("test-session");
     });
 
     it("should list all sessions", async () => {

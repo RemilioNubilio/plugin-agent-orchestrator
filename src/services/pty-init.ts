@@ -56,6 +56,10 @@ export interface InitContext {
   traceEntries: Array<string | Record<string, unknown>>;
   maxTraceEntries: number;
   log: (msg: string) => void;
+  handleWorkerExit?: (info: {
+    code: number | null;
+    signal: string | null;
+  }) => void;
   /** Check if a session has an active task in the coordinator. */
   hasActiveTask?: (sessionId: string) => boolean;
   /** Check if a session's task has started work (task delivered or decisions made). */
@@ -254,7 +258,11 @@ export async function initializePTYManager(
       }
     });
 
-    bunManager.on("worker_exit", (info: { code: number; signal: string }) => {
+    bunManager.on("worker_exit", (info: {
+      code: number | null;
+      signal: string | null;
+    }) => {
+      ctx.handleWorkerExit?.(info);
       console.error("[PTYService] Worker exited:", info);
     });
 

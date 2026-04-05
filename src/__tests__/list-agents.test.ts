@@ -153,6 +153,35 @@ describe("listAgentsAction", () => {
       );
     });
 
+    it("shows reusable agents when sessions are idle or between tasks", async () => {
+      const sessions = [
+        {
+          id: "session-1",
+          name: "research-agent",
+          agentType: "codex",
+          status: "ready",
+          workdir: "/project/a",
+          createdAt: new Date("2024-01-01T10:00:00Z"),
+          lastActivityAt: new Date("2024-01-01T10:30:00Z"),
+        },
+      ];
+      const callback = jest.fn();
+
+      await listAgentsAction.handler(
+        createMockRuntime(createMockPTYService(sessions)) as unknown as IAgentRuntime,
+        createMockMessage() as unknown as Memory,
+        undefined,
+        {},
+        callback,
+      );
+
+      expect(callback).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: expect.stringContaining("Reusable task agents"),
+        }),
+      );
+    });
+
     it("shows a helpful message when nothing is running", async () => {
       const callback = jest.fn();
       const result = await listAgentsAction.handler(

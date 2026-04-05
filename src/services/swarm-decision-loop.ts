@@ -250,6 +250,63 @@ function formatDecisionResponse(
     : decision.response;
 }
 
+function decisionFromSuggestedResponse(
+  suggestedResponse: string,
+  reasoning = "Used adapter-provided auto-response for a routine blocking prompt.",
+): CoordinationLLMResponse {
+  if (suggestedResponse.startsWith("keys:")) {
+    return {
+      action: "respond",
+      useKeys: true,
+      keys: suggestedResponse
+        .slice("keys:".length)
+        .split(",")
+        .map((part) => part.trim())
+        .filter(Boolean),
+      reasoning,
+    };
+  }
+  return {
+    action: "respond",
+    response: suggestedResponse,
+    reasoning,
+  };
+}
+
+function inferRoutinePromptResponse(
+  promptText: string,
+  promptType?: string,
+): { suggestedResponse: string; reasoning: string } | null {
+  if (promptType && promptType !== "unknown") {
+    return null;
+  }
+
+  if (
+    /should i open (?:the )?(?:page|link|url).*(?:new tab|browser tab).*instead\??/i.test(
+      promptText,
+    )
+  ) {
+    return {
+      suggestedResponse: "yes",
+      reasoning:
+        "Accepted routine browser follow-up so the agent can keep using its web tool without human intervention.",
+    };
+  }
+
+  if (
+    /cheaper,\s*faster,\s*but less capable/i.test(promptText) &&
+    /keep current model/i.test(promptText)
+  ) {
+    return {
+      suggestedResponse: "2",
+      reasoning:
+        "Kept the current Codex model so a routine model-selection prompt does not stall the task.",
+    };
+  }
+
+  return null;
+}
+
 /** Check if a permission prompt references paths outside the workspace. */
 export function isOutOfScopeAccess(
   promptText: string,
@@ -573,6 +630,7 @@ export async function handleBlocked(
       type?: string;
       prompt?: string;
       canAutoRespond?: boolean;
+      suggestedResponse?: string;
       instructions?: string;
     };
     autoResponded?: boolean;
@@ -650,6 +708,57 @@ export async function handleBlocked(
         promptText.length > 120 ? `${promptText.slice(0, 120)}...` : promptText;
       ctx.log(`[${taskCtx.label}] Approved: ${excerpt}`);
     }
+    return;
+  }
+
+  const adapterSuggestedResponse =
+    typeof eventData.promptInfo?.suggestedResponse === "string" &&
+    eventData.promptInfo.suggestedResponse.trim().length > 0
+      ? eventData.promptInfo.suggestedResponse.trim()
+      : eventData.promptInfo?.canAutoRespond &&
+          eventData.promptInfo?.type === "permission"
+        ? "keys:enter"
+        : undefined;
+  const inferredPromptResponse = inferRoutinePromptResponse(
+    promptText,
+    eventData.promptInfo?.type,
+  );
+  const routineSuggestedResponse =
+    adapterSuggestedResponse ?? inferredPromptResponse?.suggestedResponse;
+
+  if (
+    ctx.getSupervisionLevel() === "autonomous" &&
+    (eventData.promptInfo?.canAutoRespond || inferredPromptResponse) &&
+    routineSuggestedResponse
+  ) {
+    const fastDecision = decisionFromSuggestedResponse(
+      routineSuggestedResponse,
+      inferredPromptResponse?.reasoning,
+    );
+
+    taskCtx.autoResolvedCount++;
+    taskCtx.decisions.push({
+      timestamp: Date.now(),
+      event: "blocked",
+      promptText,
+      decision: "auto_resolved",
+      response: formatDecisionResponse(fastDecision),
+      reasoning: fastDecision.reasoning,
+    });
+
+    ctx.broadcast({
+      type: "blocked_auto_resolved",
+      sessionId,
+      timestamp: Date.now(),
+      data: {
+        prompt: promptText,
+        promptType: eventData.promptInfo?.type,
+        autoResolvedCount: taskCtx.autoResolvedCount,
+        strategy: "adapter_suggested_response",
+      },
+    });
+
+    await executeDecision(ctx, sessionId, fastDecision);
     return;
   }
 

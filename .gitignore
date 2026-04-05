@@ -4,3 +4,5 @@ bun.lock
 dist/
 *.tsbuildinfo
 .parallax/
+.playwright-mcp/
+.tmp-live/

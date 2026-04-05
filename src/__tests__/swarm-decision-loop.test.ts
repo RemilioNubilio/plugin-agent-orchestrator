@@ -113,6 +113,88 @@ describe("handleBlocked", () => {
     expect(ctx.ptyService.sendToSession).toHaveBeenCalledWith("s-1", "y");
   });
 
+  it("uses adapter suggested key responses immediately in autonomous mode", async () => {
+    const ctx = createMockCtx();
+    const taskCtx = createTaskCtx();
+    ctx.tasks.set("s-1", taskCtx);
+
+    await handleBlocked(ctx as never, "s-1", taskCtx as never, {
+      promptInfo: {
+        prompt: "Codex tool approval",
+        type: "permission",
+        canAutoRespond: true,
+        suggestedResponse: "keys:enter",
+      },
+      autoResponded: false,
+    });
+
+    expect(ctx.runtime.useModel).not.toHaveBeenCalled();
+    expect(ctx.ptyService.sendKeysToSession).toHaveBeenCalledWith("s-1", [
+      "enter",
+    ]);
+    expect(taskCtx.decisions[0].decision).toBe("auto_resolved");
+  });
+
+  it("falls back to enter for autonomous permission prompts that omit a suggested response", async () => {
+    const ctx = createMockCtx();
+    const taskCtx = createTaskCtx();
+    ctx.tasks.set("s-1", taskCtx);
+
+    await handleBlocked(ctx as never, "s-1", taskCtx as never, {
+      promptInfo: {
+        prompt: "Codex tool approval",
+        type: "permission",
+        canAutoRespond: true,
+      },
+      autoResponded: false,
+    });
+
+    expect(ctx.runtime.useModel).not.toHaveBeenCalled();
+    expect(ctx.ptyService.sendKeysToSession).toHaveBeenCalledWith("s-1", [
+      "enter",
+    ]);
+    expect(taskCtx.decisions[0].decision).toBe("auto_resolved");
+  });
+
+  it("auto-answers routine Codex browser follow-up questions", async () => {
+    const ctx = createMockCtx();
+    const taskCtx = createTaskCtx({ agentType: "codex" });
+    ctx.tasks.set("s-1", taskCtx);
+
+    await handleBlocked(ctx as never, "s-1", taskCtx as never, {
+      promptInfo: {
+        prompt: "The page is accessible. Should I open the page in a new tab instead?",
+        type: "unknown",
+        canAutoRespond: false,
+      },
+      autoResponded: false,
+    });
+
+    expect(ctx.runtime.useModel).not.toHaveBeenCalled();
+    expect(ctx.ptyService.sendToSession).toHaveBeenCalledWith("s-1", "yes");
+    expect(taskCtx.decisions[0].decision).toBe("auto_resolved");
+  });
+
+  it("keeps the current Codex model for routine selection prompts", async () => {
+    const ctx = createMockCtx();
+    const taskCtx = createTaskCtx({ agentType: "codex" });
+    ctx.tasks.set("s-1", taskCtx);
+
+    await handleBlocked(ctx as never, "s-1", taskCtx as never, {
+      promptInfo: {
+        prompt:
+          "1. GPT-5 Mini ex. Cheaper, faster, but less capable. 2. Keep current model 3. Keep current mode",
+        type: "unknown",
+        canAutoRespond: false,
+      },
+      autoResponded: false,
+    });
+
+    expect(ctx.runtime.useModel).not.toHaveBeenCalled();
+    expect(ctx.ptyService.sendToSession).toHaveBeenCalledWith("s-1", "2");
+    expect(taskCtx.decisions[0].decision).toBe("auto_resolved");
+  });
+
   it("declines and redirects out-of-scope path access in autonomous mode", async () => {
     const ctx = createMockCtx();
     // LLM says "respond y" but path is out of scope
