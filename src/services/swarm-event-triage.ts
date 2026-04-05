@@ -147,7 +147,7 @@ export function buildTriagePrompt(ctx: TriageContext): string {
       : `TURN COMPLETE. Recent output:\n${(ctx.recentOutput ?? "").slice(-500)}`;
 
   return (
-    `Classify this coding agent event as "routine" or "creative".\n\n` +
+    `Classify this task-agent event as "routine" or "creative".\n\n` +
     `Task: ${ctx.originalTask.slice(0, 200)}\n` +
     `Event: ${eventDesc}\n\n` +
     `"routine" = simple approval, permission, config, yes/no, tool consent, obvious pass/fail.\n` +

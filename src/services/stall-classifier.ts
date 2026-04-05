@@ -1,5 +1,5 @@
 /**
- * Stall classification subsystem — determines what a "stalled" coding agent
+ * Stall classification subsystem — determines what a "stalled" task agent
  * session is doing (finished, waiting for input, still working, or errored).
  *
  * Extracted as standalone functions that receive dependencies as parameters,
@@ -48,8 +48,8 @@ export function buildStallClassificationPrompt(
   output: string,
 ): string {
   return (
-    `You are Milady, an AI orchestrator managing coding agent sessions. ` +
-    `A ${agentType} coding agent (session: ${sessionId}) appears to have stalled — ` +
+    `You are Milady, an AI orchestrator managing task-agent sessions. ` +
+    `A ${agentType} task agent (session: ${sessionId}) appears to have stalled — ` +
     `it has stopped producing output while in a busy state.\n\n` +
     `Here is the recent terminal output:\n` +
     `---\n${output.slice(-1500)}\n---\n\n` +
@@ -287,8 +287,8 @@ export function buildCombinedClassifyDecidePrompt(
       : "";
 
   return (
-    `You are Milady, an AI orchestrator managing coding agent sessions. ` +
-    `A ${agentType} coding agent (session: ${sessionId}) appears to have stalled — ` +
+    `You are Milady, an AI orchestrator managing task-agent sessions. ` +
+    `A ${agentType} task agent (session: ${sessionId}) appears to have stalled — ` +
     `it has stopped producing output while in a busy state.\n\n` +
     `Original task: "${taskContext.originalTask}"\n` +
     `Working directory: ${taskContext.workdir}\n` +

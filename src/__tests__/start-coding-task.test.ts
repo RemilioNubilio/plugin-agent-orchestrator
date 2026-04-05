@@ -1,5 +1,5 @@
 /**
- * START_CODING_TASK action tests
+ * CREATE_TASK action tests
  */
 
 import { afterAll, beforeEach, describe, expect, it, jest, mock } from "bun:test";
@@ -103,14 +103,16 @@ describe("startCodingTaskAction", () => {
   // -------------------------------------------------------------------------
 
   describe("action metadata", () => {
-    it("should have name START_CODING_TASK", () => {
-      expect(startCodingTaskAction.name).toBe("START_CODING_TASK");
+    it("should have canonical name CREATE_TASK", () => {
+      expect(startCodingTaskAction.name).toBe("CREATE_TASK");
     });
 
-    it("should have similes for matching", () => {
+    it("should keep legacy and new similes for matching", () => {
       expect(startCodingTaskAction.similes).toBeDefined();
       expect(startCodingTaskAction.similes?.length).toBeGreaterThan(0);
+      expect(startCodingTaskAction.similes).toContain("START_CODING_TASK");
       expect(startCodingTaskAction.similes).toContain("LAUNCH_CODING_TASK");
+      expect(startCodingTaskAction.similes).toContain("LAUNCH_TASK");
     });
 
     it("should define expected parameters", () => {

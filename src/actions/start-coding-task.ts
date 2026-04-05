@@ -1,13 +1,13 @@
 /**
- * START_CODING_TASK action - Unified action to set up and launch coding agents
+ * CREATE_TASK action - Unified action to set up and launch task agents.
  *
  * Combines workspace provisioning and agent spawning into a single atomic action.
  * - If a repo URL is provided, clones it into a fresh workspace
  * - If no repo, creates a scratch sandbox directory
- * - Spawns the specified coding agent(s) in that workspace with the given task
+ * - Spawns the specified task agent(s) in that workspace with the given task
  * - Supports multi-agent mode via pipe-delimited `agents` param
  *
- * This eliminates the need for multi-action chaining (PROVISION_WORKSPACE -> SPAWN_CODING_AGENT)
+ * This eliminates the need for multi-action chaining (PROVISION_WORKSPACE -> SPAWN_AGENT)
  * and ensures agents always run in an isolated directory.
  *
  * @module actions/start-coding-task
@@ -33,20 +33,24 @@ import {
 } from "./coding-task-handlers.js";
 
 export const startCodingTaskAction: Action = {
-  name: "START_CODING_TASK",
+  name: "CREATE_TASK",
 
   similes: [
+    "START_CODING_TASK",
     "LAUNCH_CODING_TASK",
     "RUN_CODING_TASK",
     "START_AGENT_TASK",
     "SPAWN_AND_PROVISION",
     "CODE_THIS",
+    "LAUNCH_TASK",
+    "CREATE_SUBTASK",
   ],
 
   description:
-    "Start a coding task: optionally clone a repo, then spawn a coding agent (Claude Code, Codex, Gemini, Aider, Pi) " +
-    "to work on it. If no repo is provided, the agent runs in a safe scratch directory. " +
-    "Use this whenever the user asks to work on code, research something with an agent, or run any agent task. " +
+    "Create one or more asynchronous task agents for any open-ended multi-step job. " +
+    "These task agents can code, debug, research, write, analyze, plan, document, and automate while the main agent stays free to keep talking with the user. " +
+    "If a repo URL is provided, a workspace is provisioned automatically; if no repo is provided, the task agent runs in a safe scratch directory. " +
+    "Use this whenever the work is more involved than a simple direct reply. " +
     "IMPORTANT: If the user references a repository from conversation history (e.g. 'in the same repo', " +
     "'on that project', 'add a feature to it'), you MUST include the repo URL in the `repo` parameter. " +
     "If the task involves code changes to a real project but you don't know the repo URL, ASK the user for it " +
@@ -57,14 +61,14 @@ export const startCodingTaskAction: Action = {
       {
         name: "{{user1}}",
         content: {
-          text: "Set up a workspace for https://github.com/acme/my-app and have Claude fix the auth bug",
+          text: "Take a deep pass on https://github.com/acme/my-app: debug the auth failure, fix it, run the tests, and summarize what changed.",
         },
       },
       {
         name: "{{agentName}}",
         content: {
-          text: "I'll clone the repo and spawn Claude to fix the auth bug.",
-          action: "START_CODING_TASK",
+          text: "I'll create a background task agent for that repo and keep track of its progress.",
+          action: "CREATE_TASK",
         },
       },
     ],
@@ -72,14 +76,14 @@ export const startCodingTaskAction: Action = {
       {
         name: "{{user1}}",
         content: {
-          text: "Use a coding agent to research the latest React patterns",
+          text: "Spin up a couple of sub-agents to research current browser automation frameworks, compare them, and draft a recommendation.",
         },
       },
       {
         name: "{{agentName}}",
         content: {
-          text: "I'll spin up an agent to research that for you.",
-          action: "START_CODING_TASK",
+          text: "I'll coordinate parallel task agents for that and keep the results organized.",
+          action: "CREATE_TASK",
         },
       },
     ],
@@ -108,7 +112,7 @@ export const startCodingTaskAction: Action = {
     if (!ptyService) {
       if (callback) {
         await callback({
-          text: "PTY Service is not available. Cannot start coding task.",
+          text: "PTY Service is not available. Cannot create the task.",
         });
       }
       return { success: false, error: "SERVICE_UNAVAILABLE" };
@@ -253,30 +257,31 @@ export const startCodingTaskAction: Action = {
     {
       name: "agentType",
       description:
-        "Type of coding agent to spawn (default for all agents). Options: claude, codex, gemini, aider, pi, shell.",
+        "Specific task-agent framework to use. Options: claude, codex, gemini, aider, pi, shell. " +
+        "If omitted, the orchestrator picks the current preferred framework automatically.",
       required: false,
-      schema: { type: "string" as const, default: "claude" },
+      schema: { type: "string" as const },
     },
     {
       name: "task",
       description:
-        "The task or prompt to send to the agent once it's ready. Used for single-agent mode.",
+        "The open-ended task or prompt to send once the task agent is ready. Used for single-agent mode.",
       required: false,
       schema: { type: "string" as const },
     },
     {
       name: "agents",
       description:
-        "Pipe-delimited list of agent tasks for multi-agent mode. Each segment is a task description. " +
-        "Optionally prefix with agent type: 'claude:Fix auth | gemini:Write tests | codex:Update docs'. " +
-        "Each agent gets its own workspace clone. If provided, the 'task' parameter is ignored.",
+        "Pipe-delimited list of task-agent assignments for multi-agent mode. Each segment is a task description. " +
+        "Optionally prefix with an agent type: 'claude:Fix auth | gemini:Write tests | codex:Update docs'. " +
+        "Each task agent gets its own workspace clone. If provided, the 'task' parameter is ignored.",
       required: false,
       schema: { type: "string" as const },
     },
     {
       name: "memoryContent",
       description:
-        "Instructions/context to write to each agent's memory file (e.g. CLAUDE.md) before spawning.",
+        "Instructions or shared context to write to each task agent's memory file before spawning.",
       required: false,
       schema: { type: "string" as const },
     },
@@ -291,7 +296,7 @@ export const startCodingTaskAction: Action = {
     {
       name: "approvalPreset",
       description:
-        "Permission level for all agents: readonly, standard, permissive, autonomous.",
+        "Permission level for all task agents: readonly, standard, permissive, autonomous.",
       required: false,
       schema: {
         type: "string" as const,
@@ -300,3 +305,5 @@ export const startCodingTaskAction: Action = {
     },
   ],
 };
+
+export const createTaskAction = startCodingTaskAction;

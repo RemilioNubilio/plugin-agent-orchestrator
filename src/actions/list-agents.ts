@@ -1,8 +1,9 @@
 /**
- * LIST_CODING_AGENTS action - List active coding agent sessions
+ * LIST_AGENTS action - List active task-agent sessions and task progress.
  *
- * Returns information about all running PTY sessions,
- * including their status, agent type, and working directory.
+ * Returns information about running PTY sessions together with the current
+ * coordinator task state so the main agent can keep the user updated while
+ * background work continues.
  *
  * @module actions/list-agents
  */
@@ -16,47 +17,65 @@ import type {
   Memory,
   State,
 } from "@elizaos/core";
-import type { PTYService } from "../services/pty-service.js";
+import { getCoordinator, type PTYService } from "../services/pty-service.js";
 import type { SessionInfo } from "../services/pty-types.js";
+import {
+  formatTaskAgentStatus,
+  getTaskAgentFrameworkState,
+  TASK_AGENT_FRAMEWORK_LABELS,
+  truncateTaskAgentText,
+} from "../services/task-agent-frameworks.js";
+
+interface TaskLike {
+  sessionId: string;
+  agentType: string;
+  label: string;
+  originalTask: string;
+  status: string;
+  decisions: Array<{ reasoning?: string }>;
+  completionSummary?: string;
+  registeredAt: number;
+}
+
+function uniqueTasks(tasks: TaskLike[]): TaskLike[] {
+  const seen = new Set<string>();
+  const result: TaskLike[] = [];
+  for (const task of tasks) {
+    if (seen.has(task.sessionId)) continue;
+    seen.add(task.sessionId);
+    result.push(task);
+  }
+  return result;
+}
 
 export const listAgentsAction: Action = {
-  name: "LIST_CODING_AGENTS",
+  name: "LIST_AGENTS",
 
   similes: [
+    "LIST_CODING_AGENTS",
     "SHOW_CODING_AGENTS",
     "GET_ACTIVE_AGENTS",
     "LIST_SESSIONS",
     "SHOW_CODING_SESSIONS",
+    "SHOW_TASK_AGENTS",
+    "LIST_SUB_AGENTS",
+    "SHOW_TASK_STATUS",
   ],
 
   description:
-    "List all active coding agent sessions. " +
-    "Shows session IDs, agent types, status, and working directories.",
+    "List active task agents together with current task progress so the main agent can keep the user updated while work continues asynchronously.",
 
   examples: [
     [
       {
         name: "{{user1}}",
-        content: { text: "What coding agents are running?" },
+        content: { text: "What task agents are running right now and what are they doing?" },
       },
       {
         name: "{{agentName}}",
         content: {
-          text: "Let me check the active coding sessions.",
-          action: "LIST_CODING_AGENTS",
-        },
-      },
-    ],
-    [
-      {
-        name: "{{user1}}",
-        content: { text: "Show me the coding sessions" },
-      },
-      {
-        name: "{{agentName}}",
-        content: {
-          text: "Here are the active coding agents.",
-          action: "LIST_CODING_AGENTS",
+          text: "I'll pull the current task-agent status.",
+          action: "LIST_AGENTS",
         },
       },
     ],
@@ -92,56 +111,104 @@ export const listAgentsAction: Action = {
     }
 
     const sessions = await ptyService.listSessions();
+    const coordinator = getCoordinator(runtime);
+    const tasks = uniqueTasks(
+      ((coordinator?.getAllTaskContexts?.() ?? []) as TaskLike[]).slice(),
+    );
+    const frameworkState = await getTaskAgentFrameworkState(runtime, ptyService);
 
-    if (sessions.length === 0) {
+    if (sessions.length === 0 && tasks.length === 0) {
+      const text =
+        `No active task agents. Recommended default: ${TASK_AGENT_FRAMEWORK_LABELS[frameworkState.preferred.id]} (${frameworkState.preferred.reason}). ` +
+        "Use CREATE_TASK when the user needs substantial background work.";
       if (callback) {
-        await callback({
-          text: "No active coding agents. Use SPAWN_CODING_AGENT to start one.",
-        });
+        await callback({ text });
       }
       return {
         success: true,
-        text: "No active coding agents",
-        data: { sessions: [] },
+        text,
+        data: {
+          sessions: [],
+          tasks: [],
+          preferredTaskAgent: frameworkState.preferred,
+        },
       };
     }
 
-    // Format session info for display
-    const sessionSummaries = sessions.map((session: SessionInfo) => ({
-      id: session.id,
-      agentType: session.agentType,
-      status: session.status,
-      workdir: session.workdir,
-      createdAt: session.createdAt.toISOString(),
-      lastActivity: session.lastActivityAt.toISOString(),
-    }));
+    const lines: string[] = [];
+    if (sessions.length > 0) {
+      lines.push(`Active task agents (${sessions.length}):`);
+      for (const session of sessions) {
+        const label =
+          typeof session.metadata?.label === "string"
+            ? session.metadata.label
+            : session.name;
+        lines.push(
+          `- "${label}" (${session.agentType}, ${formatTaskAgentStatus(session.status)}) [session: ${session.id}]`,
+        );
+      }
+    }
 
-    // Build readable text summary
-    const lines = sessions.map((session: SessionInfo, index: number) => {
-      const statusEmoji =
-        {
-          running: "▶️",
-          idle: "⏸️",
-          blocked: "⚠️",
-          completed: "✅",
-          error: "❌",
-        }[session.status as string] ?? "❓";
+    if (tasks.length > 0) {
+      if (lines.length > 0) lines.push("");
+      lines.push(`Current task status (${tasks.length}):`);
+      for (const task of tasks
+        .slice()
+        .sort((left, right) => right.registeredAt - left.registeredAt)) {
+        const detail =
+          task.completionSummary ||
+          task.decisions.at(-1)?.reasoning ||
+          truncateTaskAgentText(task.originalTask, 110);
+        lines.push(
+          `- [${task.status}] "${task.label}" (${task.agentType}) -> ${detail}`,
+        );
+      }
+    }
 
-      return `${index + 1}. ${statusEmoji} ${session.agentType} (${session.id.slice(0, 8)}...)\n   📁 ${session.workdir}\n   Status: ${session.status}`;
-    });
+    const pending = coordinator?.getPendingConfirmations?.() ?? [];
+    if (pending.length > 0) {
+      lines.push("");
+      lines.push(
+        `Pending confirmations: ${pending.length} (${coordinator?.getSupervisionLevel?.() ?? "unknown"} supervision).`,
+      );
+    }
 
+    const text = lines.join("\n");
     if (callback) {
-      await callback({
-        text: `Active coding agents:\n\n${lines.join("\n\n")}`,
-      });
+      await callback({ text });
     }
 
     return {
       success: true,
-      text: `Found ${sessions.length} active coding agents`,
-      data: { sessions: sessionSummaries },
+      text,
+      data: {
+        sessions: sessions.map((session: SessionInfo) => ({
+          id: session.id,
+          agentType: session.agentType,
+          status: session.status,
+          workdir: session.workdir,
+          createdAt: session.createdAt.toISOString(),
+          lastActivity: session.lastActivityAt.toISOString(),
+          label:
+            typeof session.metadata?.label === "string"
+              ? session.metadata.label
+              : session.name,
+        })),
+        tasks: tasks.map((task) => ({
+          sessionId: task.sessionId,
+          agentType: task.agentType,
+          label: task.label,
+          status: task.status,
+          originalTask: task.originalTask,
+          completionSummary: task.completionSummary,
+        })),
+        pendingConfirmations: pending.length,
+        preferredTaskAgent: frameworkState.preferred,
+      },
     };
   },
 
   parameters: [],
 };
+
+export const listTaskAgentsAction = listAgentsAction;

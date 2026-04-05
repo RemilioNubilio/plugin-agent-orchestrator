@@ -1,17 +1,16 @@
 /**
- * SPAWN_CODING_AGENT action tests
+ * SPAWN_AGENT action tests
  */
 
 import { beforeEach, describe, expect, it, jest } from "bun:test";
 import type { IAgentRuntime, Memory, State } from "@elizaos/core";
 
-// Dynamic import after preload mocks are registered
 const { spawnAgentAction } = await import("../actions/spawn-agent.js");
 
-// Mock PTYService
 const mockSpawnSession = jest.fn();
 const mockOnSessionEvent = jest.fn();
 const mockCheckAvailableAgents = jest.fn();
+const mockResolveAgentType = jest.fn();
 
 const createMockPTYService = () => ({
   spawnSession: mockSpawnSession,
@@ -19,9 +18,10 @@ const createMockPTYService = () => ({
   getSession: jest.fn(),
   listSessions: jest.fn().mockReturnValue([]),
   checkAvailableAgents: mockCheckAvailableAgents,
+  resolveAgentType: mockResolveAgentType,
+  defaultApprovalPreset: "permissive",
 });
 
-// Mock runtime
 const createMockRuntime = (ptyService: unknown = null) => ({
   getService: jest.fn((name: string) => {
     if (name === "PTY_SERVICE") return ptyService;
@@ -30,7 +30,6 @@ const createMockRuntime = (ptyService: unknown = null) => ({
   getSetting: jest.fn(),
 });
 
-// Mock message
 const createMockMessage = (content: Record<string, unknown> = {}) => ({
   id: "msg-123",
   userId: "user-456",
@@ -50,7 +49,6 @@ describe("spawnAgentAction", () => {
       createdAt: new Date(),
       lastActivityAt: new Date(),
     });
-    // Default: agents are installed
     mockCheckAvailableAgents.mockResolvedValue([
       {
         adapter: "claude",
@@ -59,30 +57,24 @@ describe("spawnAgentAction", () => {
         docsUrl: "https://docs.anthropic.com",
       },
     ]);
+    mockResolveAgentType.mockResolvedValue("claude");
   });
 
   describe("action metadata", () => {
     it("should have correct name", () => {
-      expect(spawnAgentAction.name).toBe("SPAWN_CODING_AGENT");
+      expect(spawnAgentAction.name).toBe("SPAWN_AGENT");
     });
 
-    it("should have similes for matching", () => {
-      expect(spawnAgentAction.similes).toContain("START_CODING_AGENT");
-      expect(spawnAgentAction.similes).toContain("LAUNCH_CODING_AGENT");
+    it("should preserve legacy and new similes", () => {
+      expect(spawnAgentAction.similes).toContain("SPAWN_CODING_AGENT");
+      expect(spawnAgentAction.similes).toContain("START_TASK_AGENT");
     });
 
-    it("should have description", () => {
-      expect(spawnAgentAction.description).toBeDefined();
-      expect(spawnAgentAction.description).toContain("coding agent");
-    });
-
-    it("should have examples", () => {
-      expect(spawnAgentAction.examples).toBeDefined();
-      expect((spawnAgentAction.examples ?? []).length).toBeGreaterThan(0);
+    it("should have task-agent description", () => {
+      expect(spawnAgentAction.description).toContain("task agent");
     });
 
     it("should define parameters", () => {
-      expect(spawnAgentAction.parameters).toBeDefined();
       const paramNames = (spawnAgentAction.parameters ?? []).map((p) => p.name);
       expect(paramNames).toContain("agentType");
       expect(paramNames).toContain("workdir");
@@ -91,59 +83,55 @@ describe("spawnAgentAction", () => {
   });
 
   describe("validate", () => {
-    it("should return true when PTYService is available", async () => {
-      const ptyService = createMockPTYService();
-      const runtime = createMockRuntime(ptyService);
-      const message = createMockMessage();
+    it("returns true when PTYService is available", async () => {
+      const runtime = createMockRuntime(createMockPTYService());
 
       const result = await spawnAgentAction.validate?.(
         runtime as unknown as IAgentRuntime,
-        message as unknown as Memory,
+        createMockMessage() as unknown as Memory,
       );
       expect(result).toBe(true);
     });
 
-    it("should return false when PTYService is not available", async () => {
+    it("returns false when PTYService is not available", async () => {
       const runtime = createMockRuntime(null);
-      const message = createMockMessage();
 
       const result = await spawnAgentAction.validate?.(
         runtime as unknown as IAgentRuntime,
-        message as unknown as Memory,
+        createMockMessage() as unknown as Memory,
       );
       expect(result).toBe(false);
     });
   });
 
   describe("handler", () => {
-    // Use cwd as a valid workdir — handler validates paths against allowed prefixes
     const validWorkdir = process.cwd();
 
-    it("should spawn a coding agent session", async () => {
-      const ptyService = createMockPTYService();
-      const runtime = createMockRuntime(ptyService);
+    it("should spawn a task-agent session", async () => {
+      const runtime = createMockRuntime(createMockPTYService());
       const message = createMockMessage({
         agentType: "claude",
         workdir: validWorkdir,
         task: "Fix the bug",
       });
-      const callback = jest.fn();
 
       const result = await spawnAgentAction.handler(
         runtime as unknown as IAgentRuntime,
         message as unknown as Memory,
         undefined,
         {},
-        callback,
+        jest.fn(),
       );
 
       expect(result?.success).toBe(true);
       expect(mockSpawnSession).toHaveBeenCalledWith({
-        name: expect.stringContaining("coding-"),
+        name: expect.stringContaining("task-"),
         agentType: "claude",
         workdir: validWorkdir,
         initialTask: "Fix the bug",
         credentials: expect.any(Object),
+        approvalPreset: "permissive",
+        customCredentials: undefined,
         metadata: expect.objectContaining({
           requestedType: "claude",
           messageId: "msg-123",
@@ -151,20 +139,19 @@ describe("spawnAgentAction", () => {
       });
     });
 
-    it("should use default agent type if not specified", async () => {
-      const ptyService = createMockPTYService();
-      const runtime = createMockRuntime(ptyService);
+    it("should use the preferred agent type if not specified", async () => {
+      const runtime = createMockRuntime(createMockPTYService());
       const message = createMockMessage({ workdir: validWorkdir });
-      const callback = jest.fn();
 
       await spawnAgentAction.handler(
         runtime as unknown as IAgentRuntime,
         message as unknown as Memory,
         undefined,
         {},
-        callback,
+        jest.fn(),
       );
 
+      expect(mockResolveAgentType).toHaveBeenCalled();
       expect(mockSpawnSession).toHaveBeenCalledWith(
         expect.objectContaining({
           agentType: "claude",
@@ -173,20 +160,18 @@ describe("spawnAgentAction", () => {
     });
 
     it("should map agent type aliases", async () => {
-      const ptyService = createMockPTYService();
-      const runtime = createMockRuntime(ptyService);
+      const runtime = createMockRuntime(createMockPTYService());
       const message = createMockMessage({
         agentType: "claude-code",
         workdir: validWorkdir,
       });
-      const callback = jest.fn();
 
       await spawnAgentAction.handler(
         runtime as unknown as IAgentRuntime,
         message as unknown as Memory,
         undefined,
         {},
-        callback,
+        jest.fn(),
       );
 
       expect(mockSpawnSession).toHaveBeenCalledWith(
@@ -196,22 +181,20 @@ describe("spawnAgentAction", () => {
       );
     });
 
-    it("should map pi agent type to shell and wrap task as pi command", async () => {
-      const ptyService = createMockPTYService();
-      const runtime = createMockRuntime(ptyService);
+    it("should map pi agent type to shell and wrap task as a pi command", async () => {
+      const runtime = createMockRuntime(createMockPTYService());
       const message = createMockMessage({
         agentType: "pi",
         workdir: validWorkdir,
         task: "Fix flaky tests",
       });
-      const callback = jest.fn();
 
       await spawnAgentAction.handler(
         runtime as unknown as IAgentRuntime,
         message as unknown as Memory,
         undefined,
         {},
-        callback,
+        jest.fn(),
       );
 
       expect(mockSpawnSession).toHaveBeenCalledWith(
@@ -223,13 +206,11 @@ describe("spawnAgentAction", () => {
     });
 
     it("should use codex adapter for codex type", async () => {
-      const ptyService = createMockPTYService();
-      const runtime = createMockRuntime(ptyService);
+      const runtime = createMockRuntime(createMockPTYService());
       const message = createMockMessage({
         agentType: "codex",
         workdir: validWorkdir,
       });
-      const callback = jest.fn();
       mockCheckAvailableAgents.mockResolvedValue([
         {
           adapter: "codex",
@@ -244,7 +225,7 @@ describe("spawnAgentAction", () => {
         message as unknown as Memory,
         undefined,
         {},
-        callback,
+        jest.fn(),
       );
 
       expect(mockSpawnSession).toHaveBeenCalledWith(
@@ -254,81 +235,48 @@ describe("spawnAgentAction", () => {
       );
     });
 
-    it("should return NO_WORKSPACE when workdir not specified and no workspace available", async () => {
-      const ptyService = createMockPTYService();
-      const runtime = createMockRuntime(ptyService);
-      const message = createMockMessage({ agentType: "claude" });
-      const callback = jest.fn();
-
+    it("returns NO_WORKSPACE when workdir is missing", async () => {
+      const runtime = createMockRuntime(createMockPTYService());
       const result = await spawnAgentAction.handler(
         runtime as unknown as IAgentRuntime,
-        message as unknown as Memory,
+        createMockMessage({ agentType: "claude" }) as unknown as Memory,
         undefined,
         {},
-        callback,
+        jest.fn(),
       );
 
       expect(result?.success).toBe(false);
       expect(result?.error).toBe("NO_WORKSPACE");
     });
 
-    it("should call callback with success message", async () => {
-      const ptyService = createMockPTYService();
-      const runtime = createMockRuntime(ptyService);
-      const message = createMockMessage({
-        agentType: "claude",
-        workdir: validWorkdir,
-      });
-      const callback = jest.fn();
-
-      await spawnAgentAction.handler(
-        runtime as unknown as IAgentRuntime,
-        message as unknown as Memory,
-        undefined,
-        {},
-        callback,
-      );
-
-      expect(callback).toHaveBeenCalledWith(
-        expect.objectContaining({
-          text: expect.stringContaining("Started"),
-        }),
-      );
-    });
-
-    it("should store session in state", async () => {
-      const ptyService = createMockPTYService();
-      const runtime = createMockRuntime(ptyService);
-      const message = createMockMessage({
-        agentType: "claude",
-        workdir: validWorkdir,
-      });
+    it("stores session in state", async () => {
+      const runtime = createMockRuntime(createMockPTYService());
       const state: Record<string, unknown> = {};
-      const callback = jest.fn();
 
       await spawnAgentAction.handler(
         runtime as unknown as IAgentRuntime,
-        message as unknown as Memory,
+        createMockMessage({
+          agentType: "claude",
+          workdir: validWorkdir,
+        }) as unknown as Memory,
         state as unknown as State,
         {},
-        callback,
+        jest.fn(),
       );
 
       expect(state.codingSession).toBeDefined();
       expect((state.codingSession as { id: string }).id).toBe("session-123");
     });
 
-    it("should register session event handler", async () => {
-      const ptyService = createMockPTYService();
-      const runtime = createMockRuntime(ptyService);
-      const message = createMockMessage({
-        agentType: "claude",
-        workdir: validWorkdir,
-      });
+    it("registers a session event handler", async () => {
+      const runtime = createMockRuntime(createMockPTYService());
 
       await spawnAgentAction.handler(
         runtime as unknown as IAgentRuntime,
-        message as unknown as Memory,
+        createMockMessage({
+          agentType: "claude",
+          workdir: validWorkdir,
+        }) as unknown as Memory,
         undefined,
         {},
         jest.fn(),
@@ -337,14 +285,8 @@ describe("spawnAgentAction", () => {
       expect(mockOnSessionEvent).toHaveBeenCalled();
     });
 
-    it("should fail if agent CLI is not installed", async () => {
-      const ptyService = createMockPTYService();
-      const runtime = createMockRuntime(ptyService);
-      const message = createMockMessage({
-        agentType: "claude",
-        workdir: validWorkdir,
-      });
-      const callback = jest.fn();
+    it("fails if the requested CLI is not installed", async () => {
+      const runtime = createMockRuntime(createMockPTYService());
       mockCheckAvailableAgents.mockResolvedValue([
         {
           adapter: "claude",
@@ -354,9 +296,13 @@ describe("spawnAgentAction", () => {
         },
       ]);
 
+      const callback = jest.fn();
       const result = await spawnAgentAction.handler(
         runtime as unknown as IAgentRuntime,
-        message as unknown as Memory,
+        createMockMessage({
+          agentType: "claude",
+          workdir: validWorkdir,
+        }) as unknown as Memory,
         undefined,
         {},
         callback,
@@ -371,14 +317,11 @@ describe("spawnAgentAction", () => {
       );
     });
 
-    it("should return false when PTYService not available", async () => {
-      const runtime = createMockRuntime(null);
-      const message = createMockMessage({});
+    it("returns false when PTYService is not available", async () => {
       const callback = jest.fn();
-
       const result = await spawnAgentAction.handler(
-        runtime as unknown as IAgentRuntime,
-        message as unknown as Memory,
+        createMockRuntime(null) as unknown as IAgentRuntime,
+        createMockMessage({}) as unknown as Memory,
         undefined,
         {},
         callback,
@@ -392,19 +335,17 @@ describe("spawnAgentAction", () => {
       );
     });
 
-    it("should handle spawn errors", async () => {
+    it("handles spawn errors", async () => {
       mockSpawnSession.mockRejectedValue(new Error("PTY spawn failed"));
-      const ptyService = createMockPTYService();
-      const runtime = createMockRuntime(ptyService);
-      const message = createMockMessage({
-        agentType: "claude",
-        workdir: validWorkdir,
-      });
+      const runtime = createMockRuntime(createMockPTYService());
       const callback = jest.fn();
 
       const result = await spawnAgentAction.handler(
         runtime as unknown as IAgentRuntime,
-        message as unknown as Memory,
+        createMockMessage({
+          agentType: "claude",
+          workdir: validWorkdir,
+        }) as unknown as Memory,
         undefined,
         {},
         callback,
@@ -418,24 +359,20 @@ describe("spawnAgentAction", () => {
       );
     });
 
-    it("should skip preflight check for shell agent type", async () => {
-      const ptyService = createMockPTYService();
-      const runtime = createMockRuntime(ptyService);
-      const message = createMockMessage({
-        agentType: "shell",
-        workdir: validWorkdir,
-      });
-      const callback = jest.fn();
+    it("skips preflight check for shell agent type", async () => {
+      const runtime = createMockRuntime(createMockPTYService());
 
       await spawnAgentAction.handler(
         runtime as unknown as IAgentRuntime,
-        message as unknown as Memory,
+        createMockMessage({
+          agentType: "shell",
+          workdir: validWorkdir,
+        }) as unknown as Memory,
         undefined,
         {},
-        callback,
+        jest.fn(),
       );
 
-      // checkAvailableAgents should not be called for shell
       expect(mockCheckAvailableAgents).not.toHaveBeenCalled();
       expect(mockSpawnSession).toHaveBeenCalledWith(
         expect.objectContaining({

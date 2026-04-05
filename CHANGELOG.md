@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.5.0
+
+### Added
+
+- **Task-agent framework discovery**: Provider and API surfaces now report the currently available task-agent frameworks, their auth readiness, and the preferred default across Claude Code, Codex, Gemini CLI, Aider, and Pi.
+- **Subscription-aware framework preference**: Milady config can now bias framework selection toward the user's Anthropic or OpenAI-backed subscription login so Claude Code and Codex use the user's existing paid access when available.
+- **Current task status in action/API responses**: `LIST_AGENTS`, `/api/coding-agents/settings`, and `/api/coding-agents/coordinator/status` now expose preferred framework information and richer current-task status details.
+- **Opt-in live CLI smoke tests**: Added live e2e coverage for real Claude Code and Codex runs, plus a dedicated `bun run test:live` script.
+
+### Changed
+
+- **Canonical task-agent naming**: The plugin now treats task agents as the primary abstraction rather than coding agents. Canonical action names are `CREATE_TASK`, `SPAWN_AGENT`, `SEND_TO_AGENT`, `LIST_AGENTS`, and `STOP_AGENT`, with older coding-agent names preserved as aliases.
+- **Provider guidance broadened beyond coding**: Action examples and active workspace context now direct the main agent to orchestrate any substantial open-ended work through sub-agents, not only repository changes.
+- **Package docs and exports**: Default export is now `taskAgentPlugin`, with `codingAgentPlugin` kept as a compatibility alias.
+
+### Fixed
+
+- **Live test preload isolation**: Shared Bun test mocks are now disabled during live runs so the real PTY manager and adapter stack are exercised instead of mocked implementations.
+
 ## 0.4.3
 
 ### Added

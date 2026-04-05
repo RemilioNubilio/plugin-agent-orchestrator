@@ -207,6 +207,9 @@ describe("coordinator routes", () => {
       expect(json.taskCount).toBe(1);
       expect(json.tasks[0].sessionId).toBe("s-1");
       expect(json.tasks[0].decisionCount).toBe(1);
+      expect(json.recentTasks[0].sessionId).toBe("s-1");
+      expect(json.preferredAgentType).toEqual(expect.any(String));
+      expect(Array.isArray(json.frameworks)).toBe(true);
     });
   });
 

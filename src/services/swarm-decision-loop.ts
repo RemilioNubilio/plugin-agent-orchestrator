@@ -341,8 +341,8 @@ export function checkAllTasksComplete(ctx: SwarmCoordinatorContext): void {
   const swarmCompleteCb = ctx.getSwarmCompleteCallback();
   const sendFallbackSummary = () => {
     ctx.sendChatMessage(
-      `All ${tasks.length} coding agents finished (${parts.join(", ")}). Review their work when you're ready.`,
-      "coding-agent",
+      `All ${tasks.length} task agents finished (${parts.join(", ")}). Review their work when you're ready.`,
+      "task-agent",
     );
   };
 

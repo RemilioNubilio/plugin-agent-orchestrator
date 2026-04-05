@@ -1,5 +1,5 @@
 /**
- * SEND_TO_CODING_AGENT action - Send input to a running coding agent
+ * SEND_TO_AGENT action - Send input to a running task agent.
  *
  * Allows sending text or commands to an active PTY session.
  * Useful for responding to prompts, providing feedback, or giving new instructions.
@@ -19,30 +19,33 @@ import type {
 import type { PTYService } from "../services/pty-service.js";
 
 export const sendToAgentAction: Action = {
-  name: "SEND_TO_CODING_AGENT",
+  name: "SEND_TO_AGENT",
 
   similes: [
+    "SEND_TO_CODING_AGENT",
     "MESSAGE_CODING_AGENT",
     "INPUT_TO_AGENT",
     "RESPOND_TO_AGENT",
     "TELL_CODING_AGENT",
+    "MESSAGE_AGENT",
+    "TELL_TASK_AGENT",
   ],
 
   description:
-    "Send text input to a running coding agent session. " +
+    "Send text input or key presses to a running task-agent session. " +
     "Use this to respond to agent prompts, provide feedback, or give new instructions.",
 
   examples: [
     [
       {
         name: "{{user1}}",
-        content: { text: "Tell the coding agent to accept the changes" },
+        content: { text: "Tell the running sub-agent to accept the changes" },
       },
       {
         name: "{{agentName}}",
         content: {
-          text: "I'll send the approval to the coding agent.",
-          action: "SEND_TO_CODING_AGENT",
+          text: "I'll send the approval to the task agent.",
+          action: "SEND_TO_AGENT",
         },
       },
     ],
@@ -55,7 +58,7 @@ export const sendToAgentAction: Action = {
         name: "{{agentName}}",
         content: {
           text: "Sending confirmation to the agent.",
-          action: "SEND_TO_CODING_AGENT",
+          action: "SEND_TO_AGENT",
         },
       },
     ],
@@ -91,7 +94,7 @@ export const sendToAgentAction: Action = {
     runtime: IAgentRuntime,
     message: Memory,
     state?: State,
-    _options?: HandlerOptions,
+    options?: HandlerOptions,
     callback?: HandlerCallback,
   ): Promise<ActionResult | undefined> => {
     const ptyService = runtime.getService("PTY_SERVICE") as unknown as
@@ -106,6 +109,7 @@ export const sendToAgentAction: Action = {
       return { success: false, error: "SERVICE_UNAVAILABLE" };
     }
 
+    const params = options?.parameters as Record<string, unknown> | undefined;
     const content = message.content as {
       sessionId?: string;
       input?: string;
@@ -113,7 +117,7 @@ export const sendToAgentAction: Action = {
     };
 
     // Get session ID from content or state
-    let sessionId = content.sessionId;
+    let sessionId = (params?.sessionId as string) ?? content.sessionId;
     if (!sessionId && state?.codingSession) {
       sessionId = (state.codingSession as { id: string }).id;
     }
@@ -124,7 +128,7 @@ export const sendToAgentAction: Action = {
       if (sessions.length === 0) {
         if (callback) {
           await callback({
-            text: "No active coding sessions. Spawn an agent first.",
+            text: "No active task-agent sessions. Spawn an agent first.",
           });
         }
         return { success: false, error: "NO_SESSION" };
@@ -143,31 +147,34 @@ export const sendToAgentAction: Action = {
     }
 
     try {
-      if (content.keys) {
+      const keys = (params?.keys as string) ?? content.keys;
+      const input = (params?.input as string) ?? content.input;
+
+      if (keys) {
         // Send special key sequence
-        await ptyService.sendKeysToSession(sessionId, content.keys);
+        await ptyService.sendKeysToSession(sessionId, keys);
         if (callback) {
           await callback({
-            text: `Sent key sequence to coding agent.`,
+            text: "Sent key sequence to task agent.",
           });
         }
         return {
           success: true,
           text: "Sent key sequence",
-          data: { sessionId, keys: content.keys },
+          data: { sessionId, keys },
         };
-      } else if (content.input) {
+      } else if (input) {
         // Send text input
-        await ptyService.sendToSession(sessionId, content.input);
+        await ptyService.sendToSession(sessionId, input);
         if (callback) {
           await callback({
-            text: `Sent to coding agent: "${content.input}"`,
+            text: `Sent to task agent: "${input}"`,
           });
         }
         return {
           success: true,
           text: "Sent input to agent",
-          data: { sessionId, input: content.input },
+          data: { sessionId, input },
         };
       } else {
         if (callback) {
@@ -193,13 +200,13 @@ export const sendToAgentAction: Action = {
     {
       name: "sessionId",
       description:
-        "ID of the coding session to send to. If not specified, uses the current session.",
+        "ID of the task-agent session to send to. If not specified, uses the current session.",
       required: false,
       schema: { type: "string" as const },
     },
     {
       name: "input",
-      description: "Text input to send to the agent.",
+      description: "Text input to send to the running task agent.",
       required: false,
       schema: { type: "string" as const },
     },
@@ -212,3 +219,5 @@ export const sendToAgentAction: Action = {
     },
   ],
 };
+
+export const sendToTaskAgentAction = sendToAgentAction;

@@ -12,6 +12,7 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { SwarmCoordinator } from "../services/swarm-coordinator.js";
+import { getTaskAgentFrameworkState } from "../services/task-agent-frameworks.js";
 import type { RouteContext } from "./routes.js";
 import { parseBody, sendError, sendJson } from "./routes.js";
 
@@ -91,6 +92,14 @@ export async function handleCoordinatorRoutes(
     const tasks = allTasks.filter(
       (t) => t.status !== "stopped" && t.status !== "completed" && t.status !== "error",
     );
+    const recentTasks = allTasks
+      .slice()
+      .sort((left, right) => right.registeredAt - left.registeredAt)
+      .slice(0, 10);
+    const frameworkState = await getTaskAgentFrameworkState(
+      ctx.runtime,
+      ctx.ptyService ?? undefined,
+    );
     sendJson(res, {
       supervisionLevel: coordinator.getSupervisionLevel(),
       taskCount: tasks.length,
@@ -103,8 +112,23 @@ export async function handleCoordinatorRoutes(
         status: t.status,
         decisionCount: t.decisions.length,
         autoResolvedCount: t.autoResolvedCount,
+        completionSummary: t.completionSummary,
+        lastActivityAt: t.lastActivityAt,
+      })),
+      recentTasks: recentTasks.map((t) => ({
+        sessionId: t.sessionId,
+        agentType: t.agentType,
+        label: t.label,
+        status: t.status,
+        originalTask: t.originalTask,
+        completionSummary: t.completionSummary,
+        registeredAt: t.registeredAt,
+        lastActivityAt: t.lastActivityAt,
       })),
       pendingConfirmations: coordinator.getPendingConfirmations().length,
+      preferredAgentType: frameworkState.preferred.id,
+      preferredAgentReason: frameworkState.preferred.reason,
+      frameworks: frameworkState.frameworks,
     } as unknown as JsonValue);
     return true;
   }

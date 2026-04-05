@@ -1,5 +1,5 @@
 /**
- * STOP_CODING_AGENT action - Stop a running coding agent session
+ * STOP_AGENT action - Stop a running task-agent session.
  *
  * Terminates an active PTY session. Use when the agent is done,
  * stuck, or needs to be cancelled.
@@ -20,30 +20,33 @@ import {
 import type { PTYService } from "../services/pty-service.js";
 
 export const stopAgentAction: Action = {
-  name: "STOP_CODING_AGENT",
+  name: "STOP_AGENT",
 
   similes: [
+    "STOP_CODING_AGENT",
     "KILL_CODING_AGENT",
     "TERMINATE_AGENT",
     "END_CODING_SESSION",
     "CANCEL_AGENT",
+    "CANCEL_TASK_AGENT",
+    "STOP_SUB_AGENT",
   ],
 
   description:
-    "Stop a running coding agent session. " +
+    "Stop a running task-agent session. " +
     "Terminates the PTY session and cleans up resources.",
 
   examples: [
     [
       {
         name: "{{user1}}",
-        content: { text: "Stop the coding agent" },
+        content: { text: "Stop the task agent" },
       },
       {
         name: "{{agentName}}",
         content: {
-          text: "I'll stop the coding session.",
-          action: "STOP_CODING_AGENT",
+          text: "I'll stop the task-agent session.",
+          action: "STOP_AGENT",
         },
       },
     ],
@@ -55,8 +58,8 @@ export const stopAgentAction: Action = {
       {
         name: "{{agentName}}",
         content: {
-          text: "Terminating the coding agent.",
-          action: "STOP_CODING_AGENT",
+          text: "Terminating the task agent.",
+          action: "STOP_AGENT",
         },
       },
     ],
@@ -89,7 +92,7 @@ export const stopAgentAction: Action = {
     runtime: IAgentRuntime,
     message: Memory,
     state?: State,
-    _options?: HandlerOptions,
+    options?: HandlerOptions,
     callback?: HandlerCallback,
   ): Promise<ActionResult | undefined> => {
     const ptyService = runtime.getService("PTY_SERVICE") as unknown as
@@ -104,18 +107,19 @@ export const stopAgentAction: Action = {
       return { success: false, error: "SERVICE_UNAVAILABLE" };
     }
 
+    const params = options?.parameters as Record<string, unknown> | undefined;
     const content = message.content as {
       sessionId?: string;
       all?: boolean;
     };
 
     // Stop all sessions if requested
-    if (content.all) {
+    if ((params?.all as boolean) ?? content.all) {
       const sessions = await ptyService.listSessions();
       if (sessions.length === 0) {
         if (callback) {
           await callback({
-            text: "No active coding sessions to stop.",
+            text: "No active task-agent sessions to stop.",
           });
         }
         return { success: true, text: "No sessions to stop" };
@@ -136,7 +140,7 @@ export const stopAgentAction: Action = {
 
       if (callback) {
         await callback({
-          text: `Stopped ${sessions.length} coding session(s).`,
+          text: `Stopped ${sessions.length} task-agent session(s).`,
         });
       }
       return {
@@ -147,7 +151,7 @@ export const stopAgentAction: Action = {
     }
 
     // Stop specific session
-    let sessionId = content.sessionId;
+    let sessionId = (params?.sessionId as string) ?? content.sessionId;
     if (!sessionId && state?.codingSession) {
       sessionId = (state.codingSession as { id: string }).id;
     }
@@ -157,7 +161,7 @@ export const stopAgentAction: Action = {
       if (sessions.length === 0) {
         if (callback) {
           await callback({
-            text: "No active coding sessions to stop.",
+            text: "No active task-agent sessions to stop.",
           });
         }
         return { success: true, text: "No sessions to stop" };
@@ -188,7 +192,7 @@ export const stopAgentAction: Action = {
 
       if (callback) {
         await callback({
-          text: `Stopped coding agent session ${sessionId}.`,
+          text: `Stopped task-agent session ${sessionId}.`,
         });
       }
       return {
@@ -218,9 +222,11 @@ export const stopAgentAction: Action = {
     },
     {
       name: "all",
-      description: "If true, stop all active coding sessions.",
+      description: "If true, stop all active task-agent sessions.",
       required: false,
       schema: { type: "boolean" as const },
     },
   ],
 };
+
+export const stopTaskAgentAction = stopAgentAction;

@@ -354,8 +354,8 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 					: "It will be automatically cleaned up after the configured retention period.";
 				await chatCb(
 					`Task "${record.label}" finished. Code is at \`${record.path}\`.\n` +
-					`${ttlNote} To keep it, say "keep the workspace" or manage it in Settings → Coding Agents.`,
-					"coding-agent",
+					`${ttlNote} To keep it, say "keep the workspace" or manage it in Settings -> Task Agents.`,
+					"task-agent",
 				);
 			});
 			this.scratchDecisionWired = true;

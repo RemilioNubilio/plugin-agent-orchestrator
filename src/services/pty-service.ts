@@ -27,10 +27,7 @@ import type {
   WorkerSessionHandle,
 } from "pty-manager";
 import { AgentMetricsTracker } from "./agent-metrics.js";
-import {
-  type AgentSelectionStrategy,
-  selectAgentType,
-} from "./agent-selection.js";
+import { type AgentSelectionStrategy } from "./agent-selection.js";
 import {
   handleGeminiAuth as handleGeminiAuthFlow,
   pushDefaultRules as pushDefaultAutoResponseRules,
@@ -69,6 +66,10 @@ import {
   captureSessionOpen,
   isDebugCaptureEnabled,
 } from "./debug-capture.js";
+import {
+  getTaskAgentFrameworkState,
+  type TaskAgentFrameworkState,
+} from "./task-agent-frameworks.js";
 
 export type {
   CodingAgentType,
@@ -95,7 +96,8 @@ export function getCoordinator(
 
 export class PTYService {
   static serviceType = "PTY_SERVICE";
-  capabilityDescription = "Manages PTY sessions for CLI coding agents";
+  capabilityDescription =
+    "Manages asynchronous PTY task-agent sessions for open-ended background work";
 
   private runtime: IAgentRuntime;
   private manager: PTYManager | BunCompatiblePTYManager | null = null;
@@ -453,6 +455,15 @@ export class PTYService {
         this.sendToSession(id, input),
       sendKeysToSession: (id: string, keys: string | string[]) =>
         this.sendKeysToSession(id, keys),
+      writeRawToSession: async (id: string, data: string) => {
+        if (!this.manager) return;
+        if (this.usingBunWorker) {
+          await (this.manager as BunCompatiblePTYManager).writeRaw(id, data);
+          return;
+        }
+        const ptySession = (this.manager as PTYManager).getSession(id);
+        ptySession?.writeRaw(data);
+      },
       pushDefaultRules: (id: string, type: string) =>
         this.pushDefaultRules(id, type),
       toSessionInfo: (s: SessionHandle | WorkerSessionHandle, w?: string) =>
@@ -614,22 +625,12 @@ export class PTYService {
    *   metrics, and returns the highest scorer
    */
   async resolveAgentType(): Promise<string> {
-    const strategy = this.agentSelectionStrategy;
-    const fixedAgentType = this.defaultAgentType;
+    const frameworkState = await this.getFrameworkState();
+    return frameworkState.preferred.id;
+  }
 
-    if (strategy === "fixed") {
-      return fixedAgentType;
-    }
-
-    // Ranked mode — need installed agents list
-    const preflight = await this.checkAvailableAgents();
-    const metrics = this.metricsTracker.getAll();
-
-    return selectAgentType({
-      config: { strategy, fixedAgentType },
-      metrics,
-      installedAgents: preflight,
-    });
+  async getFrameworkState(): Promise<TaskAgentFrameworkState> {
+    return getTaskAgentFrameworkState(this.runtime, this);
   }
 
   getSession(sessionId: string): SessionInfo | undefined {

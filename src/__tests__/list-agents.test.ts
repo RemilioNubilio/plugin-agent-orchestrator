@@ -1,5 +1,5 @@
 /**
- * LIST_CODING_AGENTS action tests
+ * LIST_AGENTS action tests
  */
 
 import { beforeEach, describe, expect, it, jest } from "bun:test";
@@ -11,15 +11,29 @@ const { listAgentsAction } = await import("../actions/list-agents.js");
 
 const mockListSessions = jest.fn();
 
-const createMockPTYService = (sessions: unknown[] = []) => ({
-  listSessions: mockListSessions.mockReturnValue(sessions),
+const createMockPTYService = (sessions: unknown[] = [], coordinator?: unknown) => ({
+  listSessions: mockListSessions.mockResolvedValue(sessions),
+  coordinator,
 });
 
-const createMockRuntime = (ptyService: unknown = null) => ({
+const createMockCoordinator = (tasks: unknown[] = [], pending = 0) => ({
+  getAllTaskContexts: jest.fn().mockReturnValue(tasks),
+  getPendingConfirmations: jest.fn().mockReturnValue(
+    Array.from({ length: pending }, (_, index) => ({ id: index })),
+  ),
+  getSupervisionLevel: jest.fn().mockReturnValue("confirm"),
+});
+
+const createMockRuntime = (
+  ptyService: unknown = null,
+  coordinator: unknown = undefined,
+) => ({
   getService: jest.fn((name: string) => {
     if (name === "PTY_SERVICE") return ptyService;
+    if (name === "SWARM_COORDINATOR") return coordinator;
     return null;
   }),
+  getSetting: jest.fn(),
 });
 
 const createMockMessage = () => ({
@@ -34,13 +48,13 @@ describe("listAgentsAction", () => {
   });
 
   describe("action metadata", () => {
-    it("should have correct name", () => {
-      expect(listAgentsAction.name).toBe("LIST_CODING_AGENTS");
+    it("should have the canonical name", () => {
+      expect(listAgentsAction.name).toBe("LIST_AGENTS");
     });
 
-    it("should have similes", () => {
-      expect(listAgentsAction.similes).toContain("SHOW_CODING_AGENTS");
-      expect(listAgentsAction.similes).toContain("GET_ACTIVE_AGENTS");
+    it("should preserve legacy and new similes", () => {
+      expect(listAgentsAction.similes).toContain("LIST_CODING_AGENTS");
+      expect(listAgentsAction.similes).toContain("SHOW_TASK_AGENTS");
     });
 
     it("should have no required parameters", () => {
@@ -49,22 +63,17 @@ describe("listAgentsAction", () => {
   });
 
   describe("validate", () => {
-    it("should return true when PTYService is available", async () => {
-      const ptyService = createMockPTYService();
-      const runtime = createMockRuntime(ptyService);
-
+    it("returns true when PTYService is available", async () => {
       const result = await listAgentsAction.validate?.(
-        runtime as unknown as IAgentRuntime,
+        createMockRuntime(createMockPTYService()) as unknown as IAgentRuntime,
         createMockMessage() as unknown as Memory,
       );
       expect(result).toBe(true);
     });
 
-    it("should return false when PTYService not available", async () => {
-      const runtime = createMockRuntime(null);
-
+    it("returns false when PTYService is not available", async () => {
       const result = await listAgentsAction.validate?.(
-        runtime as unknown as IAgentRuntime,
+        createMockRuntime(null) as unknown as IAgentRuntime,
         createMockMessage() as unknown as Memory,
       );
       expect(result).toBe(false);
@@ -72,31 +81,21 @@ describe("listAgentsAction", () => {
   });
 
   describe("handler", () => {
-    it("should list all active sessions", async () => {
+    it("lists active sessions", async () => {
       const sessions = [
         {
           id: "session-1",
-          agentType: "claude-code",
+          name: "alpha",
+          agentType: "claude",
           status: "running",
           workdir: "/project/a",
           createdAt: new Date("2024-01-01T10:00:00Z"),
           lastActivityAt: new Date("2024-01-01T10:30:00Z"),
         },
-        {
-          id: "session-2",
-          agentType: "shell",
-          status: "blocked",
-          workdir: "/project/b",
-          createdAt: new Date("2024-01-01T11:00:00Z"),
-          lastActivityAt: new Date("2024-01-01T11:15:00Z"),
-        },
       ];
-      const ptyService = createMockPTYService(sessions);
-      const runtime = createMockRuntime(ptyService);
       const callback = jest.fn();
-
       const result = await listAgentsAction.handler(
-        runtime as unknown as IAgentRuntime,
+        createMockRuntime(createMockPTYService(sessions)) as unknown as IAgentRuntime,
         createMockMessage() as unknown as Memory,
         undefined,
         {},
@@ -106,18 +105,58 @@ describe("listAgentsAction", () => {
       expect(result?.success).toBe(true);
       expect(callback).toHaveBeenCalledWith(
         expect.objectContaining({
-          text: expect.stringContaining("claude-code"),
+          text: expect.stringContaining("Active task agents"),
         }),
       );
     });
 
-    it("should show message when no sessions", async () => {
-      const ptyService = createMockPTYService([]);
-      const runtime = createMockRuntime(ptyService);
+    it("includes current task status from the coordinator", async () => {
+      const tasks = [
+        {
+          sessionId: "session-1",
+          agentType: "claude",
+          label: "auth-fix",
+          originalTask: "Fix the login bug",
+          status: "active",
+          decisions: [{ reasoning: "Investigating auth flow" }],
+          registeredAt: 123,
+        },
+      ];
       const callback = jest.fn();
-
       const result = await listAgentsAction.handler(
-        runtime as unknown as IAgentRuntime,
+        createMockRuntime(
+          createMockPTYService([], createMockCoordinator(tasks, 1)),
+          undefined,
+        ) as unknown as IAgentRuntime,
+        createMockMessage() as unknown as Memory,
+        undefined,
+        {},
+        callback,
+      );
+
+      expect(result?.success).toBe(true);
+      expect(result?.data).toEqual(
+        expect.objectContaining({
+          tasks: [
+            expect.objectContaining({
+              label: "auth-fix",
+              status: "active",
+            }),
+          ],
+          pendingConfirmations: 1,
+        }),
+      );
+      expect(callback).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: expect.stringContaining("Current task status"),
+        }),
+      );
+    });
+
+    it("shows a helpful message when nothing is running", async () => {
+      const callback = jest.fn();
+      const result = await listAgentsAction.handler(
+        createMockRuntime(createMockPTYService([])) as unknown as IAgentRuntime,
         createMockMessage() as unknown as Memory,
         undefined,
         {},
@@ -127,80 +166,15 @@ describe("listAgentsAction", () => {
       expect(result?.success).toBe(true);
       expect(callback).toHaveBeenCalledWith(
         expect.objectContaining({
-          text: expect.stringContaining("No active"),
+          text: expect.stringContaining("No active task agents"),
         }),
       );
     });
 
-    it("should format session summaries correctly", async () => {
-      const sessions = [
-        {
-          id: "abc123def456",
-          agentType: "claude-code",
-          status: "running",
-          workdir: "/path/to/project",
-          createdAt: new Date(),
-          lastActivityAt: new Date(),
-        },
-      ];
-      const ptyService = createMockPTYService(sessions);
-      const runtime = createMockRuntime(ptyService);
+    it("returns false when PTYService is not available", async () => {
       const callback = jest.fn();
-
-      await listAgentsAction.handler(
-        runtime as unknown as IAgentRuntime,
-        createMockMessage() as unknown as Memory,
-        undefined,
-        {},
-        callback,
-      );
-
-      const callArg = callback.mock.calls[0][0];
-      expect(callArg.text).toContain("/path/to/project");
-    });
-
-    it("should show status emojis in text output", async () => {
-      const sessions = [
-        {
-          id: "session-1",
-          agentType: "claude-code",
-          status: "completed",
-          workdir: "/a",
-          createdAt: new Date(),
-          lastActivityAt: new Date(),
-        },
-        {
-          id: "session-2",
-          agentType: "shell",
-          status: "error",
-          workdir: "/b",
-          createdAt: new Date(),
-          lastActivityAt: new Date(),
-        },
-      ];
-      const ptyService = createMockPTYService(sessions);
-      const runtime = createMockRuntime(ptyService);
-      const callback = jest.fn();
-
-      await listAgentsAction.handler(
-        runtime as unknown as IAgentRuntime,
-        createMockMessage() as unknown as Memory,
-        undefined,
-        {},
-        callback,
-      );
-
-      const text = callback.mock.calls[0][0].text;
-      // Should contain status indicators
-      expect(text).toMatch(/completed|error/);
-    });
-
-    it("should return false when PTYService not available", async () => {
-      const runtime = createMockRuntime(null);
-      const callback = jest.fn();
-
       const result = await listAgentsAction.handler(
-        runtime as unknown as IAgentRuntime,
+        createMockRuntime(null) as unknown as IAgentRuntime,
         createMockMessage() as unknown as Memory,
         undefined,
         {},

@@ -1,11 +1,14 @@
 /**
- * Tests for conditional coding agent examples injection.
+ * Tests for conditional task-agent examples injection.
  */
 
-import { describe, expect, it } from "bun:test";
+import { beforeEach, describe, expect, it, jest } from "bun:test";
 import { codingAgentExamplesProvider } from "./action-examples";
 
-const mockRuntime = {} as never;
+const mockRuntime = {
+  getService: jest.fn(),
+  getSetting: jest.fn(),
+} as never;
 const mockState = {} as never;
 
 function mockMessage(text: string) {
@@ -13,62 +16,67 @@ function mockMessage(text: string) {
 }
 
 describe("codingAgentExamplesProvider", () => {
-  it("returns brief summary for non-coding messages", async () => {
+  beforeEach(() => {
+    mockRuntime.getService.mockReturnValue(undefined);
+    mockRuntime.getSetting.mockReturnValue(undefined);
+  });
+
+  it("returns a compact summary for non-task messages", async () => {
     const result = await codingAgentExamplesProvider.get(
       mockRuntime,
       mockMessage("What is the difference between a stack and a queue?"),
       mockState,
     );
-    expect(result.text).toContain("START_CODING_TASK");
-    expect(result.text).not.toContain("# Coding Agent Action Call Examples");
-    expect(result.text!.length).toBeLessThan(500);
+    expect(result.text).toContain("CREATE_TASK");
+    expect(result.text).toContain("# Task Agent Action Call Examples");
+    expect(result.text).not.toContain("Examples:");
   });
 
-  it("returns full examples for coding-related messages", async () => {
+  it("returns full examples for task-agent requests", async () => {
     const result = await codingAgentExamplesProvider.get(
       mockRuntime,
-      mockMessage("Can you clone this repo and fix the login bug?"),
+      mockMessage("Can you clone this repo, fix the login bug, and keep me updated?"),
       mockState,
     );
-    expect(result.text).toContain("# Coding Agent Action Call Examples");
-    expect(result.text).toContain("Single Agent Examples");
-    expect(result.text).toContain("Multi-Agent Example");
+    expect(result.text).toContain("# Task Agent Action Call Examples");
+    expect(result.text).toContain("Examples:");
+    expect(result.text).toContain("<action>CREATE_TASK</action>");
   });
 
-  it("detects coding keywords like 'agent'", async () => {
+  it("detects task-agent keywords like 'agent'", async () => {
     const result = await codingAgentExamplesProvider.get(
       mockRuntime,
       mockMessage("Tell the agent to accept those changes"),
       mockState,
     );
-    expect(result.text).toContain("# Coding Agent Action Call Examples");
+    expect(result.text).toContain("Examples:");
   });
 
-  it("detects 'github' keyword", async () => {
+  it("detects repo-oriented requests", async () => {
     const result = await codingAgentExamplesProvider.get(
       mockRuntime,
-      mockMessage("Set up https://github.com/acme/app"),
+      mockMessage("Set up https://github.com/acme/app and investigate the test failures"),
       mockState,
     );
-    expect(result.text).toContain("# Coding Agent Action Call Examples");
+    expect(result.text).toContain("Examples:");
   });
 
-  it("returns brief for casual conversation", async () => {
+  it("returns the compact variant for casual conversation", async () => {
     const result = await codingAgentExamplesProvider.get(
       mockRuntime,
       mockMessage("How are you doing today?"),
       mockState,
     );
-    expect(result.text).not.toContain("# Coding Agent Action Call Examples");
+    expect(result.text).not.toContain("<action>CREATE_TASK</action>");
   });
 
-  it("handles string content type (not just object)", async () => {
+  it("handles string content type", async () => {
     const result = await codingAgentExamplesProvider.get(
       mockRuntime,
       { content: "Clone the repo and deploy it" } as never,
       mockState,
     );
-    expect(result.text).toContain("# Coding Agent Action Call Examples");
+    expect(result.text).toContain("# Task Agent Action Call Examples");
   });
 
   it("avoids false positives on generic words embedded in other words", async () => {
@@ -77,6 +85,6 @@ describe("codingAgentExamplesProvider", () => {
       mockMessage("The reagent is building up in the container"),
       mockState,
     );
-    expect(result.text).not.toContain("# Coding Agent Action Call Examples");
+    expect(result.text).not.toContain("Examples:");
   });
 });

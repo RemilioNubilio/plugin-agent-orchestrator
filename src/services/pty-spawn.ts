@@ -34,6 +34,7 @@ const ENV_ALLOWLIST = [
   "LC_ALL",
   "LC_CTYPE",
   "TERM",
+  "COLORTERM",
   "TZ",
   "TMPDIR",
   "XDG_RUNTIME_DIR",
@@ -51,6 +52,12 @@ export function buildSanitizedBaseEnv(): Record<string, string> {
   for (const key of ENV_ALLOWLIST) {
     const val = process.env[key];
     if (val) env[key] = val;
+  }
+  if (!env.TERM || env.TERM.toLowerCase() === "dumb") {
+    env.TERM = "xterm-256color";
+  }
+  if (!env.COLORTERM) {
+    env.COLORTERM = "truecolor";
   }
   return env;
 }
@@ -70,6 +77,7 @@ export interface SpawnContext {
     sessionId: string,
     keys: string | string[],
   ) => Promise<void>;
+  writeRawToSession: (sessionId: string, data: string) => Promise<void>;
   pushDefaultRules: (sessionId: string, agentType: string) => Promise<void>;
   toSessionInfo: (
     session: SessionHandle | WorkerSessionHandle,
@@ -78,6 +86,27 @@ export interface SpawnContext {
   log: (msg: string) => void;
   /** Mark a session's task as delivered in the coordinator. */
   markTaskDelivered: (sessionId: string) => void;
+}
+
+const CURSOR_POSITION_QUERY = "\x1b[6n";
+const CURSOR_POSITION_RESPONSE = "\x1b[1;1R";
+
+async function maybeRespondToTerminalQueries(
+  ctx: SpawnContext,
+  sessionId: string,
+  data: string,
+): Promise<void> {
+  if (!data.includes(CURSOR_POSITION_QUERY)) {
+    return;
+  }
+  try {
+    await ctx.writeRawToSession(sessionId, CURSOR_POSITION_RESPONSE);
+    ctx.log(`Session ${sessionId} — answered terminal cursor-position query`);
+  } catch (error) {
+    ctx.log(
+      `Session ${sessionId} — failed to answer terminal cursor-position query: ${error}`,
+    );
+  }
 }
 
 /**
@@ -89,6 +118,7 @@ export function setupOutputBuffer(ctx: SpawnContext, sessionId: string): void {
   const unsubscribe = (ctx.manager as BunCompatiblePTYManager).onSessionData(
     sessionId,
     (data: string) => {
+      void maybeRespondToTerminalQueries(ctx, sessionId, data);
       const lines = data.split("\n");
       buffer.push(...lines);
       while (buffer.length > (ctx.serviceConfig.maxLogLines ?? 1000)) {
