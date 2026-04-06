@@ -54,16 +54,15 @@ function buildBaselineAcceptanceCriteria(
 ): string[] {
   const criteria: string[] = [];
   const subtasks = plannedSubtasks(input);
-  const repo =
-    typeof input.metadata?.repo === "string" && input.metadata.repo.trim().length > 0
-      ? input.metadata.repo.trim()
-      : null;
+  const hasRepo =
+    typeof input.metadata?.repo === "string" &&
+    input.metadata.repo.trim().length > 0;
 
   criteria.push(`Address the full request: ${input.originalRequest}`);
   for (const subtask of subtasks.slice(0, 3)) {
     criteria.push(`Complete this planned subtask: ${subtask}`);
   }
-  if (input.kind === "coding" || repo) {
+  if (input.kind === "coding" || hasRepo) {
     criteria.push("Run the relevant checks for the changed code, or record the exact blocker.");
   }
   criteria.push("Capture concrete completion evidence in the task record.");
@@ -126,9 +125,7 @@ export async function deriveTaskAcceptanceCriteria(
       }
     }
   } catch {
-    // Baseline criteria below keep task creation working even when the model
-    // is unavailable. The source is recorded so validation can treat them as
-    // generic fallback criteria rather than task-specific model output.
+    // Fall back to baseline criteria when the model is unavailable or invalid.
   }
 
   return {

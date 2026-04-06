@@ -7,7 +7,6 @@ import {
   ModelType,
 } from "@elizaos/core";
 import type {
-  TaskArtifactRecord,
   TaskThreadDetail,
 } from "./task-registry.js";
 import type {
@@ -144,26 +143,21 @@ function resolveLoopbackApiBase(): string {
   return `http://127.0.0.1:${port}`;
 }
 
-function resolveAuthHeaders(): HeadersInit | undefined {
-  const token =
-    process.env.ELIZA_API_TOKEN?.trim() ||
-    process.env.MILADY_API_TOKEN?.trim() ||
-    process.env.MILADY_API_AUTH_TOKEN?.trim();
-  return token ? { Authorization: `Bearer ${token}` } : undefined;
-}
-
 async function captureValidationScreenshot(
   runtime: IAgentRuntime,
   task: TaskContext,
   thread: TaskThreadDetail | null,
-  threadId: string,
   sessionId: string,
 ): Promise<ValidationScreenshotCapture> {
   try {
+    const token =
+      process.env.ELIZA_API_TOKEN?.trim() ||
+      process.env.MILADY_API_TOKEN?.trim() ||
+      process.env.MILADY_API_AUTH_TOKEN?.trim();
     const response = await fetch(
       `${resolveLoopbackApiBase()}/api/dev/cursor-screenshot`,
       {
-        headers: resolveAuthHeaders(),
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
       },
     );
     if (!response.ok) {
@@ -181,7 +175,7 @@ async function captureValidationScreenshot(
       };
     }
 
-    const dir = path.join(getValidationRootDir(), threadId);
+    const dir = path.join(getValidationRootDir(), task.threadId);
     await mkdir(dir, { recursive: true });
     const screenshotPath = path.join(
       dir,
@@ -350,6 +344,8 @@ function buildValidationPrompt(
     thread?.acceptanceCriteria?.length
       ? thread.acceptanceCriteria.map((item) => `- ${item}`).join("\n")
       : "- Complete the user's request\n- Verify the result with available evidence\n- Do not claim success if important work is still missing";
+  const completionExcerpt =
+    turnOutput || completionSummary || completionReasoning || "none";
   const trajectoryBlock =
     trajectories.length > 0
       ? trajectories
@@ -365,7 +361,7 @@ function buildValidationPrompt(
       return `- [${entry.direction}] ${content}`;
     }).join("\n") ?? "- none";
   const artifactBlock =
-    thread?.artifacts?.slice(-8).map((artifact: TaskArtifactRecord) => {
+    thread?.artifacts?.slice(-8).map((artifact) => {
       const locator = artifact.path ?? artifact.uri ?? "inline";
       return `- ${artifact.artifactType}: ${artifact.title} (${locator})`;
     }).join("\n") ?? "- none";
@@ -384,7 +380,7 @@ function buildValidationPrompt(
     acceptanceCriteria,
     "",
     "Latest turn output excerpt:",
-    truncate(turnOutput || completionSummary || completionReasoning || "none", 2400),
+    truncate(completionExcerpt, 2400),
     "",
     "Recent transcript excerpt:",
     transcriptPreview,
@@ -436,7 +432,6 @@ export async function validateTaskCompletion(
     ctx.runtime,
     taskCtx,
     thread,
-    taskCtx.threadId,
     sessionId,
   );
 
