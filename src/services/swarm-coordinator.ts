@@ -25,6 +25,11 @@ import { logger } from "@elizaos/core";
 import { extractDevServerUrl } from "./ansi-utils.js";
 import { SwarmHistory } from "./swarm-history.js";
 import {
+	isUsageExhaustedTaskAgentError,
+	markTaskAgentFrameworkHealthy,
+	markTaskAgentFrameworkUnavailable,
+} from "./task-agent-frameworks.js";
+import {
   type CreateTaskThreadInput,
   type TaskThreadDetail,
   type TaskThreadStatus,
@@ -1175,6 +1180,29 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 				// Send error message to chat UI
 				const errorMsg =
 					(data as { message?: string }).message ?? "unknown error";
+				if (
+					(taskCtx.agentType === "claude" ||
+						taskCtx.agentType === "codex" ||
+						taskCtx.agentType === "gemini" ||
+						taskCtx.agentType === "aider") &&
+					isUsageExhaustedTaskAgentError(errorMsg)
+				) {
+					markTaskAgentFrameworkUnavailable(taskCtx.agentType, errorMsg);
+					await this.taskRegistry.appendEvent({
+						threadId: taskCtx.threadId,
+						sessionId,
+						eventType: "framework_unavailable",
+						summary: `${taskCtx.agentType} temporarily disabled after provider depletion`,
+						data: {
+							framework: taskCtx.agentType,
+							reason: errorMsg,
+						},
+					});
+					this.sendChatMessage(
+						`"${taskCtx.label}" ran into a ${taskCtx.agentType} quota/credit failure. Milady will prefer another task-agent framework until ${taskCtx.agentType} is healthy again.`,
+						"coding-agent",
+					);
+				}
 				this.sendChatMessage(
 					`"${taskCtx.label}" hit an error: ${errorMsg}`,
 					"coding-agent",
@@ -1216,6 +1244,14 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 
 			case "ready":
 				taskCtx.status = "active";
+				if (
+					taskCtx.agentType === "claude" ||
+					taskCtx.agentType === "codex" ||
+					taskCtx.agentType === "gemini" ||
+					taskCtx.agentType === "aider"
+				) {
+					markTaskAgentFrameworkHealthy(taskCtx.agentType);
+				}
 				this.broadcast({
 					type: "ready",
 					sessionId,

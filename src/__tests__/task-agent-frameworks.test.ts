@@ -11,6 +11,7 @@ import {
   jest,
   mock,
 } from "bun:test";
+import * as childProcess from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -22,6 +23,7 @@ const mockExecFileSync = jest.fn(() => {
 });
 
 mock.module("node:child_process", () => ({
+  ...childProcess,
   execFileSync: mockExecFileSync,
 }));
 
@@ -33,6 +35,9 @@ mock.module("node:os", () => ({
 const {
   clearTaskAgentFrameworkStateCache,
   getTaskAgentFrameworkState,
+  isUsageExhaustedTaskAgentError,
+  markTaskAgentFrameworkHealthy,
+  markTaskAgentFrameworkUnavailable,
 } = await import("../services/task-agent-frameworks.js");
 
 const originalEnv = { ...process.env };
@@ -63,6 +68,10 @@ describe("task-agent framework preferences", () => {
 
   afterEach(() => {
     clearTaskAgentFrameworkStateCache();
+    markTaskAgentFrameworkHealthy("claude");
+    markTaskAgentFrameworkHealthy("codex");
+    markTaskAgentFrameworkHealthy("gemini");
+    markTaskAgentFrameworkHealthy("aider");
     fs.rmSync(tempHome, { recursive: true, force: true });
     for (const [key, value] of Object.entries(originalEnv)) {
       process.env[key] = value;
@@ -154,5 +163,49 @@ describe("task-agent framework preferences", () => {
 
     expect(state.preferred.id).toBe("gemini");
     expect(state.preferred.reason).toContain("PARALLAX_DEFAULT_AGENT_TYPE");
+  });
+
+  it("fails over when a preferred framework is temporarily disabled", async () => {
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        agents: { defaults: { subscriptionProvider: "openai-codex" } },
+      }),
+    );
+    fs.mkdirSync(path.join(tempHome, ".codex"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tempHome, ".codex", "auth.json"),
+      JSON.stringify({ OPENAI_API_KEY: "codex-token" }),
+    );
+    process.env.ANTHROPIC_API_KEY = "anthropic-key";
+
+    markTaskAgentFrameworkUnavailable("codex", "out of credits");
+
+    const state = await getTaskAgentFrameworkState(
+      createRuntime() as never,
+      {
+        checkAvailableAgents: async () =>
+          [
+            { adapter: "claude", installed: true },
+            { adapter: "codex", installed: true },
+          ] as never,
+      },
+    );
+
+    expect(state.preferred.id).toBe("claude");
+    expect(
+      state.frameworks.find((framework) => framework.id === "codex")
+        ?.temporarilyDisabled,
+    ).toBe(true);
+  });
+
+  it("detects quota and credit depletion errors", () => {
+    expect(isUsageExhaustedTaskAgentError("AI_APICallError: insufficient credits")).toBe(
+      true,
+    );
+    expect(isUsageExhaustedTaskAgentError("status code: 402 payment required")).toBe(
+      true,
+    );
+    expect(isUsageExhaustedTaskAgentError("network timeout")).toBe(false);
   });
 });

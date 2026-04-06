@@ -28,6 +28,9 @@ export interface TaskAgentFrameworkAvailability {
   installed: boolean;
   authReady: boolean;
   subscriptionReady: boolean;
+  temporarilyDisabled: boolean;
+  temporarilyDisabledUntil?: number;
+  temporarilyDisabledReason?: string;
   recommended: boolean;
   reason: string;
   installCommand?: string;
@@ -75,6 +78,12 @@ let frameworkStateCache:
       value: TaskAgentFrameworkState;
     }
   | undefined;
+const frameworkCooldowns = new Map<
+  SupportedTaskAgentAdapter,
+  { until: number; reason: string }
+>();
+const TASK_AGENT_USAGE_EXHAUSTED_RE =
+  /\b(insufficient(?:[_\s]+(?:credits?|quota))|insufficient_quota|out of credits|credit balance|usage (?:has )?(?:reached|exceeded)|quota exceeded|payment required|status(?:code)?[:\s]*402)\b/i;
 
 function safeGetSetting(
   runtime: IAgentRuntime | undefined,
@@ -218,6 +227,18 @@ function hasPiBinary(): boolean {
   }
 }
 
+function getFrameworkCooldown(
+  id: SupportedTaskAgentAdapter,
+): { until: number; reason: string } | undefined {
+  const cooldown = frameworkCooldowns.get(id);
+  if (!cooldown) return undefined;
+  if (cooldown.until <= Date.now()) {
+    frameworkCooldowns.delete(id);
+    return undefined;
+  }
+  return cooldown;
+}
+
 async function computeTaskAgentFrameworkState(
   runtime: IAgentRuntime,
   probe?: TaskAgentFrameworkProbe,
@@ -259,6 +280,7 @@ async function computeTaskAgentFrameworkState(
   const frameworks: TaskAgentFrameworkAvailability[] = STANDARD_FRAMEWORKS.map(
     (id) => {
       const preflight = preflightByAdapter.get(id);
+      const cooldown = getFrameworkCooldown(id);
       const installed = preflight?.installed === true;
       const subscriptionReady =
         id === "claude"
@@ -290,8 +312,13 @@ async function computeTaskAgentFrameworkState(
         installed,
         authReady,
         subscriptionReady,
+        temporarilyDisabled: Boolean(cooldown),
+        temporarilyDisabledUntil: cooldown?.until,
+        temporarilyDisabledReason: cooldown?.reason,
         recommended: false,
-        reason,
+        reason: cooldown
+          ? `${reason}; temporarily disabled after a provider failure: ${cooldown.reason}`
+          : reason,
         installCommand: preflight?.installCommand,
         docsUrl: preflight?.docsUrl,
       };
@@ -304,11 +331,14 @@ async function computeTaskAgentFrameworkState(
     installed: piReady,
     authReady: piReady,
     subscriptionReady: false,
+    temporarilyDisabled: false,
     recommended: false,
     reason: piReady ? "CLI detected" : "CLI not detected",
   });
 
   const byId = new Map(frameworks.map((framework) => [framework.id, framework]));
+  const isSelectable = (id: TaskAgentFrameworkId): boolean =>
+    !byId.get(id)?.temporarilyDisabled;
   const explicitDefault = safeGetSetting(runtime, "PARALLAX_DEFAULT_AGENT_TYPE")
     ?.toLowerCase()
     .trim();
@@ -321,50 +351,85 @@ async function computeTaskAgentFrameworkState(
       explicitDefault === "gemini" ||
       explicitDefault === "aider" ||
       explicitDefault === "pi") &&
-    byId.get(explicitDefault)?.installed
+    byId.get(explicitDefault)?.installed &&
+    isSelectable(explicitDefault)
   ) {
     preferred = {
       id: explicitDefault,
       reason: "explicit PARALLAX_DEFAULT_AGENT_TYPE override",
     };
-  } else if (providerPrefersClaude && byId.get("claude")?.installed && claudeSubscriptionReady) {
+  } else if (
+    providerPrefersClaude &&
+    byId.get("claude")?.installed &&
+    claudeSubscriptionReady &&
+    isSelectable("claude")
+  ) {
     preferred = {
       id: "claude",
       reason: "configured Claude subscription should drive Claude Code first",
     };
-  } else if (providerPrefersCodex && byId.get("codex")?.installed && codexSubscriptionReady) {
+  } else if (
+    providerPrefersCodex &&
+    byId.get("codex")?.installed &&
+    codexSubscriptionReady &&
+    isSelectable("codex")
+  ) {
     preferred = {
       id: "codex",
       reason: "configured OpenAI subscription should drive Codex first",
     };
-  } else if (byId.get("claude")?.installed && claudeSubscriptionReady) {
+  } else if (
+    byId.get("claude")?.installed &&
+    claudeSubscriptionReady &&
+    isSelectable("claude")
+  ) {
     preferred = {
       id: "claude",
       reason: "Claude Code is installed and the user is logged in",
     };
-  } else if (byId.get("codex")?.installed && codexSubscriptionReady) {
+  } else if (
+    byId.get("codex")?.installed &&
+    codexSubscriptionReady &&
+    isSelectable("codex")
+  ) {
     preferred = {
       id: "codex",
       reason: "Codex is installed and the user is logged in",
     };
-  } else if (byId.get("claude")?.installed && claudeAuthReady) {
+  } else if (
+    byId.get("claude")?.installed &&
+    claudeAuthReady &&
+    isSelectable("claude")
+  ) {
     preferred = {
       id: "claude",
       reason: "Claude Code is installed and credentials are available",
     };
-  } else if (byId.get("codex")?.installed && codexAuthReady) {
+  } else if (
+    byId.get("codex")?.installed &&
+    codexAuthReady &&
+    isSelectable("codex")
+  ) {
     preferred = {
       id: "codex",
       reason: "Codex is installed and credentials are available",
     };
-  } else if (byId.get("gemini")?.installed && geminiAuthReady) {
+  } else if (
+    byId.get("gemini")?.installed &&
+    geminiAuthReady &&
+    isSelectable("gemini")
+  ) {
     preferred = {
       id: "gemini",
       reason: "Gemini CLI is installed and credentials are available",
     };
   } else {
     const fallback =
-      frameworks.find((framework) => framework.installed) ?? frameworks[0];
+      frameworks.find(
+        (framework) => framework.installed && !framework.temporarilyDisabled,
+      ) ??
+      frameworks.find((framework) => framework.installed) ??
+      frameworks[0];
     preferred = {
       id: fallback.id,
       reason: fallback.installed
@@ -403,6 +468,30 @@ export function clearTaskAgentFrameworkStateCache(): void {
   frameworkStateCache = undefined;
 }
 
+export function isUsageExhaustedTaskAgentError(text: string): boolean {
+  return TASK_AGENT_USAGE_EXHAUSTED_RE.test(text);
+}
+
+export function markTaskAgentFrameworkUnavailable(
+  id: SupportedTaskAgentAdapter,
+  reason: string,
+  cooldownMs = 30 * 60 * 1000,
+): void {
+  frameworkCooldowns.set(id, {
+    until: Date.now() + cooldownMs,
+    reason,
+  });
+  clearTaskAgentFrameworkStateCache();
+}
+
+export function markTaskAgentFrameworkHealthy(
+  id: SupportedTaskAgentAdapter,
+): void {
+  if (frameworkCooldowns.delete(id)) {
+    clearTaskAgentFrameworkStateCache();
+  }
+}
+
 export function formatTaskAgentFrameworkLine(
   framework: TaskAgentFrameworkAvailability,
 ): string {
@@ -412,6 +501,9 @@ export function formatTaskAgentFrameworkLine(
   ];
   if (framework.subscriptionReady) {
     parts.push("uses the user's subscription");
+  }
+  if (framework.temporarilyDisabled) {
+    parts.push("temporarily disabled");
   }
   if (framework.recommended) {
     parts.push("recommended");

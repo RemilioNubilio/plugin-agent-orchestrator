@@ -108,6 +108,7 @@ export class PTYService {
   private sessionWorkdirs: Map<string, string> = new Map();
   private eventCallbacks: SessionEventCallback[] = [];
   private outputUnsubscribers: Map<string, () => void> = new Map();
+  private transcriptUnsubscribers: Map<string, () => void> = new Map();
   private sessionOutputBuffers: Map<string, string[]> = new Map();
   private terminalSessionStates: Map<
     string,
@@ -260,6 +261,10 @@ export class PTYService {
       unsubscribe();
     }
     this.outputUnsubscribers.clear();
+    for (const unsubscribe of this.transcriptUnsubscribers.values()) {
+      unsubscribe();
+    }
+    this.transcriptUnsubscribers.clear();
 
     if (this.manager) {
       await this.manager.shutdown();
@@ -517,6 +522,8 @@ export class PTYService {
       }
     }
 
+    this.wireTranscriptCapture(session.id);
+
     // Defer initial task until session is ready.
     // IMPORTANT: Set up the listener BEFORE pushDefaultRules (which has a 1500ms sleep),
     // otherwise session_ready fires during pushDefaultRules and the listener misses it.
@@ -570,6 +577,7 @@ export class PTYService {
   ): Promise<SessionMessage | undefined> {
     if (!this.manager) throw new Error("PTYService not initialized");
     captureFeed(sessionId, input, "stdin");
+    void this.persistTranscript(sessionId, "stdin", input);
     return sendToSessionIO(this.ioContext(), sessionId, input);
   }
 
@@ -578,20 +586,26 @@ export class PTYService {
     keys: string | string[],
   ): Promise<void> {
     if (!this.manager) throw new Error("PTYService not initialized");
+    const content = Array.isArray(keys) ? keys.join(",") : keys;
+    void this.persistTranscript(sessionId, "keys", content);
     return sendKeysToSessionIO(this.ioContext(), sessionId, keys);
   }
 
   async stopSession(sessionId: string, force = false): Promise<void> {
     if (!this.manager) throw new Error("PTYService not initialized");
     captureLifecycle(sessionId, "session_stopped", force ? "force" : undefined);
-    return stopSessionIO(
-      this.ioContext(),
-      sessionId,
-      this.sessionMetadata,
-      this.sessionWorkdirs,
-      (msg) => this.log(msg),
-      force,
-    );
+    try {
+      return await stopSessionIO(
+        this.ioContext(),
+        sessionId,
+        this.sessionMetadata,
+        this.sessionWorkdirs,
+        (msg) => this.log(msg),
+        force,
+      );
+    } finally {
+      this.clearTranscriptCapture(sessionId);
+    }
   }
 
   /** Default approval preset — runtime env var takes precedence over config. */
@@ -682,6 +696,79 @@ export class PTYService {
   async getSessionOutput(sessionId: string, lines?: number): Promise<string> {
     if (!this.manager) throw new Error("PTYService not initialized");
     return getSessionOutputIO(this.ioContext(), sessionId, lines);
+  }
+
+  private clearTranscriptCapture(sessionId: string): void {
+    const unsubscribe = this.transcriptUnsubscribers.get(sessionId);
+    if (unsubscribe) {
+      try {
+        unsubscribe();
+      } catch {
+        // Ignore cleanup failures on dead sessions.
+      }
+    }
+    this.transcriptUnsubscribers.delete(sessionId);
+  }
+
+  private async resolveTaskThreadId(sessionId: string): Promise<string | null> {
+    const liveThreadId = this.coordinator?.getTaskContext(sessionId)?.threadId;
+    if (liveThreadId) return liveThreadId;
+    const metadataThreadId = this.sessionMetadata.get(sessionId)?.threadId;
+    if (typeof metadataThreadId === "string" && metadataThreadId.trim()) {
+      return metadataThreadId;
+    }
+    return (
+      (await this.coordinator?.taskRegistry.findThreadIdBySessionId(sessionId)) ??
+      null
+    );
+  }
+
+  private async persistTranscript(
+    sessionId: string,
+    direction: "stdout" | "stderr" | "stdin" | "keys" | "system",
+    content: string,
+  ): Promise<void> {
+    if (!content || !this.coordinator) return;
+    const threadId = await this.resolveTaskThreadId(sessionId);
+    if (!threadId) return;
+    await this.coordinator.taskRegistry.recordTranscript({
+      threadId,
+      sessionId,
+      direction,
+      content,
+    });
+  }
+
+  private wireTranscriptCapture(sessionId: string): void {
+    if (!this.manager) return;
+    this.clearTranscriptCapture(sessionId);
+
+    if (this.usingBunWorker) {
+      const unsubscribe = (this.manager as BunCompatiblePTYManager).onSessionData(
+        sessionId,
+        (data: string) => {
+          void this.persistTranscript(sessionId, "stdout", data);
+        },
+      );
+      this.transcriptUnsubscribers.set(sessionId, unsubscribe);
+      return;
+    }
+
+    const ptySession = (this.manager as PTYManager).getSession(sessionId);
+    if (
+      !ptySession ||
+      typeof (ptySession as { on?: unknown }).on !== "function" ||
+      typeof (ptySession as { off?: unknown }).off !== "function"
+    ) {
+      return;
+    }
+    const onOutput = (data: string) => {
+      void this.persistTranscript(sessionId, "stdout", data);
+    };
+    ptySession.on("output", onOutput);
+    this.transcriptUnsubscribers.set(sessionId, () => {
+      ptySession.off("output", onOutput);
+    });
   }
 
   isSessionBlocked(sessionId: string): boolean {

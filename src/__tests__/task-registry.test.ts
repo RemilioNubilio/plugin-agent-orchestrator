@@ -69,6 +69,13 @@ describe("TaskRegistry", () => {
       metadata: { verified: true },
     });
 
+    await registry.recordTranscript({
+      threadId: thread.id,
+      sessionId: "session-registry-1",
+      direction: "stdin",
+      content: "Please continue with persistence validation.",
+    });
+
     await registry.updateThreadSummary(
       thread.id,
       "Durable state was written and validation evidence captured.",
@@ -81,6 +88,7 @@ describe("TaskRegistry", () => {
     expect(detail?.sessions[0]?.status).toBe("blocked");
     expect(detail?.decisions).toHaveLength(1);
     expect(detail?.artifacts).toHaveLength(1);
+    expect(detail?.transcripts).toHaveLength(1);
     expect(detail?.events.some((event) => event.eventType === "task_created")).toBe(
       true,
     );

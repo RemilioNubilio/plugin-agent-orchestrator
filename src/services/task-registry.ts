@@ -143,6 +143,17 @@ export interface TaskArtifactRecord {
   createdAt: string;
 }
 
+export interface TaskTranscriptRecord {
+  id: string;
+  threadId: string;
+  sessionId: string;
+  timestamp: number;
+  direction: "stdout" | "stderr" | "stdin" | "keys" | "system";
+  content: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+}
+
 export interface TaskThreadSummary extends TaskThreadRecord {
   sessionCount: number;
   activeSessionCount: number;
@@ -159,6 +170,7 @@ export interface TaskThreadDetail extends TaskThreadSummary {
   decisions: TaskDecisionRecord[];
   events: TaskEventRecord[];
   artifacts: TaskArtifactRecord[];
+  transcripts: TaskTranscriptRecord[];
 }
 
 export interface CreateTaskThreadInput {
@@ -242,6 +254,15 @@ export interface RecordTaskArtifactInput {
   path?: string | null;
   uri?: string | null;
   mimeType?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface RecordTaskTranscriptInput {
+  threadId: string;
+  sessionId: string;
+  timestamp?: number;
+  direction: TaskTranscriptRecord["direction"];
+  content: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -532,6 +553,19 @@ function parseArtifactRow(row: Row): TaskArtifactRecord {
   };
 }
 
+function parseTranscriptRow(row: Row): TaskTranscriptRecord {
+  return {
+    id: toText(row.id),
+    threadId: toText(row.thread_id),
+    sessionId: toText(row.session_id),
+    timestamp: toNumber(row.timestamp, 0),
+    direction: toText(row.direction) as TaskTranscriptRecord["direction"],
+    content: toText(row.content),
+    metadata: parseJsonRecord(row.metadata_json),
+    createdAt: toText(row.created_at),
+  };
+}
+
 function buildSearchText(parts: Array<string | null | undefined>): string {
   return parts
     .map((part) => (part ?? "").trim().toLowerCase())
@@ -663,6 +697,20 @@ export class TaskRegistry {
 
     await executeRawSql(
       this.runtime,
+      `CREATE TABLE IF NOT EXISTS orchestrator_task_transcripts (
+        id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        timestamp BIGINT NOT NULL,
+        direction TEXT NOT NULL,
+        content TEXT NOT NULL,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL
+      )`,
+    );
+
+    await executeRawSql(
+      this.runtime,
       `CREATE INDEX IF NOT EXISTS idx_orchestrator_task_threads_status
          ON orchestrator_task_threads(status)`,
     );
@@ -695,6 +743,11 @@ export class TaskRegistry {
       this.runtime,
       `CREATE INDEX IF NOT EXISTS idx_orchestrator_task_events_thread_id
          ON orchestrator_task_events(thread_id, timestamp DESC)`,
+    );
+    await executeRawSql(
+      this.runtime,
+      `CREATE INDEX IF NOT EXISTS idx_orchestrator_task_transcripts_thread_id
+         ON orchestrator_task_transcripts(thread_id, timestamp DESC)`,
     );
 
     schemaReady.add(key);
@@ -823,11 +876,12 @@ export class TaskRegistry {
     const summary = await this.getThreadSummary(threadId);
     if (!summary) return null;
 
-    const [sessions, decisions, events, artifacts] = await Promise.all([
+    const [sessions, decisions, events, artifacts, transcripts] = await Promise.all([
       this.listSessionsForThread(threadId),
       this.listDecisionsForThread(threadId),
       this.listEventsForThread(threadId),
       this.listArtifactsForThread(threadId),
+      this.listTranscriptsForThread(threadId),
     ]);
 
     return {
@@ -836,6 +890,7 @@ export class TaskRegistry {
       decisions,
       events,
       artifacts,
+      transcripts,
     };
   }
 
@@ -1189,6 +1244,33 @@ export class TaskRegistry {
     });
   }
 
+  async recordTranscript(input: RecordTaskTranscriptInput): Promise<void> {
+    await this.ensureSchema();
+    const createdAt = isoNow();
+    const timestamp = input.timestamp ?? Date.now();
+    await executeRawSql(
+      this.runtime,
+      `INSERT INTO orchestrator_task_transcripts (
+        id, thread_id, session_id, timestamp, direction, content, metadata_json, created_at
+      ) VALUES (
+        ${sqlQuote(`transcript-${crypto.randomUUID()}`)},
+        ${sqlQuote(input.threadId)},
+        ${sqlQuote(input.sessionId)},
+        ${sqlInteger(timestamp)},
+        ${sqlQuote(input.direction)},
+        ${sqlQuote(input.content)},
+        ${sqlJson(input.metadata ?? {})},
+        ${sqlQuote(createdAt)}
+      )`,
+    );
+    await executeRawSql(
+      this.runtime,
+      `UPDATE orchestrator_task_threads
+          SET updated_at = ${sqlQuote(createdAt)}
+        WHERE id = ${sqlQuote(input.threadId)}`,
+    );
+  }
+
   async updateThreadSummary(
     threadId: string,
     summary: string,
@@ -1317,6 +1399,19 @@ export class TaskRegistry {
         ORDER BY created_at ASC`,
     );
     return rows.map(parseArtifactRow);
+  }
+
+  async listTranscriptsForThread(
+    threadId: string,
+  ): Promise<TaskTranscriptRecord[]> {
+    const rows = await executeRawSql(
+      this.runtime,
+      `SELECT *
+         FROM orchestrator_task_transcripts
+        WHERE thread_id = ${sqlQuote(threadId)}
+        ORDER BY timestamp ASC`,
+    );
+    return rows.map(parseTranscriptRow);
   }
 
   private async recomputeThreadStatus(threadId: string): Promise<void> {
