@@ -228,6 +228,27 @@ export const spawnAgentAction: Action = {
 
       // Check if coordinator is active — route blocking prompts through it
       const coordinator = getCoordinator(runtime);
+      const taskThread =
+        coordinator && task
+          ? await coordinator.createTaskThread({
+              title: `agent-${Date.now()}`,
+              originalRequest: task,
+              kind: "coding",
+              roomId:
+                typeof (message as unknown as Record<string, unknown>).roomId === "string"
+                  ? ((message as unknown as Record<string, unknown>).roomId as string)
+                  : null,
+              ownerUserId:
+                typeof (message as unknown as Record<string, unknown>).userId === "string"
+                  ? ((message as unknown as Record<string, unknown>).userId as string)
+                  : null,
+              metadata: {
+                source: "spawn-agent-action",
+                messageId: message.id,
+                requestedType: rawAgentType,
+              },
+            })
+          : null;
 
       // Spawn the PTY session
       const session: SessionInfo = await ptyService.spawnSession({
@@ -243,6 +264,7 @@ export const spawnAgentAction: Action = {
         customCredentials,
         ...(coordinator ? { skipAdapterAutoResponse: true } : {}),
         metadata: {
+          threadId: taskThread?.id,
           requestedType: rawAgentType,
           messageId: message.id,
           userId: (message as unknown as Record<string, unknown>).userId,
@@ -283,7 +305,8 @@ export const spawnAgentAction: Action = {
         }
       });
       if (coordinator && task) {
-        coordinator.registerTask(session.id, {
+        await coordinator.registerTask(session.id, {
+          threadId: taskThread?.id ?? session.id,
           agentType,
           label: `agent-${session.id.slice(-8)}`,
           originalTask: task,

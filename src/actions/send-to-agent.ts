@@ -174,18 +174,46 @@ export const sendToAgentAction: Action = {
         if (trackedTask) {
           const coordinator = getCoordinator(runtime);
           const existingTask = coordinator?.getTaskContext(sessionId);
-          coordinator?.registerTask(sessionId, {
-            agentType: normalizeAgentType(session.agentType),
-            label:
-              taskLabel ||
-              existingTask?.label ||
-              (typeof session.metadata?.label === "string"
-                ? session.metadata.label
-                : `agent-${sessionId.slice(-8)}`),
-            originalTask: trackedTask,
-            workdir: session.workdir,
-            ...(existingTask?.repo ? { repo: existingTask.repo } : {}),
-          });
+          const taskThread =
+            coordinator && !existingTask
+              ? await coordinator.createTaskThread({
+                  title:
+                    taskLabel ||
+                    (typeof session.metadata?.label === "string"
+                      ? session.metadata.label
+                      : `agent-${sessionId.slice(-8)}`),
+                  originalRequest: trackedTask,
+                  kind: "coding",
+                  roomId:
+                    typeof (message as unknown as Record<string, unknown>).roomId === "string"
+                      ? ((message as unknown as Record<string, unknown>).roomId as string)
+                      : null,
+                  ownerUserId:
+                    typeof (message as unknown as Record<string, unknown>).userId === "string"
+                      ? ((message as unknown as Record<string, unknown>).userId as string)
+                      : null,
+                  metadata: {
+                    source: "send-to-agent-action",
+                    messageId: message.id,
+                    sessionId,
+                  },
+                })
+              : null;
+          if (coordinator) {
+            await coordinator.registerTask(sessionId, {
+              threadId: existingTask?.threadId ?? taskThread?.id ?? sessionId,
+              agentType: normalizeAgentType(session.agentType),
+              label:
+                taskLabel ||
+                existingTask?.label ||
+                (typeof session.metadata?.label === "string"
+                  ? session.metadata.label
+                  : `agent-${sessionId.slice(-8)}`),
+              originalTask: trackedTask,
+              workdir: session.workdir,
+              ...(existingTask?.repo ? { repo: existingTask.repo } : {}),
+            });
+          }
         }
         if (callback) {
           await callback({

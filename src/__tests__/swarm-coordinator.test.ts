@@ -20,6 +20,25 @@ const createMockRuntime = () => ({
 	getService: jest.fn(),
 });
 
+const createMockTaskRegistry = () => ({
+	ensureSchema: jest.fn().mockResolvedValue(undefined),
+	recoverInterruptedTasks: jest.fn().mockResolvedValue(undefined),
+	getThreadRecord: jest.fn().mockResolvedValue({ id: "thread-1" }),
+	createThread: jest.fn().mockResolvedValue({ id: "thread-1" }),
+	getThreadSummary: jest.fn().mockResolvedValue(null),
+	listThreads: jest.fn().mockResolvedValue([]),
+	getThread: jest.fn().mockResolvedValue(null),
+	archiveThread: jest.fn().mockResolvedValue(undefined),
+	reopenThread: jest.fn().mockResolvedValue(undefined),
+	registerSession: jest.fn().mockResolvedValue(undefined),
+	updateSession: jest.fn().mockResolvedValue(undefined),
+	recordDecision: jest.fn().mockResolvedValue(undefined),
+	appendEvent: jest.fn().mockResolvedValue(undefined),
+	recordArtifact: jest.fn().mockResolvedValue(undefined),
+	updateThreadSummary: jest.fn().mockResolvedValue(undefined),
+	getLastUsedRepo: jest.fn().mockResolvedValue(undefined),
+});
+
 const createMockPTYService = () => ({
 	onSessionEvent: jest.fn().mockReturnValue(() => {}),
 	sendToSession: jest.fn().mockResolvedValue(undefined),
@@ -48,13 +67,16 @@ describe("SwarmCoordinator", () => {
 	let mockRuntime: ReturnType<typeof createMockRuntime>;
 	// biome-ignore lint/suspicious/noExplicitAny: test mock
 	let mockPty: any;
+	let mockTaskRegistry: ReturnType<typeof createMockTaskRegistry>;
 
-	beforeEach(() => {
+	beforeEach(async () => {
 		jest.clearAllMocks();
 		mockRuntime = createMockRuntime();
 		mockPty = createMockPTYService();
+		mockTaskRegistry = createMockTaskRegistry();
 		coordinator = new SwarmCoordinator(mockRuntime);
-		coordinator.start(mockPty);
+		coordinator.taskRegistry = mockTaskRegistry;
+		await coordinator.start(mockPty);
 	});
 
 	// =========================================================================
@@ -65,12 +87,13 @@ describe("SwarmCoordinator", () => {
 			expect(mockPty.onSessionEvent).toHaveBeenCalledTimes(1);
 		});
 
-		it("unsubscribes on stop", () => {
+		it("unsubscribes on stop", async () => {
 			const unsub = jest.fn();
 			mockPty.onSessionEvent.mockReturnValue(unsub);
 			const coord = new SwarmCoordinator(mockRuntime);
-			coord.start(mockPty);
-			coord.stop();
+			coord.taskRegistry = createMockTaskRegistry();
+			await coord.start(mockPty);
+			await coord.stop();
 			expect(unsub).toHaveBeenCalled();
 		});
 	});

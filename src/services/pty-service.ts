@@ -163,7 +163,7 @@ export class PTYService {
     } else {
       try {
         const coordinator = new SwarmCoordinator(runtime);
-        coordinator.start(service);
+        await coordinator.start(service);
         service.coordinator = coordinator;
 
         // Register the coordinator as a discoverable runtime service so
@@ -223,8 +223,7 @@ export class PTYService {
       markTaskDelivered: (sessionId) => {
         const coordinator = this.coordinator;
         if (!coordinator) return;
-        const taskCtx = coordinator.getTaskContext(sessionId);
-        if (taskCtx) taskCtx.taskDelivered = true;
+        void coordinator.setTaskDelivered(sessionId);
       },
     });
     this.manager = result.manager;
@@ -246,7 +245,7 @@ export class PTYService {
   async stop(): Promise<void> {
     // Stop the coordinator if one was wired to this service
     if (this.coordinator) {
-      this.coordinator.stop();
+      await this.coordinator.stop();
       // Remove from runtime services map
       (this.runtime.services as Map<string, Service[]>).delete("SWARM_COORDINATOR");
       this.coordinator = null;
@@ -490,8 +489,7 @@ export class PTYService {
       markTaskDelivered: (sessionId: string) => {
         const coordinator = this.coordinator;
         if (!coordinator) return;
-        const taskCtx = coordinator.getTaskContext(sessionId);
-        if (taskCtx) taskCtx.taskDelivered = true;
+        void coordinator.setTaskDelivered(sessionId);
       },
     };
 

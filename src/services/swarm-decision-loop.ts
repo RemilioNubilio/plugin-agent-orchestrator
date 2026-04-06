@@ -516,6 +516,9 @@ export async function executeDecision(
   switch (decision.action) {
     case "respond": {
       const taskCtx = ctx.tasks.get(sessionId);
+      if (taskCtx) {
+        taskCtx.status = "active";
+      }
       if (decision.useKeys && decision.keys) {
         await ctx.ptyService.sendKeysToSession(sessionId, decision.keys);
       } else if (decision.response !== undefined) {
@@ -532,7 +535,10 @@ export async function executeDecision(
       }
       // Mark the send time so stall/turn-complete events are suppressed
       // during the grace period while the agent processes this input.
-      if (taskCtx) taskCtx.lastInputSentAt = Date.now();
+      if (taskCtx) {
+        taskCtx.lastInputSentAt = Date.now();
+        await ctx.syncTaskContext(taskCtx);
+      }
       break;
     }
 
@@ -575,6 +581,23 @@ export async function executeDecision(
       // Store summary on task context for swarm-wide synthesis
       if (taskCtx) {
         taskCtx.completionSummary = summary || decision.reasoning || "";
+        await Promise.all([
+          ctx.syncTaskContext(taskCtx),
+          ctx.taskRegistry.updateThreadSummary(
+            taskCtx.threadId,
+            taskCtx.completionSummary,
+          ),
+          ctx.taskRegistry.appendEvent({
+            threadId: taskCtx.threadId,
+            sessionId,
+            eventType: "task_status_changed",
+            summary: `Task "${taskCtx.label}" completed`,
+            data: {
+              status: "completed",
+              completionSummary: taskCtx.completionSummary,
+            },
+          }),
+        ]);
       }
 
       ctx.sendChatMessage(
@@ -646,7 +669,8 @@ export async function handleBlocked(
     // The approval already happened in pty-manager, but we can stop the session
     // and alert the user to prevent further damage.
     if (isOutOfScopeAccess(promptText, taskCtx.workdir)) {
-      taskCtx.decisions.push({
+      taskCtx.status = "error";
+      await ctx.recordDecision(taskCtx, {
         timestamp: Date.now(),
         event: "blocked",
         promptText,
@@ -672,7 +696,6 @@ export async function handleBlocked(
       );
 
       // Force-kill the session to prevent further out-of-scope access
-      taskCtx.status = "error";
       ctx.ptyService?.stopSession(sessionId, /* force */ true).catch((err) => {
         ctx.log(
           `Failed to stop session after out-of-scope auto-approval: ${err}`,
@@ -682,7 +705,7 @@ export async function handleBlocked(
     }
 
     taskCtx.autoResolvedCount++;
-    taskCtx.decisions.push({
+    await ctx.recordDecision(taskCtx, {
       timestamp: Date.now(),
       event: "blocked",
       promptText,
@@ -737,7 +760,7 @@ export async function handleBlocked(
     );
 
     taskCtx.autoResolvedCount++;
-    taskCtx.decisions.push({
+    await ctx.recordDecision(taskCtx, {
       timestamp: Date.now(),
       event: "blocked",
       promptText,
@@ -780,6 +803,8 @@ export async function handleBlocked(
     return;
   }
   ctx.lastBlockedPromptFingerprint.set(sessionId, promptFingerprint);
+  taskCtx.status = "blocked";
+  await ctx.syncTaskContext(taskCtx);
 
   // Broadcast that the agent is blocked (for all supervision levels)
   ctx.broadcast({
@@ -795,7 +820,7 @@ export async function handleBlocked(
 
   // Safety check: escalate after too many consecutive auto-responses
   if (taskCtx.autoResolvedCount >= MAX_AUTO_RESPONSES) {
-    taskCtx.decisions.push({
+    await ctx.recordDecision(taskCtx, {
       timestamp: Date.now(),
       event: "blocked",
       promptText,
@@ -826,7 +851,7 @@ export async function handleBlocked(
 
     case "notify":
       // Notify mode — broadcast only, no action
-      taskCtx.decisions.push({
+      await ctx.recordDecision(taskCtx, {
         timestamp: Date.now(),
         event: "blocked",
         promptText,
@@ -934,7 +959,7 @@ export async function handleTurnComplete(
       ctx.log(
         `Turn assessment for "${taskCtx.label}": complete (fast-path: PR detected in output)`,
       );
-      taskCtx.decisions.push({
+      await ctx.recordDecision(taskCtx, {
         timestamp: Date.now(),
         event: "turn_complete",
         promptText: "Agent finished a turn",
@@ -1009,7 +1034,7 @@ export async function handleTurnComplete(
     );
 
     // Record
-    taskCtx.decisions.push({
+    await ctx.recordDecision(taskCtx, {
       timestamp: Date.now(),
       event: "turn_complete",
       promptText: "Agent finished a turn",
@@ -1145,7 +1170,7 @@ export async function handleAutonomousDecision(
 
     if (!decision) {
       // All decision paths returned invalid response — escalate
-      taskCtx.decisions.push({
+      await ctx.recordDecision(taskCtx, {
         timestamp: Date.now(),
         event: "blocked",
         promptText,
@@ -1184,7 +1209,8 @@ export async function handleAutonomousDecision(
     }
 
     // Record the decision
-    taskCtx.decisions.push({
+    taskCtx.autoResolvedCount = 0;
+    await ctx.recordDecision(taskCtx, {
       timestamp: Date.now(),
       event: "blocked",
       promptText,
@@ -1195,9 +1221,6 @@ export async function handleAutonomousDecision(
 
     // Layer 2: capture significant decisions for cross-agent sharing
     recordKeyDecision(ctx, taskCtx.label, decision);
-
-    // Reset auto-resolved count on manual decision
-    taskCtx.autoResolvedCount = 0;
 
     // Broadcast the decision
     ctx.broadcast({
@@ -1324,6 +1347,8 @@ export async function handleConfirmDecision(
 
     if (!decision) {
       // Queue for human with no suggestion
+      taskCtx.status = "blocked";
+      await ctx.syncTaskContext(taskCtx);
       ctx.pendingDecisions.set(sessionId, {
         sessionId,
         promptText,
@@ -1337,6 +1362,8 @@ export async function handleConfirmDecision(
       });
     } else {
       // Queue the LLM's suggestion for human approval
+      taskCtx.status = "blocked";
+      await ctx.syncTaskContext(taskCtx);
       ctx.pendingDecisions.set(sessionId, {
         sessionId,
         promptText,

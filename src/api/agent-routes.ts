@@ -576,6 +576,26 @@ export async function handleAgentRoutes(
 
       // Check if coordinator is active — route blocking prompts through it
       const coordinator = getCoordinator(ctx.runtime);
+      const requestedThreadId =
+        typeof (metadata as Record<string, unknown>)?.threadId === "string"
+          ? ((metadata as Record<string, unknown>).threadId as string)
+          : null;
+      const taskThread =
+        coordinator && task && !requestedThreadId
+          ? await coordinator.createTaskThread({
+              title:
+                ((metadata as Record<string, unknown>)?.label as string | undefined) ??
+                `Task ${Date.now()}`,
+              originalRequest: task as string,
+              kind: "coding",
+              metadata: {
+                repo: workdir ?? null,
+                source: "api-spawn",
+              },
+            })
+          : requestedThreadId
+            ? await coordinator?.getTaskThread(requestedThreadId)
+            : null;
 
       const session = await ctx.ptyService.spawnSession({
         name: `agent-${Date.now()}`,
@@ -595,6 +615,7 @@ export async function handleAgentRoutes(
         // Let adapter auto-response handle known prompts (permissions, trust, etc.)
         // instantly. The coordinator handles only unrecognized prompts via LLM.
         metadata: {
+          threadId: taskThread?.id ?? requestedThreadId,
           requestedType: agentStr,
           ...(metadata as Record<string, unknown>),
           ...(aiderProvider ? { provider: aiderProvider } : {}),
@@ -608,7 +629,8 @@ export async function handleAgentRoutes(
         const label = (metadata as Record<string, unknown>)?.label as
           | string
           | undefined;
-        coordinator.registerTask(session.id, {
+        await coordinator.registerTask(session.id, {
+          threadId: taskThread?.id ?? requestedThreadId ?? session.id,
           agentType:
             agentStr as import("../services/pty-service.js").CodingAgentType,
           label: label || `agent-${session.id.slice(-8)}`,

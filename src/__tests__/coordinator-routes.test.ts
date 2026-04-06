@@ -70,6 +70,10 @@ function createMockRes(): any {
 const createMockCoordinator = () => ({
   getAllTaskContexts: jest.fn().mockReturnValue([]),
   getTaskContext: jest.fn(),
+  listTaskThreads: jest.fn().mockResolvedValue([]),
+  getTaskThread: jest.fn(),
+  archiveTaskThread: jest.fn().mockResolvedValue(undefined),
+  reopenTaskThread: jest.fn().mockResolvedValue(undefined),
   getSupervisionLevel: jest.fn().mockReturnValue("autonomous"),
   setSupervisionLevel: jest.fn(),
   getPendingConfirmations: jest.fn().mockReturnValue([]),
@@ -195,6 +199,28 @@ describe("coordinator routes", () => {
           autoResolvedCount: 2,
         },
       ]);
+      asMock(ctx.coordinator).listTaskThreads.mockResolvedValue([
+        {
+          id: "thread-1",
+          title: "Fix bug",
+          kind: "coding",
+          status: "active",
+          originalRequest: "Fix bug",
+          summary: "Investigating",
+          sessionCount: 1,
+          activeSessionCount: 1,
+          latestSessionId: "s-1",
+          latestSessionLabel: "test",
+          latestWorkdir: "/w",
+          latestRepo: null,
+          latestActivityAt: Date.now(),
+          decisionCount: 1,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          closedAt: null,
+          archivedAt: null,
+        },
+      ]);
 
       const req = createMockReq("GET", `${PREFIX}/status`);
       const res = createMockRes();
@@ -207,9 +233,75 @@ describe("coordinator routes", () => {
       expect(json.taskCount).toBe(1);
       expect(json.tasks[0].sessionId).toBe("s-1");
       expect(json.tasks[0].decisionCount).toBe(1);
+      expect(json.taskThreads[0].id).toBe("thread-1");
       expect(json.recentTasks[0].sessionId).toBe("s-1");
       expect(json.preferredAgentType).toEqual(expect.any(String));
       expect(Array.isArray(json.frameworks)).toBe(true);
+    });
+  });
+
+  describe("task thread routes", () => {
+    it("lists persisted task threads", async () => {
+      asMock(ctx.coordinator).listTaskThreads.mockResolvedValue([
+        { id: "thread-1", title: "Persist tasks" },
+      ]);
+
+      const req = createMockReq("GET", `${PREFIX}/threads`);
+      const res = createMockRes();
+
+      await handleCoordinatorRoutes(req, res, `${PREFIX}/threads`, ctx);
+
+      expect(res._getStatus()).toBe(200);
+      expect(res._getJson()[0].id).toBe("thread-1");
+    });
+
+    it("returns a persisted task thread by id", async () => {
+      asMock(ctx.coordinator).getTaskThread.mockResolvedValue({
+        id: "thread-1",
+        title: "Persist tasks",
+      });
+
+      const req = createMockReq("GET", `${PREFIX}/threads/thread-1`);
+      const res = createMockRes();
+
+      await handleCoordinatorRoutes(req, res, `${PREFIX}/threads/thread-1`, ctx);
+
+      expect(res._getStatus()).toBe(200);
+      expect(res._getJson().id).toBe("thread-1");
+    });
+
+    it("archives a task thread", async () => {
+      const req = createMockReq("POST", `${PREFIX}/threads/thread-1/archive`);
+      const res = createMockRes();
+
+      await handleCoordinatorRoutes(
+        req,
+        res,
+        `${PREFIX}/threads/thread-1/archive`,
+        ctx,
+      );
+
+      expect(asMock(ctx.coordinator).archiveTaskThread).toHaveBeenCalledWith(
+        "thread-1",
+      );
+      expect(res._getJson().status).toBe("archived");
+    });
+
+    it("reopens a task thread", async () => {
+      const req = createMockReq("POST", `${PREFIX}/threads/thread-1/reopen`);
+      const res = createMockRes();
+
+      await handleCoordinatorRoutes(
+        req,
+        res,
+        `${PREFIX}/threads/thread-1/reopen`,
+        ctx,
+      );
+
+      expect(asMock(ctx.coordinator).reopenTaskThread).toHaveBeenCalledWith(
+        "thread-1",
+      );
+      expect(res._getJson().status).toBe("open");
     });
   });
 

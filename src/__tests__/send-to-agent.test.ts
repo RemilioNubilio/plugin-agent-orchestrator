@@ -182,6 +182,7 @@ describe("sendToAgentAction", () => {
         "Research the benchmark harness and write a summary",
       );
       expect(mockRegisterTask).toHaveBeenCalledWith("session-123", {
+        threadId: "session-123",
         agentType: "claude",
         label: "existing-agent",
         originalTask: "Research the benchmark harness and write a summary",
