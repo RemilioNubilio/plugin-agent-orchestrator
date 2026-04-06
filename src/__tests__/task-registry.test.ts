@@ -181,6 +181,11 @@ describe.skip("TaskRegistry", () => {
     expect(pending[0]?.sessionId).toBe("session-registry-3");
     expect(pending[0]?.llmDecision.response).toBe("y");
     expect(pending[0]?.taskContext.label).toBe("deploy-agent");
+    const detail = await reloadedRegistry.getThread(thread.id);
+    expect(detail?.pendingDecisions).toHaveLength(1);
+    expect(detail?.pendingDecisions[0]?.promptText).toBe(
+      "Allow deploy to production?",
+    );
 
     await reloadedRegistry.deletePendingDecision("session-registry-3");
     expect(await registry.listPendingDecisions()).toHaveLength(0);
