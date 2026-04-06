@@ -367,4 +367,301 @@ describe("validateTaskCompletion", () => {
       fileIntegrityVerified: true,
     });
   });
+
+  it("records unavailable screenshot evidence when the dev screenshot route fails", async () => {
+    globalThis.fetch = jest
+      .fn()
+      .mockResolvedValue(new Response("boom", { status: 503 })) as typeof fetch;
+
+    const runtime = {
+      useModel: jest.fn().mockResolvedValue(
+        JSON.stringify({
+          verdict: "pass",
+          summary: "Validation finished without screenshot evidence.",
+        }),
+      ),
+      getService: jest.fn().mockReturnValue(null),
+    } as unknown as IAgentRuntime;
+
+    const result = await validateTaskCompletion(
+      {
+        runtime,
+        taskRegistry: {
+          getThread: jest.fn().mockResolvedValue(createThreadDetail()),
+        },
+      } as never,
+      {
+        sessionId: "session-no-shot",
+        taskCtx: {
+          sessionId: "session-no-shot",
+          threadId: "thread-1",
+          label: "no-shot-agent",
+          originalTask: "Handle screenshot failures",
+          workdir: "/workspace/project",
+        } as never,
+        completionReasoning: "The screenshot endpoint failed.",
+        completionSummary: "Validation should keep the failure evidence in the report.",
+        turnOutput: "Screenshot endpoint returned 503.",
+      },
+    );
+
+    expect(result.artifacts.some((artifact) => artifact.artifactType === "screenshot")).toBe(
+      false,
+    );
+    const report = JSON.parse(await readFile(result.reportPath, "utf8")) as {
+      evidence: {
+        screenshot: { status: string; reason?: string };
+      };
+    };
+    expect(report.evidence.screenshot).toEqual({
+      status: "unavailable",
+      reason: "HTTP 503 from /api/dev/cursor-screenshot",
+    });
+  });
+
+  it("records unavailable screenshot evidence when the screenshot payload is empty", async () => {
+    globalThis.fetch = jest
+      .fn()
+      .mockResolvedValue(new Response(new Uint8Array(), { status: 200 })) as typeof fetch;
+
+    const runtime = {
+      useModel: jest.fn().mockResolvedValue(
+        JSON.stringify({
+          verdict: "pass",
+          summary: "Validation finished without screenshot bytes.",
+        }),
+      ),
+      getService: jest.fn().mockReturnValue(null),
+    } as unknown as IAgentRuntime;
+
+    const result = await validateTaskCompletion(
+      {
+        runtime,
+        taskRegistry: {
+          getThread: jest.fn().mockResolvedValue(createThreadDetail()),
+        },
+      } as never,
+      {
+        sessionId: "session-empty-shot",
+        taskCtx: {
+          sessionId: "session-empty-shot",
+          threadId: "thread-1",
+          label: "empty-shot-agent",
+          originalTask: "Handle empty screenshot payloads",
+          workdir: "/workspace/project",
+        } as never,
+        completionReasoning: "The screenshot route returned an empty body.",
+        completionSummary: "Validation should record the empty payload error.",
+        turnOutput: "Screenshot endpoint returned 200 with no bytes.",
+      },
+    );
+
+    const report = JSON.parse(await readFile(result.reportPath, "utf8")) as {
+      evidence: {
+        screenshot: { status: string; reason?: string };
+      };
+    };
+    expect(report.evidence.screenshot).toEqual({
+      status: "unavailable",
+      reason: "Screenshot endpoint returned an empty PNG payload",
+    });
+  });
+
+  it("escalates when the validation model returns invalid JSON", async () => {
+    const runtime = {
+      useModel: jest.fn().mockImplementation((modelType: ModelType) => {
+        if (modelType === ModelType.IMAGE_DESCRIPTION) {
+          return Promise.resolve({
+            description: "Screenshot shows a terminal window.",
+          });
+        }
+        return Promise.resolve("definitely not json");
+      }),
+      getService: jest.fn().mockReturnValue(null),
+    } as unknown as IAgentRuntime;
+
+    const result = await validateTaskCompletion(
+      {
+        runtime,
+        taskRegistry: {
+          getThread: jest.fn().mockResolvedValue(createThreadDetail()),
+        },
+      } as never,
+      {
+        sessionId: "session-invalid-validator",
+        taskCtx: {
+          sessionId: "session-invalid-validator",
+          threadId: "thread-1",
+          label: "validator-agent",
+          originalTask: "Handle invalid validator output",
+          workdir: "/workspace/project",
+        } as never,
+        completionReasoning: "The validator returned nonsense.",
+        completionSummary: "This should escalate for human review.",
+        turnOutput: "Validator output was invalid JSON.",
+      },
+    );
+
+    expect(result.verdict).toBe("escalate");
+    expect(result.summary).toContain("needs human review");
+  });
+
+  it("dedupes and caps trajectory evidence to three relevant links", async () => {
+    const runtime = {
+      useModel: jest.fn().mockImplementation((modelType: ModelType) => {
+        if (modelType === ModelType.IMAGE_DESCRIPTION) {
+          return Promise.resolve({
+            description: "Screenshot shows the validation view.",
+          });
+        }
+        return Promise.resolve(
+          JSON.stringify({
+            verdict: "pass",
+            summary: "Validation finished with relevant trajectory evidence.",
+          }),
+        );
+      }),
+      getService: jest.fn((name: string) =>
+        name === "trajectory_logger"
+          ? {
+              listTrajectories: jest.fn().mockResolvedValue({
+                trajectories: [
+                  {
+                    id: "traj-1",
+                    status: "completed",
+                    llmCallCount: 2,
+                    createdAt: "2026-04-06T00:00:01.000Z",
+                    metadata: {
+                      orchestrator: {
+                        sessionId: "session-1",
+                        taskLabel: "failover-agent",
+                      },
+                    },
+                  },
+                  {
+                    id: "traj-1",
+                    status: "completed",
+                    llmCallCount: 2,
+                    createdAt: "2026-04-06T00:00:01.000Z",
+                    metadata: {
+                      orchestrator: {
+                        sessionId: "session-1",
+                        taskLabel: "failover-agent",
+                      },
+                    },
+                  },
+                  {
+                    id: "traj-2",
+                    status: "completed",
+                    llmCallCount: 3,
+                    createdAt: "2026-04-06T00:00:02.000Z",
+                    metadata: { sessionId: "session-1" },
+                  },
+                  {
+                    id: "traj-3",
+                    status: "completed",
+                    llmCallCount: 4,
+                    createdAt: "2026-04-06T00:00:03.000Z",
+                    metadata: { taskLabel: "failover-agent" },
+                  },
+                  {
+                    id: "traj-ignored",
+                    status: "completed",
+                    llmCallCount: 9,
+                    createdAt: "2026-04-06T00:00:04.000Z",
+                    metadata: {
+                      orchestrator: {
+                        sessionId: "other-session",
+                        taskLabel: "other-agent",
+                      },
+                    },
+                  },
+                ],
+              }),
+            }
+          : null,
+      ),
+    } as unknown as IAgentRuntime;
+
+    const result = await validateTaskCompletion(
+      {
+        runtime,
+        taskRegistry: {
+          getThread: jest.fn().mockResolvedValue(createThreadDetail()),
+        },
+      } as never,
+      {
+        sessionId: "session-1",
+        taskCtx: {
+          sessionId: "session-1",
+          threadId: "thread-1",
+          label: "failover-agent",
+          originalTask: "Implement durable failover",
+          workdir: "/workspace/project",
+        } as never,
+        completionReasoning: "The task completed with several trajectory entries.",
+        completionSummary: "Only relevant unique trajectories should remain.",
+        turnOutput: "Trajectory logging completed.",
+      },
+    );
+
+    const trajectoryArtifacts = result.artifacts.filter(
+      (artifact) => artifact.artifactType === "trajectory_link",
+    );
+    expect(trajectoryArtifacts).toHaveLength(3);
+    expect(trajectoryArtifacts.map((artifact) => artifact.metadata?.trajectoryId)).toEqual([
+      "traj-1",
+      "traj-2",
+      "traj-3",
+    ]);
+  });
+
+  it("records a semantic verification error when the vision model returns no usable description", async () => {
+    const runtime = {
+      useModel: jest.fn().mockImplementation((modelType: ModelType) => {
+        if (modelType === ModelType.IMAGE_DESCRIPTION) {
+          return Promise.resolve({});
+        }
+        return Promise.resolve(
+          JSON.stringify({
+            verdict: "pass",
+            summary: "Validation completed with unusable screenshot semantics.",
+          }),
+        );
+      }),
+      getService: jest.fn().mockReturnValue(null),
+    } as unknown as IAgentRuntime;
+
+    const result = await validateTaskCompletion(
+      {
+        runtime,
+        taskRegistry: {
+          getThread: jest.fn().mockResolvedValue(createThreadDetail()),
+        },
+      } as never,
+      {
+        sessionId: "session-empty-vision",
+        taskCtx: {
+          sessionId: "session-empty-vision",
+          threadId: "thread-1",
+          label: "empty-vision-agent",
+          originalTask: "Handle unusable screenshot descriptions",
+          workdir: "/workspace/project",
+        } as never,
+        completionReasoning: "The screenshot was captured but the vision model returned nothing useful.",
+        completionSummary: "Validation should preserve the semantic verification failure.",
+        turnOutput: "Vision model returned an empty object.",
+      },
+    );
+
+    const screenshotArtifact = result.artifacts.find(
+      (artifact) => artifact.artifactType === "screenshot",
+    );
+    expect(screenshotArtifact?.metadata).toMatchObject({
+      contentVerified: false,
+      contentVerificationError:
+        "Vision model returned no usable screenshot description.",
+      fileIntegrityVerified: true,
+    });
+  });
 });
