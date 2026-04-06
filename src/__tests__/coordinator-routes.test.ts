@@ -347,6 +347,23 @@ describe("coordinator routes", () => {
       expect(res._getJson().id).toBe("thread-1");
     });
 
+    it("returns 404 when a persisted task thread is not found", async () => {
+      asMock(ctx.coordinator).getTaskThread.mockResolvedValue(null);
+
+      const req = createMockReq("GET", `${PREFIX}/threads/missing-thread`);
+      const res = createMockRes();
+
+      await handleCoordinatorRoutes(
+        req,
+        res,
+        `${PREFIX}/threads/missing-thread`,
+        ctx,
+      );
+
+      expect(res._getStatus()).toBe(404);
+      expect(res._getJson().error).toContain("Task thread not found");
+    });
+
     it("archives a task thread", async () => {
       const req = createMockReq("POST", `${PREFIX}/threads/thread-1/archive`);
       const res = createMockRes();
