@@ -154,6 +154,17 @@ export interface TaskTranscriptRecord {
   createdAt: string;
 }
 
+export interface TaskPendingDecisionRecord {
+  sessionId: string;
+  threadId: string;
+  promptText: string;
+  recentOutput: string;
+  llmDecision: Record<string, unknown>;
+  taskContext: Record<string, unknown>;
+  createdAt: number;
+  updatedAt: string;
+}
+
 export interface TaskThreadSummary extends TaskThreadRecord {
   sessionCount: number;
   activeSessionCount: number;
@@ -264,6 +275,16 @@ export interface RecordTaskTranscriptInput {
   direction: TaskTranscriptRecord["direction"];
   content: string;
   metadata?: Record<string, unknown>;
+}
+
+export interface UpsertPendingDecisionInput {
+  sessionId: string;
+  threadId: string;
+  promptText: string;
+  recentOutput: string;
+  llmDecision: Record<string, unknown>;
+  taskContext: Record<string, unknown>;
+  createdAt?: number;
 }
 
 export interface ListTaskThreadsOptions {
@@ -566,6 +587,19 @@ function parseTranscriptRow(row: Row): TaskTranscriptRecord {
   };
 }
 
+function parsePendingDecisionRow(row: Row): TaskPendingDecisionRecord {
+  return {
+    sessionId: toText(row.session_id),
+    threadId: toText(row.thread_id),
+    promptText: toText(row.prompt_text),
+    recentOutput: toText(row.recent_output),
+    llmDecision: parseJsonRecord(row.llm_decision_json),
+    taskContext: parseJsonRecord(row.task_context_json),
+    createdAt: toNumber(row.created_at, 0),
+    updatedAt: toText(row.updated_at),
+  };
+}
+
 function buildSearchText(parts: Array<string | null | undefined>): string {
   return parts
     .map((part) => (part ?? "").trim().toLowerCase())
@@ -711,6 +745,20 @@ export class TaskRegistry {
 
     await executeRawSql(
       this.runtime,
+      `CREATE TABLE IF NOT EXISTS orchestrator_task_pending_decisions (
+        session_id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL,
+        prompt_text TEXT NOT NULL,
+        recent_output TEXT NOT NULL DEFAULT '',
+        llm_decision_json TEXT NOT NULL DEFAULT '{}',
+        task_context_json TEXT NOT NULL DEFAULT '{}',
+        created_at BIGINT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+    );
+
+    await executeRawSql(
+      this.runtime,
       `CREATE INDEX IF NOT EXISTS idx_orchestrator_task_threads_status
          ON orchestrator_task_threads(status)`,
     );
@@ -748,6 +796,16 @@ export class TaskRegistry {
       this.runtime,
       `CREATE INDEX IF NOT EXISTS idx_orchestrator_task_transcripts_thread_id
          ON orchestrator_task_transcripts(thread_id, timestamp DESC)`,
+    );
+    await executeRawSql(
+      this.runtime,
+      `CREATE INDEX IF NOT EXISTS idx_orchestrator_task_pending_decisions_thread_id
+         ON orchestrator_task_pending_decisions(thread_id)`,
+    );
+    await executeRawSql(
+      this.runtime,
+      `CREATE INDEX IF NOT EXISTS idx_orchestrator_task_pending_decisions_created_at
+         ON orchestrator_task_pending_decisions(created_at DESC)`,
     );
 
     schemaReady.add(key);
@@ -1340,6 +1398,87 @@ export class TaskRegistry {
       data: {},
     });
     await this.recomputeThreadStatus(threadId);
+  }
+
+  async upsertPendingDecision(
+    input: UpsertPendingDecisionInput,
+  ): Promise<void> {
+    await this.ensureSchema();
+    const createdAt = input.createdAt ?? Date.now();
+    const nowIso = isoNow();
+    await executeRawSql(
+      this.runtime,
+      `INSERT INTO orchestrator_task_pending_decisions (
+        session_id,
+        thread_id,
+        prompt_text,
+        recent_output,
+        llm_decision_json,
+        task_context_json,
+        created_at,
+        updated_at
+      ) VALUES (
+        ${sqlQuote(input.sessionId)},
+        ${sqlQuote(input.threadId)},
+        ${sqlQuote(input.promptText)},
+        ${sqlQuote(input.recentOutput)},
+        ${sqlJson(input.llmDecision)},
+        ${sqlJson(input.taskContext)},
+        ${sqlInteger(createdAt)},
+        ${sqlQuote(nowIso)}
+      )
+      ON CONFLICT(session_id) DO UPDATE SET
+        thread_id = EXCLUDED.thread_id,
+        prompt_text = EXCLUDED.prompt_text,
+        recent_output = EXCLUDED.recent_output,
+        llm_decision_json = EXCLUDED.llm_decision_json,
+        task_context_json = EXCLUDED.task_context_json,
+        created_at = EXCLUDED.created_at,
+        updated_at = EXCLUDED.updated_at`,
+    );
+    await executeRawSql(
+      this.runtime,
+      `UPDATE orchestrator_task_threads
+          SET updated_at = ${sqlQuote(nowIso)}
+        WHERE id = ${sqlQuote(input.threadId)}`,
+    );
+  }
+
+  async deletePendingDecision(sessionId: string): Promise<void> {
+    await this.ensureSchema();
+    const rows = await executeRawSql(
+      this.runtime,
+      `SELECT thread_id
+         FROM orchestrator_task_pending_decisions
+        WHERE session_id = ${sqlQuote(sessionId)}
+        LIMIT 1`,
+    );
+    if (rows.length === 0) return;
+    const threadId = toText(rows[0]?.thread_id);
+    await executeRawSql(
+      this.runtime,
+      `DELETE FROM orchestrator_task_pending_decisions
+        WHERE session_id = ${sqlQuote(sessionId)}`,
+    );
+    if (threadId) {
+      await executeRawSql(
+        this.runtime,
+        `UPDATE orchestrator_task_threads
+            SET updated_at = ${sqlQuote(isoNow())}
+          WHERE id = ${sqlQuote(threadId)}`,
+      );
+    }
+  }
+
+  async listPendingDecisions(): Promise<TaskPendingDecisionRecord[]> {
+    await this.ensureSchema();
+    const rows = await executeRawSql(
+      this.runtime,
+      `SELECT *
+         FROM orchestrator_task_pending_decisions
+        ORDER BY created_at ASC`,
+    );
+    return rows.map(parsePendingDecisionRow);
   }
 
   async getLastUsedRepo(): Promise<string | undefined> {

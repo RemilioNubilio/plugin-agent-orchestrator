@@ -31,6 +31,7 @@ import {
 } from "./task-agent-frameworks.js";
 import {
   type CreateTaskThreadInput,
+  type TaskPendingDecisionRecord,
   type TaskThreadDetail,
   type TaskThreadStatus,
   type TaskThreadSummary,
@@ -459,6 +460,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 	async start(ptyService: PTYService): Promise<void> {
 		await this.taskRegistry.ensureSchema();
 		await this.taskRegistry.recoverInterruptedTasks();
+		await this.rehydratePendingDecisions();
 		this.ptyService = ptyService;
 		this.unsubscribeEvents = ptyService.onSessionEvent(
 			(sessionId, event, data) => {
@@ -476,6 +478,117 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 		}, IDLE_SCAN_INTERVAL_MS);
 
 		this.log("SwarmCoordinator started");
+	}
+
+	private restorePendingTaskContext(
+		record: TaskPendingDecisionRecord,
+	): TaskContext {
+		const raw = record.taskContext;
+		const status = (() => {
+			switch (typeof raw.status === "string" ? raw.status : "") {
+				case "active":
+				case "blocked":
+				case "tool_running":
+				case "completed":
+				case "error":
+				case "stopped":
+					return raw.status as TaskContext["status"];
+				default:
+					return "blocked";
+			}
+		})();
+		return {
+			threadId:
+				typeof raw.threadId === "string" && raw.threadId.trim().length > 0
+					? raw.threadId
+					: record.threadId,
+			sessionId: record.sessionId,
+			agentType:
+				typeof raw.agentType === "string" && raw.agentType.trim().length > 0
+					? (raw.agentType as CodingAgentType)
+					: "claude",
+			label:
+				typeof raw.label === "string" && raw.label.trim().length > 0
+					? raw.label
+					: `agent-${record.sessionId.slice(-8)}`,
+			originalTask:
+				typeof raw.originalTask === "string" ? raw.originalTask : record.promptText,
+			workdir: typeof raw.workdir === "string" ? raw.workdir : "",
+			...(typeof raw.repo === "string" && raw.repo.trim().length > 0
+				? { repo: raw.repo }
+				: {}),
+			status,
+			decisions: Array.isArray(raw.decisions)
+				? (raw.decisions.filter((entry) => Boolean(entry && typeof entry === "object")) as CoordinationDecision[])
+				: [],
+			autoResolvedCount:
+				typeof raw.autoResolvedCount === "number" ? raw.autoResolvedCount : 0,
+			registeredAt:
+				typeof raw.registeredAt === "number"
+					? raw.registeredAt
+					: record.createdAt,
+			lastActivityAt:
+				typeof raw.lastActivityAt === "number"
+					? raw.lastActivityAt
+					: record.createdAt,
+			idleCheckCount:
+				typeof raw.idleCheckCount === "number" ? raw.idleCheckCount : 0,
+			taskDelivered: raw.taskDelivered === true,
+			...(typeof raw.completionSummary === "string"
+				? { completionSummary: raw.completionSummary }
+				: {}),
+			lastSeenDecisionIndex:
+				typeof raw.lastSeenDecisionIndex === "number"
+					? raw.lastSeenDecisionIndex
+					: 0,
+			...(typeof raw.lastInputSentAt === "number"
+				? { lastInputSentAt: raw.lastInputSentAt }
+				: {}),
+			...(typeof raw.stoppedAt === "number" ? { stoppedAt: raw.stoppedAt } : {}),
+		};
+	}
+
+	private restorePendingLlmDecision(
+		record: TaskPendingDecisionRecord,
+	): CoordinationLLMResponse {
+		const raw = record.llmDecision;
+		const action =
+			typeof raw.action === "string" &&
+			["respond", "escalate", "ignore", "complete"].includes(raw.action)
+				? (raw.action as CoordinationLLMResponse["action"])
+				: "escalate";
+		return {
+			action,
+			...(typeof raw.response === "string" ? { response: raw.response } : {}),
+			...(raw.useKeys === true ? { useKeys: true } : {}),
+			...(Array.isArray(raw.keys)
+				? {
+						keys: raw.keys.filter(
+							(entry): entry is string => typeof entry === "string",
+						),
+					}
+				: {}),
+			reasoning:
+				typeof raw.reasoning === "string" && raw.reasoning.trim().length > 0
+					? raw.reasoning
+					: "Recovered pending confirmation from persisted coordinator state.",
+		};
+	}
+
+	private async rehydratePendingDecisions(): Promise<void> {
+		const records = await this.taskRegistry.listPendingDecisions();
+		for (const record of records) {
+			const taskContext = this.restorePendingTaskContext(record);
+			this.tasks.set(record.sessionId, taskContext);
+			this.pendingDecisions.set(record.sessionId, {
+				sessionId: record.sessionId,
+				promptText: record.promptText,
+				recentOutput: record.recentOutput,
+				llmDecision: this.restorePendingLlmDecision(record),
+				taskContext,
+				createdAt: record.createdAt,
+			});
+		}
 	}
 
 	async stop(): Promise<void> {
@@ -1407,7 +1520,6 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 			throw new Error(`No pending decision for session ${sessionId}`);
 		}
 
-		this.pendingDecisions.delete(sessionId);
 		const taskCtx = this.tasks.get(sessionId);
 
 		if (approved) {
@@ -1441,6 +1553,20 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 			}
 
 			await this.executeDecision(sessionId, decision);
+			this.pendingDecisions.delete(sessionId);
+			await this.taskRegistry.deletePendingDecision(sessionId);
+			if (taskCtx) {
+				await this.taskRegistry.appendEvent({
+					threadId: taskCtx.threadId,
+					sessionId,
+					eventType: "confirmation_approved",
+					summary: `Approved pending confirmation for "${taskCtx.label}"`,
+					data: {
+						action: decision.action,
+						response: decision.response ?? null,
+					},
+				});
+			}
 
 			this.broadcast({
 				type: "confirmation_approved",
@@ -1463,6 +1589,17 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 					promptText: pending.promptText,
 					decision: "escalate",
 					reasoning: "Human rejected the suggested action",
+				});
+			}
+			this.pendingDecisions.delete(sessionId);
+			await this.taskRegistry.deletePendingDecision(sessionId);
+			if (pending.taskContext.threadId) {
+				await this.taskRegistry.appendEvent({
+					threadId: pending.taskContext.threadId,
+					sessionId,
+					eventType: "confirmation_rejected",
+					summary: `Rejected pending confirmation for "${pending.taskContext.label}"`,
+					data: { prompt: pending.promptText },
 				});
 			}
 

@@ -23,6 +23,7 @@ const createMockRuntime = () => ({
 const createMockTaskRegistry = () => ({
 	ensureSchema: jest.fn().mockResolvedValue(undefined),
 	recoverInterruptedTasks: jest.fn().mockResolvedValue(undefined),
+	listPendingDecisions: jest.fn().mockResolvedValue([]),
 	getThreadRecord: jest.fn().mockResolvedValue({ id: "thread-1" }),
 	createThread: jest.fn().mockResolvedValue({ id: "thread-1" }),
 	getThreadSummary: jest.fn().mockResolvedValue(null),
@@ -35,6 +36,8 @@ const createMockTaskRegistry = () => ({
 	recordDecision: jest.fn().mockResolvedValue(undefined),
 	appendEvent: jest.fn().mockResolvedValue(undefined),
 	recordArtifact: jest.fn().mockResolvedValue(undefined),
+	upsertPendingDecision: jest.fn().mockResolvedValue(undefined),
+	deletePendingDecision: jest.fn().mockResolvedValue(undefined),
 	updateThreadSummary: jest.fn().mockResolvedValue(undefined),
 	getLastUsedRepo: jest.fn().mockResolvedValue(undefined),
 });
@@ -85,6 +88,51 @@ describe("SwarmCoordinator", () => {
 	describe("lifecycle", () => {
 		it("subscribes to PTY events on start", () => {
 			expect(mockPty.onSessionEvent).toHaveBeenCalledTimes(1);
+		});
+
+		it("rehydrates persisted pending confirmations on start", async () => {
+			const runtime = createMockRuntime();
+			const pty = createMockPTYService();
+			const taskRegistry = createMockTaskRegistry();
+			taskRegistry.listPendingDecisions.mockResolvedValue([
+				{
+					sessionId: "s-pending",
+					threadId: "thread-pending",
+					promptText: "Allow deploy?",
+					recentOutput: "Waiting for approval",
+					llmDecision: {
+						action: "respond",
+						response: "y",
+						reasoning: "Safe approval",
+					},
+					taskContext: {
+						threadId: "thread-pending",
+						sessionId: "s-pending",
+						agentType: "claude",
+						label: "pending-agent",
+						originalTask: "Ship the feature",
+						workdir: "/workspace/pending",
+						status: "blocked",
+						decisions: [],
+						autoResolvedCount: 0,
+						registeredAt: 1,
+						lastActivityAt: 2,
+						idleCheckCount: 0,
+						taskDelivered: true,
+						lastSeenDecisionIndex: 0,
+					},
+					createdAt: 123,
+					updatedAt: "2026-04-06T00:00:00.000Z",
+				},
+			]);
+
+			const coord = new SwarmCoordinator(runtime);
+			coord.taskRegistry = taskRegistry;
+			await coord.start(pty);
+
+			expect(coord.getPendingConfirmations()).toHaveLength(1);
+			expect(coord.getPendingConfirmations()[0]?.sessionId).toBe("s-pending");
+			expect(coord.getTaskContext("s-pending")?.status).toBe("blocked");
 		});
 
 		it("unsubscribes on stop", async () => {
@@ -233,8 +281,16 @@ describe("SwarmCoordinator", () => {
 			// task_complete now goes through handleTurnComplete — mock LLM to say "complete"
 			// Turn-complete events are coalesced with a 500ms debounce, so we need
 			// to wait for the coalesce timer to fire before checking the outcome.
-			mockRuntime.useModel.mockResolvedValue(
-				'{"action":"complete","reasoning":"All objectives met"}',
+			mockRuntime.useModel.mockImplementation(
+				async (
+					_modelType: string,
+					options?: { prompt?: string },
+				) => {
+					if (options?.prompt?.includes("Return strict JSON only")) {
+						return '{"verdict":"pass","summary":"Validation confirmed completion."}';
+					}
+					return '{"action":"complete","reasoning":"All objectives met"}';
+				},
 			);
 
 			await coordinator.handleSessionEvent("s-1", "task_complete", {
@@ -354,8 +410,16 @@ describe("SwarmCoordinator", () => {
 			const ctx = coordinator.getTaskContext("s-1");
 			ctx.status = "stopped";
 			ctx.stoppedAt = Date.now();
-			mockRuntime.useModel.mockResolvedValue(
-				'{"action":"complete","reasoning":"Recovered late completion"}',
+			mockRuntime.useModel.mockImplementation(
+				async (
+					_modelType: string,
+					options?: { prompt?: string },
+				) => {
+					if (options?.prompt?.includes("Return strict JSON only")) {
+						return '{"verdict":"pass","summary":"Validation confirmed the recovered completion."}';
+					}
+					return '{"action":"complete","reasoning":"Recovered late completion"}';
+				},
 			);
 
 			await coordinator.handleSessionEvent("s-1", "task_complete", {

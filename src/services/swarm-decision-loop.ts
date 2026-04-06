@@ -12,6 +12,7 @@ import * as path from "node:path";
 import { ModelType } from "@elizaos/core";
 import { cleanForChat, extractCompletionSummary } from "./ansi-utils.js";
 import type {
+  PendingDecision,
   SwarmCoordinatorContext,
   TaskContext,
 } from "./swarm-coordinator.js";
@@ -1479,7 +1480,7 @@ export async function handleConfirmDecision(
       // Queue for human with no suggestion
       taskCtx.status = "blocked";
       await ctx.syncTaskContext(taskCtx);
-      ctx.pendingDecisions.set(sessionId, {
+      const pendingDecision: PendingDecision = {
         sessionId,
         promptText,
         recentOutput: output,
@@ -1489,20 +1490,51 @@ export async function handleConfirmDecision(
         },
         taskContext: taskCtx,
         createdAt: Date.now(),
+      };
+      ctx.pendingDecisions.set(sessionId, pendingDecision);
+      await ctx.taskRegistry.upsertPendingDecision({
+        sessionId,
+        threadId: taskCtx.threadId,
+        promptText,
+        recentOutput: output,
+        llmDecision: pendingDecision.llmDecision as unknown as Record<string, unknown>,
+        taskContext: taskCtx as unknown as Record<string, unknown>,
+        createdAt: pendingDecision.createdAt,
       });
     } else {
       // Queue the LLM's suggestion for human approval
       taskCtx.status = "blocked";
       await ctx.syncTaskContext(taskCtx);
-      ctx.pendingDecisions.set(sessionId, {
+      const pendingDecision: PendingDecision = {
         sessionId,
         promptText,
         recentOutput: output,
         llmDecision: decision,
         taskContext: taskCtx,
         createdAt: Date.now(),
+      };
+      ctx.pendingDecisions.set(sessionId, pendingDecision);
+      await ctx.taskRegistry.upsertPendingDecision({
+        sessionId,
+        threadId: taskCtx.threadId,
+        promptText,
+        recentOutput: output,
+        llmDecision: decision as unknown as Record<string, unknown>,
+        taskContext: taskCtx as unknown as Record<string, unknown>,
+        createdAt: pendingDecision.createdAt,
       });
     }
+
+    await ctx.taskRegistry.appendEvent({
+      threadId: taskCtx.threadId,
+      sessionId,
+      eventType: "pending_confirmation",
+      summary: `Queued human confirmation for "${taskCtx.label}"`,
+      data: {
+        promptText,
+        suggestedAction: decision?.action ?? "escalate",
+      },
+    });
 
     // When Milaidy's pipeline made the suggestion, she already spoke via WS broadcast.
     // Only broadcast the pending_confirmation event for small-LLM suggestions or

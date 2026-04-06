@@ -133,4 +133,46 @@ describe("TaskRegistry", () => {
     expect(detail?.status).toBe("interrupted");
     expect(detail?.archivedAt).toBeNull();
   });
+
+  it("persists pending confirmations across registry instances", async () => {
+    const thread = await registry.createThread({
+      id: "thread-registry-3",
+      title: "Persist pending confirmation state",
+      originalRequest: "Keep human approvals durable",
+      kind: "coding",
+    });
+
+    await registry.upsertPendingDecision({
+      sessionId: "session-registry-3",
+      threadId: thread.id,
+      promptText: "Allow deploy to production?",
+      recentOutput: "Waiting for confirmation",
+      llmDecision: {
+        action: "respond",
+        response: "y",
+        reasoning: "Deployment plan already validated",
+      },
+      taskContext: {
+        threadId: thread.id,
+        sessionId: "session-registry-3",
+        agentType: "claude",
+        label: "deploy-agent",
+        originalTask: "Deploy the verified release",
+        workdir: "/tmp/milady-pending",
+        status: "blocked",
+      },
+      createdAt: 12345,
+    });
+
+    const reloadedRegistry = new TaskRegistry(runtime);
+    await reloadedRegistry.ensureSchema();
+    const pending = await reloadedRegistry.listPendingDecisions();
+    expect(pending).toHaveLength(1);
+    expect(pending[0]?.sessionId).toBe("session-registry-3");
+    expect(pending[0]?.llmDecision.response).toBe("y");
+    expect(pending[0]?.taskContext.label).toBe("deploy-agent");
+
+    await reloadedRegistry.deletePendingDecision("session-registry-3");
+    expect(await registry.listPendingDecisions()).toHaveLength(0);
+  });
 });
