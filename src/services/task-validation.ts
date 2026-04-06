@@ -127,7 +127,9 @@ type ValidationScreenshotCapture =
       fileIntegrityVerified: boolean;
       sha256: string;
       captureScope: "desktop-fullscreen";
-      contentVerified: false;
+      contentVerified: boolean;
+      contentSummary?: string;
+      contentVerificationError?: string;
     }
   | {
       status: "unavailable";
@@ -151,6 +153,9 @@ function resolveAuthHeaders(): HeadersInit | undefined {
 }
 
 async function captureValidationScreenshot(
+  runtime: IAgentRuntime,
+  task: TaskContext,
+  thread: TaskThreadDetail | null,
   threadId: string,
   sessionId: string,
 ): Promise<ValidationScreenshotCapture> {
@@ -184,6 +189,13 @@ async function captureValidationScreenshot(
     );
     await writeFile(screenshotPath, bytes);
 
+    const screenshotDescription = await describeScreenshotContent(
+      runtime,
+      task,
+      thread,
+      bytes,
+    );
+
     return {
       status: "captured",
       path: screenshotPath,
@@ -191,7 +203,16 @@ async function captureValidationScreenshot(
       fileIntegrityVerified: pngHeaderValid(bytes) && bytes.length > 1024,
       sha256: createHash("sha256").update(bytes).digest("hex"),
       captureScope: "desktop-fullscreen",
-      contentVerified: false,
+      contentVerified: screenshotDescription.contentVerified,
+      ...(screenshotDescription.contentSummary
+        ? { contentSummary: screenshotDescription.contentSummary }
+        : {}),
+      ...(screenshotDescription.contentVerificationError
+        ? {
+            contentVerificationError:
+              screenshotDescription.contentVerificationError,
+          }
+        : {}),
     };
   } catch (error) {
     return {
@@ -254,6 +275,68 @@ async function listRelevantTrajectories(
   return trajectories;
 }
 
+function extractImageDescriptionText(raw: unknown): string | null {
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  if (raw && typeof raw === "object") {
+    const description = (raw as { description?: unknown }).description;
+    if (typeof description === "string" && description.trim().length > 0) {
+      return description.trim();
+    }
+  }
+  return null;
+}
+
+async function describeScreenshotContent(
+  runtime: IAgentRuntime,
+  task: TaskContext,
+  thread: TaskThreadDetail | null,
+  bytes: Uint8Array,
+): Promise<{
+  contentVerified: boolean;
+  contentSummary?: string;
+  contentVerificationError?: string;
+}> {
+  try {
+    const dataUri = `data:image/png;base64,${Buffer.from(bytes).toString("base64")}`;
+    const acceptanceCriteria =
+      thread?.acceptanceCriteria?.length
+        ? thread.acceptanceCriteria.map((item) => `- ${item}`).join("\n")
+        : "- none";
+    const raw = await runtime.useModel(ModelType.IMAGE_DESCRIPTION, {
+      imageUrl: dataUri,
+      prompt: [
+        "Describe this validation screenshot for an orchestrated task.",
+        "Focus on visible terminal output, UI state, status banners, tests, errors, and other completion evidence.",
+        `Task: ${task.originalTask}`,
+        "Acceptance criteria:",
+        acceptanceCriteria,
+        "Return a concise factual description.",
+      ].join("\n"),
+    });
+    const contentSummary = extractImageDescriptionText(raw);
+    if (!contentSummary) {
+      return {
+        contentVerified: false,
+        contentVerificationError:
+          "Vision model returned no usable screenshot description.",
+      };
+    }
+    return {
+      contentVerified: true,
+      contentSummary: truncate(contentSummary, 800),
+    };
+  } catch (error) {
+    return {
+      contentVerified: false,
+      contentVerificationError:
+        error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 function buildValidationPrompt(
   task: TaskContext,
   thread: TaskThreadDetail | null,
@@ -314,7 +397,7 @@ function buildValidationPrompt(
     "",
     "Screenshot evidence:",
     screenshot.status === "captured"
-      ? `- status=captured scope=${screenshot.captureScope} fileIntegrityVerified=${screenshot.fileIntegrityVerified} contentVerified=${screenshot.contentVerified} sha256=${screenshot.sha256} path=${screenshot.path} sizeBytes=${screenshot.sizeBytes}`
+      ? `- status=captured scope=${screenshot.captureScope} fileIntegrityVerified=${screenshot.fileIntegrityVerified} contentVerified=${screenshot.contentVerified} sha256=${screenshot.sha256} path=${screenshot.path} sizeBytes=${screenshot.sizeBytes}${screenshot.contentSummary ? ` summary=${truncate(screenshot.contentSummary, 500)}` : ""}${screenshot.contentVerificationError ? ` contentVerificationError=${screenshot.contentVerificationError}` : ""}`
       : `- status=unavailable reason=${screenshot.reason}`,
     "",
     "Rules:",
@@ -349,7 +432,13 @@ export async function validateTaskCompletion(
     input;
   const thread = await ctx.taskRegistry.getThread(taskCtx.threadId);
   const trajectories = await listRelevantTrajectories(ctx.runtime, taskCtx, thread);
-  const screenshot = await captureValidationScreenshot(taskCtx.threadId, sessionId);
+  const screenshot = await captureValidationScreenshot(
+    ctx.runtime,
+    taskCtx,
+    thread,
+    taskCtx.threadId,
+    sessionId,
+  );
 
   const prompt = buildValidationPrompt(
     taskCtx,
@@ -448,6 +537,15 @@ export async function validateTaskCompletion(
         sha256: screenshot.sha256,
         captureScope: screenshot.captureScope,
         contentVerified: screenshot.contentVerified,
+        ...(screenshot.contentSummary
+          ? { contentSummary: screenshot.contentSummary }
+          : {}),
+        ...(screenshot.contentVerificationError
+          ? {
+              contentVerificationError:
+                screenshot.contentVerificationError,
+            }
+          : {}),
       },
     });
   }

@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { IAgentRuntime } from "@elizaos/core";
+import { ModelType, type IAgentRuntime } from "@elizaos/core";
 
 const { validateTaskCompletion } = await import(
   "../services/task-validation.js"
@@ -131,13 +131,22 @@ describe("validateTaskCompletion", () => {
 
   it("writes a validation report and records screenshot and trajectory evidence", async () => {
     const runtime = {
-      useModel: jest.fn().mockResolvedValue(
-        JSON.stringify({
-          verdict: "pass",
-          summary: "Validation evidence confirms the task is complete.",
-          checklist: ["Tests present", "Screenshot captured"],
-        }),
-      ),
+      useModel: jest.fn().mockImplementation((modelType: ModelType) => {
+        if (modelType === ModelType.IMAGE_DESCRIPTION) {
+          return Promise.resolve({
+            title: "Validation screenshot",
+            description:
+              "The screenshot shows a validation report and successful test output for the task.",
+          });
+        }
+        return Promise.resolve(
+          JSON.stringify({
+            verdict: "pass",
+            summary: "Validation evidence confirms the task is complete.",
+            checklist: ["Tests present", "Screenshot captured"],
+          }),
+        );
+      }),
       getService: jest.fn((name: string) =>
         name === "trajectory_logger"
           ? {
@@ -203,6 +212,7 @@ describe("validateTaskCompletion", () => {
               fileIntegrityVerified: boolean;
               contentVerified: boolean;
               captureScope: string;
+              contentSummary?: string;
             }
           | { status: "unavailable"; reason: string };
         trajectories: Array<{ id: string }>;
@@ -214,8 +224,11 @@ describe("validateTaskCompletion", () => {
       throw new Error("expected captured screenshot evidence");
     }
     expect(report.evidence.screenshot.fileIntegrityVerified).toBe(true);
-    expect(report.evidence.screenshot.contentVerified).toBe(false);
+    expect(report.evidence.screenshot.contentVerified).toBe(true);
     expect(report.evidence.screenshot.captureScope).toBe("desktop-fullscreen");
+    expect(report.evidence.screenshot.contentSummary).toContain(
+      "validation report",
+    );
     expect(report.evidence.trajectories[0]?.id).toBe("traj-1");
   });
 
@@ -246,12 +259,21 @@ describe("validateTaskCompletion", () => {
       process.env.MILADY_API_PORT = String(address.port);
 
       const runtime = {
-        useModel: jest.fn().mockResolvedValue(
-          JSON.stringify({
-            verdict: "pass",
-            summary: "Validation completed with loopback screenshot capture.",
-          }),
-        ),
+        useModel: jest.fn().mockImplementation((modelType: ModelType) => {
+          if (modelType === ModelType.IMAGE_DESCRIPTION) {
+            return Promise.resolve({
+              title: "Loopback screenshot",
+              description:
+                "The screenshot contains a rendered desktop capture used for validation.",
+            });
+          }
+          return Promise.resolve(
+            JSON.stringify({
+              verdict: "pass",
+              summary: "Validation completed with loopback screenshot capture.",
+            }),
+          );
+        }),
         getService: jest.fn().mockReturnValue(null),
       } as unknown as IAgentRuntime;
 
@@ -283,7 +305,8 @@ describe("validateTaskCompletion", () => {
       expect(screenshotArtifact?.path).toContain("screenshot-session-loopback-");
       expect(screenshotArtifact?.metadata).toMatchObject({
         captureScope: "desktop-fullscreen",
-        contentVerified: false,
+        contentVerified: true,
+        contentSummary: expect.stringContaining("rendered desktop capture"),
         fileIntegrityVerified: true,
       });
     } finally {
@@ -294,5 +317,54 @@ describe("validateTaskCompletion", () => {
         });
       });
     }
+  });
+
+  it("records when screenshot semantic verification is unavailable", async () => {
+    const runtime = {
+      useModel: jest.fn().mockImplementation((modelType: ModelType) => {
+        if (modelType === ModelType.IMAGE_DESCRIPTION) {
+          return Promise.reject(new Error("vision unavailable"));
+        }
+        return Promise.resolve(
+          JSON.stringify({
+            verdict: "pass",
+            summary: "Validation completed without screenshot semantics.",
+          }),
+        );
+      }),
+      getService: jest.fn().mockReturnValue(null),
+    } as unknown as IAgentRuntime;
+
+    const result = await validateTaskCompletion(
+      {
+        runtime,
+        taskRegistry: {
+          getThread: jest.fn().mockResolvedValue(createThreadDetail()),
+        },
+      } as never,
+      {
+        sessionId: "session-no-vision",
+        taskCtx: {
+          sessionId: "session-no-vision",
+          threadId: "thread-1",
+          label: "visionless-agent",
+          originalTask: "Capture screenshot semantics",
+          workdir: "/workspace/project",
+        } as never,
+        completionReasoning: "A screenshot was captured even though vision is offline.",
+        completionSummary: "Validation should record the missing screenshot semantic step.",
+        turnOutput: "Screenshot capture succeeded but semantic verification was unavailable.",
+      },
+    );
+
+    const screenshotArtifact = result.artifacts.find(
+      (artifact) => artifact.artifactType === "screenshot",
+    );
+    expect(screenshotArtifact?.metadata).toMatchObject({
+      captureScope: "desktop-fullscreen",
+      contentVerified: false,
+      contentVerificationError: "vision unavailable",
+      fileIntegrityVerified: true,
+    });
   });
 });
