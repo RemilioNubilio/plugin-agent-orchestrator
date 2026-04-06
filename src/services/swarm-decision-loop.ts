@@ -31,6 +31,7 @@ import {
   classifyEventTier,
   type TriageContext,
 } from "./swarm-event-triage.js";
+import { validateTaskCompletion } from "./task-validation.js";
 import { withTrajectoryContext } from "./trajectory-context.js";
 
 // ─── Constants ───
@@ -543,30 +544,7 @@ export async function executeDecision(
     }
 
     case "complete": {
-      // LLM recognized the task is done — trigger completion flow
       const taskCtx = ctx.tasks.get(sessionId);
-      if (taskCtx) {
-        taskCtx.status = "completed";
-        // Log to persistent history (non-blocking but observed)
-        (ctx as { history?: { append: (e: unknown) => Promise<void> } }).history?.append({
-          timestamp: Date.now(),
-          type: "task_completed",
-          sessionId,
-          label: taskCtx.label,
-          agentType: taskCtx.agentType,
-          repo: taskCtx.repo,
-          workdir: taskCtx.workdir,
-          completionSummary: decision.reasoning,
-        }).catch((err) => {
-          ctx.log(`Failed to persist task completion for "${taskCtx.label}" (${sessionId}): ${err}`);
-        });
-      }
-      ctx.broadcast({
-        type: "task_complete",
-        sessionId,
-        timestamp: Date.now(),
-        data: { reasoning: decision.reasoning },
-      });
 
       // Extract meaningful artifacts (PR URLs, commits) instead of
       // dumping raw terminal output which is full of TUI noise.
@@ -578,32 +556,184 @@ export async function executeDecision(
         /* ignore */
       }
 
-      // Store summary on task context for swarm-wide synthesis
-      if (taskCtx) {
-        taskCtx.completionSummary = summary || decision.reasoning || "";
+      if (!taskCtx) {
+        ctx.broadcast({
+          type: "task_complete",
+          sessionId,
+          timestamp: Date.now(),
+          data: { reasoning: decision.reasoning },
+        });
+        ctx.ptyService.stopSession(sessionId, /* force */ true).catch((err) => {
+          ctx.log(`Failed to stop session after LLM-detected completion: ${err}`);
+        });
+        break;
+      }
+
+      taskCtx.completionSummary = summary || decision.reasoning || "";
+      taskCtx.status = "tool_running";
+      await Promise.all([
+        ctx.syncTaskContext(taskCtx),
+        ctx.taskRegistry.appendEvent({
+          threadId: taskCtx.threadId,
+          sessionId,
+          eventType: "validation_started",
+          summary: `Validation started for "${taskCtx.label}"`,
+          data: {
+            completionReasoning: decision.reasoning,
+            completionSummary: taskCtx.completionSummary,
+          },
+        }),
+      ]);
+      ctx.broadcast({
+        type: "tool_running",
+        sessionId,
+        timestamp: Date.now(),
+        data: {
+          description: "validation",
+        },
+      });
+
+      const validation = await validateTaskCompletion(ctx, {
+        sessionId,
+        taskCtx,
+        completionReasoning: decision.reasoning,
+        completionSummary: taskCtx.completionSummary,
+        turnOutput: taskCtx.completionSummary,
+      }).catch(
+        (err) =>
+          ({
+            verdict: "escalate" as const,
+            summary:
+              err instanceof Error
+                ? `Validation failed: ${err.message}`
+                : `Validation failed: ${String(err)}`,
+            followUpPrompt: undefined,
+            reportPath: "",
+            artifacts: [],
+          }) satisfies Awaited<ReturnType<typeof validateTaskCompletion>>,
+      );
+
+      for (const artifact of validation.artifacts) {
+        await ctx.taskRegistry.recordArtifact({
+          threadId: taskCtx.threadId,
+          sessionId,
+          artifactType: artifact.artifactType,
+          title: artifact.title,
+          path: artifact.path ?? null,
+          uri: artifact.uri ?? null,
+          mimeType: artifact.mimeType ?? null,
+          metadata: artifact.metadata ?? {},
+        });
+      }
+
+      if (validation.verdict !== "pass") {
+        const followUpPrompt =
+          validation.followUpPrompt?.trim() ||
+          `Validation found the task incomplete. Continue working until this is resolved:\n\n${validation.summary}`;
+        const nextStatus = validation.verdict === "escalate" ? "blocked" : "active";
+        taskCtx.status = nextStatus;
         await Promise.all([
           ctx.syncTaskContext(taskCtx),
-          ctx.taskRegistry.updateThreadSummary(
-            taskCtx.threadId,
-            taskCtx.completionSummary,
-          ),
           ctx.taskRegistry.appendEvent({
             threadId: taskCtx.threadId,
             sessionId,
-            eventType: "task_status_changed",
-            summary: `Task "${taskCtx.label}" completed`,
+            eventType: "validation_failed",
+            summary: `Validation did not approve "${taskCtx.label}"`,
             data: {
-              status: "completed",
-              completionSummary: taskCtx.completionSummary,
+              verdict: validation.verdict,
+              summary: validation.summary,
+              followUpPrompt:
+                validation.verdict === "revise" ? followUpPrompt : null,
+              reportPath: validation.reportPath || null,
             },
           }),
         ]);
+
+        if (validation.verdict === "revise") {
+          await ctx.ptyService.sendToSession(sessionId, followUpPrompt);
+          taskCtx.lastInputSentAt = Date.now();
+          await ctx.syncTaskContext(taskCtx);
+          ctx.sendChatMessage(
+            `[${taskCtx.label}] Validation asked the agent to continue: ${validation.summary}`,
+            "coding-agent",
+          );
+        } else {
+          ctx.broadcast({
+            type: "escalation",
+            sessionId,
+            timestamp: Date.now(),
+            data: {
+              reason: "validation_escalation",
+              summary: validation.summary,
+            },
+          });
+          ctx.sendChatMessage(
+            `[${taskCtx.label}] Validation needs human review: ${validation.summary}`,
+            "coding-agent",
+          );
+        }
+        break;
       }
 
+      taskCtx.status = "completed";
+      await Promise.all([
+        ctx.syncTaskContext(taskCtx),
+        ctx.taskRegistry.updateThreadSummary(
+          taskCtx.threadId,
+          taskCtx.completionSummary,
+        ),
+        ctx.taskRegistry.appendEvent({
+          threadId: taskCtx.threadId,
+          sessionId,
+          eventType: "validation_passed",
+          summary: `Validation passed for "${taskCtx.label}"`,
+          data: {
+            summary: validation.summary,
+            reportPath: validation.reportPath || null,
+          },
+        }),
+        ctx.taskRegistry.appendEvent({
+          threadId: taskCtx.threadId,
+          sessionId,
+          eventType: "task_status_changed",
+          summary: `Task "${taskCtx.label}" completed`,
+          data: {
+            status: "completed",
+            completionSummary: taskCtx.completionSummary,
+            validationSummary: validation.summary,
+          },
+        }),
+      ]);
+
+      // Log to persistent history (non-blocking but observed)
+      (ctx as { history?: { append: (e: unknown) => Promise<void> } }).history?.append({
+        timestamp: Date.now(),
+        type: "task_completed",
+        sessionId,
+        label: taskCtx.label,
+        agentType: taskCtx.agentType,
+        repo: taskCtx.repo,
+        workdir: taskCtx.workdir,
+        completionSummary: taskCtx.completionSummary,
+        validationSummary: validation.summary,
+      }).catch((err) => {
+        ctx.log(`Failed to persist task completion for "${taskCtx.label}" (${sessionId}): ${err}`);
+      });
+
+      ctx.broadcast({
+        type: "task_complete",
+        sessionId,
+        timestamp: Date.now(),
+        data: {
+          reasoning: decision.reasoning,
+          validationSummary: validation.summary,
+        },
+      });
+
       ctx.sendChatMessage(
-        summary
-          ? `Finished "${taskCtx?.label ?? sessionId}".\n\n${summary}`
-          : `Finished "${taskCtx?.label ?? sessionId}".`,
+        taskCtx.completionSummary
+          ? `Finished "${taskCtx.label}".\n\n${taskCtx.completionSummary}`
+          : `Finished "${taskCtx.label}".`,
         "coding-agent",
       );
 

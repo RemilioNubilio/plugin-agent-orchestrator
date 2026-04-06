@@ -25,6 +25,7 @@ import type {
 import type { AgentCredentials } from "coding-agent-adapters";
 import type { PTYService } from "../services/pty-service.js";
 import { getCoordinator } from "../services/pty-service.js";
+import { requireTaskAgentAccess } from "../services/task-policy.js";
 import { normalizeAgentType } from "../services/pty-types.js";
 import type { CodingWorkspaceService } from "../services/workspace-service.js";
 import {
@@ -106,6 +107,16 @@ export const startCodingTaskAction: Action = {
     options?: HandlerOptions,
     callback?: HandlerCallback,
   ): Promise<ActionResult | undefined> => {
+    const access = await requireTaskAgentAccess(runtime, message, "create");
+    if (!access.allowed) {
+      if (callback) {
+        await callback({
+          text: access.reason,
+        });
+      }
+      return { success: false, error: "FORBIDDEN", text: access.reason };
+    }
+
     const ptyService = runtime.getService("PTY_SERVICE") as unknown as
       | PTYService
       | undefined;

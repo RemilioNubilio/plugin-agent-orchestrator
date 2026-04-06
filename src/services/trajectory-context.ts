@@ -30,7 +30,8 @@ export type OrchestratorDecisionType =
   | "stall-classification"
   | "stall-classify-decide"
   | "swarm-context-generation"
-  | "event-triage";
+  | "event-triage"
+  | "task-validation";
 
 export interface OrchestratorTrajectoryContext {
   /** Source identifier — always "orchestrator" */
