@@ -64,6 +64,12 @@ type TrajectoryLoggerLike = {
   }) => Promise<{ trajectories?: TrajectoryListItem[] } | null | undefined>;
 };
 
+type ScreenshotSemanticResult = {
+  contentVerified: boolean;
+  contentSummary?: string;
+  contentVerificationError?: string;
+};
+
 function extractJsonBlock(raw: string): string {
   const trimmed = raw.trim();
   const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
@@ -288,11 +294,7 @@ async function describeScreenshotContent(
   task: TaskContext,
   thread: TaskThreadDetail | null,
   bytes: Uint8Array,
-): Promise<{
-  contentVerified: boolean;
-  contentSummary?: string;
-  contentVerificationError?: string;
-}> {
+): Promise<ScreenshotSemanticResult> {
   try {
     const dataUri = `data:image/png;base64,${Buffer.from(bytes).toString("base64")}`;
     const acceptanceCriteria =
@@ -329,6 +331,15 @@ async function describeScreenshotContent(
         error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+function describeScreenshotEvidence(
+  screenshot: ValidationScreenshotCapture,
+): string {
+  if (screenshot.status !== "captured") {
+    return `- status=unavailable reason=${screenshot.reason}`;
+  }
+  return `- status=captured scope=${screenshot.captureScope} fileIntegrityVerified=${screenshot.fileIntegrityVerified} contentVerified=${screenshot.contentVerified} sha256=${screenshot.sha256} path=${screenshot.path} sizeBytes=${screenshot.sizeBytes}${screenshot.contentSummary ? ` summary=${truncate(screenshot.contentSummary, 500)}` : ""}${screenshot.contentVerificationError ? ` contentVerificationError=${screenshot.contentVerificationError}` : ""}`;
 }
 
 function buildValidationPrompt(
@@ -392,9 +403,7 @@ function buildValidationPrompt(
     trajectoryBlock,
     "",
     "Screenshot evidence:",
-    screenshot.status === "captured"
-      ? `- status=captured scope=${screenshot.captureScope} fileIntegrityVerified=${screenshot.fileIntegrityVerified} contentVerified=${screenshot.contentVerified} sha256=${screenshot.sha256} path=${screenshot.path} sizeBytes=${screenshot.sizeBytes}${screenshot.contentSummary ? ` summary=${truncate(screenshot.contentSummary, 500)}` : ""}${screenshot.contentVerificationError ? ` contentVerificationError=${screenshot.contentVerificationError}` : ""}`
-      : `- status=unavailable reason=${screenshot.reason}`,
+    describeScreenshotEvidence(screenshot),
     "",
     "Rules:",
     "- Pass only if the task appears complete and the available evidence supports that claim.",

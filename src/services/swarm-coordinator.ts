@@ -943,29 +943,31 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 		};
 	}
 
+	private mapSessionStatus(
+		status: TaskSessionRecord["status"],
+	): TaskContext["status"] {
+		switch (status) {
+			case "blocked":
+			case "waiting_on_user":
+				return "blocked";
+			case "tool_running":
+				return "tool_running";
+			case "completed":
+				return "completed";
+			case "error":
+				return "error";
+			case "stopped":
+			case "interrupted":
+				return "stopped";
+			default:
+				return "active";
+		}
+	}
+
 	private buildTaskContextFromSession(
 		session: TaskSessionRecord,
 		decisions: TaskDecisionRecord[],
 	): TaskContext {
-		const status = (() => {
-			switch (session.status) {
-				case "blocked":
-				case "waiting_on_user":
-					return "blocked";
-				case "tool_running":
-					return "tool_running";
-				case "completed":
-					return "completed";
-				case "error":
-					return "error";
-				case "stopped":
-				case "interrupted":
-					return "stopped";
-				default:
-					return "active";
-			}
-		})();
-
 		return {
 			threadId: session.threadId,
 			sessionId: session.sessionId,
@@ -974,7 +976,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 			originalTask: session.originalTask,
 			workdir: session.workdir,
 			...(session.repo ? { repo: session.repo } : {}),
-			status,
+			status: this.mapSessionStatus(session.status),
 			decisions: decisions.map((decision) => this.mapDecisionRecord(decision)),
 			autoResolvedCount: session.autoResolvedCount,
 			registeredAt: session.registeredAt,

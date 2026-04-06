@@ -49,20 +49,24 @@ function plannedSubtasks(input: CreateTaskThreadInput): string[] {
   );
 }
 
+function getRepo(input: CreateTaskThreadInput): string | null {
+  const repo = input.metadata?.repo;
+  if (typeof repo !== "string") return null;
+  const trimmed = repo.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 function buildBaselineAcceptanceCriteria(
   input: CreateTaskThreadInput,
 ): string[] {
   const criteria: string[] = [];
   const subtasks = plannedSubtasks(input);
-  const hasRepo =
-    typeof input.metadata?.repo === "string" &&
-    input.metadata.repo.trim().length > 0;
 
   criteria.push(`Address the full request: ${input.originalRequest}`);
   for (const subtask of subtasks.slice(0, 3)) {
     criteria.push(`Complete this planned subtask: ${subtask}`);
   }
-  if (input.kind === "coding" || hasRepo) {
+  if (input.kind === "coding" || getRepo(input)) {
     criteria.push("Run the relevant checks for the changed code, or record the exact blocker.");
   }
   criteria.push("Capture concrete completion evidence in the task record.");
@@ -76,10 +80,6 @@ function buildAcceptancePrompt(input: CreateTaskThreadInput): string {
     subtasks.length > 0
       ? subtasks.map((task) => `- ${task}`).join("\n")
       : "- none";
-  const repo =
-    typeof input.metadata?.repo === "string" && input.metadata.repo.trim().length > 0
-      ? input.metadata.repo.trim()
-      : "none";
   return [
     "Generate task completion criteria for an orchestrated agent task.",
     "Return strict JSON only: an array of 3 to 7 measurable strings.",
@@ -89,7 +89,7 @@ function buildAcceptancePrompt(input: CreateTaskThreadInput): string {
     `Title: ${input.title}`,
     `Kind: ${input.kind ?? "coding"}`,
     `Original request: ${input.originalRequest}`,
-    `Repository: ${repo}`,
+    `Repository: ${getRepo(input) ?? "none"}`,
     "Planned subtasks:",
     planBlock,
     "",
