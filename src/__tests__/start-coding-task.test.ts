@@ -12,6 +12,7 @@ import type { IAgentRuntime, Memory } from "@elizaos/core";
 // so it never reads the real milady.json config file.
 mock.module("../services/config-env.js", () => ({
   readConfigEnvKey: () => undefined,
+  readConfigCloudKey: () => undefined,
 }));
 
 // Dynamic import after preload mocks are registered

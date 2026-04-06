@@ -26,6 +26,7 @@ import {
   type SessionInfo,
   toPiCommand,
 } from "../services/pty-types.js";
+import { readConfigEnvKey } from "../services/config-env.js";
 import type { CodingWorkspaceService } from "../services/workspace-service.js";
 import type { AgentSelectionStrategy } from "../services/agent-selection.js";
 import { withTrajectoryContext } from "../services/trajectory-context.js";
@@ -373,7 +374,10 @@ export async function handleMultiAgent(
           (approvalPreset as ApprovalPreset | undefined) ??
           ptyService.defaultApprovalPreset,
         customCredentials,
-        ...(coordinator ? { skipAdapterAutoResponse: true } : {}),
+        ...(coordinator &&
+        (readConfigEnvKey("PARALLAX_LLM_PROVIDER") || "subscription") === "subscription"
+          ? { skipAdapterAutoResponse: true }
+          : {}),
         metadata: {
           requestedType: specRequestedType,
           messageId: message.id,

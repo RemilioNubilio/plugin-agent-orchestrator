@@ -12,7 +12,7 @@ import { readFileSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-export function readConfigEnvKey(key: string): string | undefined {
+function readConfig(): Record<string, unknown> | undefined {
   try {
     const configPath = path.join(
       process.env.MILADY_STATE_DIR ??
@@ -23,10 +23,21 @@ export function readConfigEnvKey(key: string): string | undefined {
         : `${process.env.ELIZA_NAMESPACE}.json`,
     );
     const raw = readFileSync(configPath, "utf-8");
-    const config = JSON.parse(raw);
-    const val = config?.env?.[key];
-    return typeof val === "string" ? val : undefined;
+    return JSON.parse(raw);
   } catch {
     return undefined;
   }
+}
+
+export function readConfigEnvKey(key: string): string | undefined {
+  const config = readConfig();
+  const val = (config?.env as Record<string, unknown> | undefined)?.[key];
+  return typeof val === "string" ? val : undefined;
+}
+
+/** Read a key from the cloud section of the config (e.g. "apiKey"). */
+export function readConfigCloudKey(key: string): string | undefined {
+  const config = readConfig();
+  const val = (config?.cloud as Record<string, unknown> | undefined)?.[key];
+  return typeof val === "string" ? val : undefined;
 }

@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.0
+
+### Added
+- **Eliza Cloud proxy support**: When `PARALLAX_LLM_PROVIDER=cloud`, coding agents route LLM calls through Eliza Cloud using the paired `cloud.apiKey`. Claude Code gets `ANTHROPIC_BASE_URL`, Codex gets `OPENAI_BASE_URL`, Aider gets both `ANTHROPIC_API_BASE` and `OPENAI_API_BASE`. Base URLs auto-configured per SDK requirements.
+- **Auth trigger API**: `POST /api/coding-agents/auth/:agent` triggers CLI authentication flows. Claude opens browser OAuth, Codex requests device code, Gemini returns manual instructions.
+- **Claude API key auto-response**: Pushed auto-response rule handles the "Do you want to use this API key?" prompt during startup when API key or cloud mode is active.
+- **Config-env utilities**: `readConfigCloudKey()` reads from the cloud section of milady.json. Both `readConfigEnvKey` and `readConfigCloudKey` used for live settings without restart.
+- **Config-env tests**: 7 tests covering env and cloud key reading, missing files, non-string values.
+
+### Changed
+- **Agent type no longer defaults to Claude**: Removed `default: "claude"` from `START_CODING_TASK` and `SPAWN_CODING_AGENT` action parameter schemas. The LLM now omits agentType unless the user explicitly requests one, falling back to `resolveAgentType()` which reads the user's configured preference.
+- **Default agent type reads from config**: `ptyService.defaultAgentType` checks `readConfigEnvKey("PARALLAX_DEFAULT_AGENT_TYPE")` first so UI settings take effect without restart.
+- **Adapter auto-response enabled for cloud/API key mode**: `skipAdapterAutoResponse` is only set when `PARALLAX_LLM_PROVIDER=subscription`. In cloud/API key mode, adapter rules handle startup prompts (API key acceptance, trust) instead of the coordinator, preventing timing races.
+
+### Fixed
+- **Mock module completeness**: `start-coding-task.test.ts` mock for `config-env.js` now includes `readConfigCloudKey` alongside `readConfigEnvKey`.
+
 ## 0.4.3
 
 ### Added

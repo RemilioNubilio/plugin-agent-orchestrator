@@ -27,6 +27,7 @@ import type {
   WorkerSessionHandle,
 } from "pty-manager";
 import { AgentMetricsTracker } from "./agent-metrics.js";
+import { readConfigEnvKey } from "./config-env.js";
 import {
   type AgentSelectionStrategy,
   selectAgentType,
@@ -594,9 +595,11 @@ export class PTYService {
 
   /** Default agent type when strategy is "fixed" — env var takes precedence. */
   get defaultAgentType(): AdapterType {
-    const fromEnv = this.runtime.getSetting("PARALLAX_DEFAULT_AGENT_TYPE") as
+    // Check config file first (UI writes here), then fall back to runtime setting
+    const fromConfig = readConfigEnvKey("PARALLAX_DEFAULT_AGENT_TYPE");
+    const fromEnv = fromConfig || (this.runtime.getSetting("PARALLAX_DEFAULT_AGENT_TYPE") as
       | string
-      | undefined;
+      | undefined);
     if (
       fromEnv &&
       ["claude", "gemini", "codex", "aider"].includes(fromEnv.toLowerCase())

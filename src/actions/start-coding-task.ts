@@ -26,6 +26,7 @@ import type { AgentCredentials } from "coding-agent-adapters";
 import type { PTYService } from "../services/pty-service.js";
 import { getCoordinator } from "../services/pty-service.js";
 import { normalizeAgentType } from "../services/pty-types.js";
+import { readConfigCloudKey, readConfigEnvKey } from "../services/config-env.js";
 import type { CodingWorkspaceService } from "../services/workspace-service.js";
 import {
   type CodingTaskContext,
@@ -188,16 +189,36 @@ export const startCodingTaskAction: Action = {
       }
     }
 
-    const credentials: AgentCredentials = {
-      anthropicKey: runtime.getSetting("ANTHROPIC_API_KEY") as
-        | string
-        | undefined,
-      openaiKey: runtime.getSetting("OPENAI_API_KEY") as string | undefined,
-      googleKey: runtime.getSetting("GOOGLE_GENERATIVE_AI_API_KEY") as
-        | string
-        | undefined,
-      githubToken: runtime.getSetting("GITHUB_TOKEN") as string | undefined,
-    };
+    const llmProvider = readConfigEnvKey("PARALLAX_LLM_PROVIDER") || "subscription";
+    let credentials: AgentCredentials;
+
+    if (llmProvider === "cloud") {
+      const cloudKey = readConfigCloudKey("apiKey");
+      credentials = {
+        anthropicKey: cloudKey,
+        openaiKey: cloudKey,
+        anthropicBaseUrl: "https://www.elizacloud.ai/api",
+        openaiBaseUrl: "https://www.elizacloud.ai/api/v1",
+        githubToken: runtime.getSetting("GITHUB_TOKEN") as string | undefined,
+      };
+    } else {
+      credentials = {
+        anthropicKey: runtime.getSetting("ANTHROPIC_API_KEY") as
+          | string
+          | undefined,
+        openaiKey: runtime.getSetting("OPENAI_API_KEY") as string | undefined,
+        googleKey: runtime.getSetting("GOOGLE_GENERATIVE_AI_API_KEY") as
+          | string
+          | undefined,
+        githubToken: runtime.getSetting("GITHUB_TOKEN") as string | undefined,
+        anthropicBaseUrl: runtime.getSetting("ANTHROPIC_BASE_URL") as
+          | string
+          | undefined,
+        openaiBaseUrl: runtime.getSetting("OPENAI_BASE_URL") as
+          | string
+          | undefined,
+      };
+    }
 
     const explicitLabel =
       (params?.label as string) ?? (content.label as string);
@@ -253,9 +274,11 @@ export const startCodingTaskAction: Action = {
     {
       name: "agentType",
       description:
-        "Type of coding agent to spawn (default for all agents). Options: claude, codex, gemini, aider, pi, shell.",
+        "Type of coding agent to spawn. Options: claude, codex, gemini, aider. " +
+        "Only set this if the user explicitly requests a specific agent. " +
+        "Otherwise omit to use the user's configured preference.",
       required: false,
-      schema: { type: "string" as const, default: "claude" },
+      schema: { type: "string" as const },
     },
     {
       name: "task",

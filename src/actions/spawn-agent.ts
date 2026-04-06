@@ -29,6 +29,7 @@ import {
   type SessionInfo,
   toPiCommand,
 } from "../services/pty-types.js";
+import { readConfigCloudKey, readConfigEnvKey } from "../services/config-env.js";
 import type { CodingWorkspaceService } from "../services/workspace-service.js";
 
 export const spawnAgentAction: Action = {
@@ -189,17 +190,39 @@ export const spawnAgentAction: Action = {
       }
     }
 
-    // Build credentials from runtime settings
-    const credentials: AgentCredentials = {
-      anthropicKey: runtime.getSetting("ANTHROPIC_API_KEY") as
-        | string
-        | undefined,
-      openaiKey: runtime.getSetting("OPENAI_API_KEY") as string | undefined,
-      googleKey: runtime.getSetting("GOOGLE_GENERATIVE_AI_API_KEY") as
-        | string
-        | undefined,
-      githubToken: runtime.getSetting("GITHUB_TOKEN") as string | undefined,
-    };
+    // Build credentials from runtime settings, with cloud mode override
+    const llmProvider = readConfigEnvKey("PARALLAX_LLM_PROVIDER") || "subscription";
+    let credentials: AgentCredentials;
+
+    if (llmProvider === "cloud") {
+      // Cloud mode: use the Eliza Cloud API key + base URLs
+      const cloudKey = readConfigCloudKey("apiKey");
+      // Anthropic SDK appends /v1/messages, OpenAI SDK appends /chat/completions
+      credentials = {
+        anthropicKey: cloudKey,
+        openaiKey: cloudKey,
+        anthropicBaseUrl: "https://www.elizacloud.ai/api",
+        openaiBaseUrl: "https://www.elizacloud.ai/api/v1",
+        githubToken: runtime.getSetting("GITHUB_TOKEN") as string | undefined,
+      };
+    } else {
+      credentials = {
+        anthropicKey: runtime.getSetting("ANTHROPIC_API_KEY") as
+          | string
+          | undefined,
+        openaiKey: runtime.getSetting("OPENAI_API_KEY") as string | undefined,
+        googleKey: runtime.getSetting("GOOGLE_GENERATIVE_AI_API_KEY") as
+          | string
+          | undefined,
+        githubToken: runtime.getSetting("GITHUB_TOKEN") as string | undefined,
+        anthropicBaseUrl: runtime.getSetting("ANTHROPIC_BASE_URL") as
+          | string
+          | undefined,
+        openaiBaseUrl: runtime.getSetting("OPENAI_BASE_URL") as
+          | string
+          | undefined,
+      };
+    }
 
     try {
       // Check if the agent CLI is installed (for non-shell agents)
@@ -235,7 +258,12 @@ export const spawnAgentAction: Action = {
           (approvalPreset as ApprovalPreset | undefined) ??
           ptyService.defaultApprovalPreset,
         customCredentials,
-        ...(coordinator ? { skipAdapterAutoResponse: true } : {}),
+        // Let adapter auto-response handle startup prompts (API key, trust, etc.)
+        // when using cloud/API key mode — the LLM coordinator misinterprets these.
+        // In subscription mode, the coordinator handles all prompts.
+        ...(coordinator && llmProvider === "subscription"
+          ? { skipAdapterAutoResponse: true }
+          : {}),
         metadata: {
           requestedType: rawAgentType,
           messageId: message.id,
@@ -331,9 +359,11 @@ export const spawnAgentAction: Action = {
     {
       name: "agentType",
       description:
-        "Type of coding agent to spawn. Options: claude (Claude Code), codex (OpenAI Codex), gemini (Google Gemini), aider, pi, shell (generic shell)",
+        "Type of coding agent to spawn. Options: claude, codex, gemini, aider. " +
+        "Only set this if the user explicitly requests a specific agent. " +
+        "Otherwise omit to use the user's configured preference.",
       required: false,
-      schema: { type: "string" as const, default: "claude" },
+      schema: { type: "string" as const },
     },
     {
       name: "workdir",

@@ -1,6 +1,6 @@
 {
   "name": "@elizaos/plugin-agent-orchestrator",
-  "version": "0.4.3",
+  "version": "0.5.0",
   "description": "Coding agent orchestration plugin - spawn and manage CLI coding agents via PTY",
   "type": "module",
   "main": "dist/index.js",
@@ -39,7 +39,7 @@
   },
   "license": "MIT",
   "dependencies": {
-    "coding-agent-adapters": "0.15.0",
+    "coding-agent-adapters": "0.16.0",
     "pty-console": "0.3.1",
     "pty-state-capture": "0.2.0"
   }

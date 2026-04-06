@@ -13,6 +13,7 @@ import type {
   BunCompatiblePTYManager,
   PTYManager,
 } from "pty-manager";
+import { readConfigEnvKey } from "./config-env.js";
 
 export interface AutoResponseContext {
   manager: PTYManager | BunCompatiblePTYManager;
@@ -43,6 +44,25 @@ export async function pushDefaultRules(
       description: "Auto-accept adding .aider* to .gitignore",
       safe: true,
     });
+  }
+
+  // Claude — API key confirmation prompt (appears when ANTHROPIC_API_KEY is set
+  // alongside a subscription login, or in CLAUDE_CODE_SIMPLE mode)
+  if (agentType === "claude") {
+    const llmProvider = readConfigEnvKey("PARALLAX_LLM_PROVIDER") || "subscription";
+    if (llmProvider === "api_keys" || llmProvider === "cloud") {
+      rules.push({
+        pattern:
+          /Do you want to use this API key|(?:custom|detected).*API key.*environment/i,
+        type: "config",
+        response: "",
+        responseType: "keys" as const,
+        keys: ["up", "enter"],
+        description: "Accept detected ANTHROPIC_API_KEY from environment",
+        safe: true,
+        once: true,
+      });
+    }
   }
 
   // Gemini — auth flow (update notices are informational, don't need a response)

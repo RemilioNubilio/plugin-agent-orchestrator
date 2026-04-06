@@ -248,6 +248,29 @@ export async function handleAgentRoutes(
     return true;
   }
 
+  // POST /api/coding-agents/auth/:agent — trigger CLI auth flow
+  const authMatch = pathname.match(/^\/api\/coding-agents\/auth\/(\w+)$/);
+  if (method === "POST" && authMatch) {
+    const agentType = authMatch[1] as import("coding-agent-adapters").AdapterType;
+    try {
+      const { createAdapter } = await import("coding-agent-adapters");
+      const adapter = createAdapter(agentType);
+      const result = await adapter.triggerAuth();
+      if (!result) {
+        sendJson(res, { error: `No auth flow available for ${agentType}` } as unknown as JsonValue, 400);
+      } else {
+        sendJson(res, result as unknown as JsonValue);
+      }
+    } catch (error) {
+      sendError(
+        res,
+        error instanceof Error ? error.message : "Auth trigger failed",
+        500,
+      );
+    }
+    return true;
+  }
+
   // GET /api/coding-agents/metrics
   if (method === "GET" && pathname === "/api/coding-agents/metrics") {
     if (!ctx.ptyService) {
