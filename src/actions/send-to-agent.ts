@@ -194,7 +194,6 @@ export const sendToAgentAction: Action = {
                       ? session.metadata.label
                       : `agent-${sessionId.slice(-8)}`),
                   originalRequest: trackedTask,
-                  kind: "coding",
                   roomId:
                     typeof (message as unknown as Record<string, unknown>).roomId === "string"
                       ? ((message as unknown as Record<string, unknown>).roomId as string)

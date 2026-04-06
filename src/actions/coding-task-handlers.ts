@@ -284,7 +284,6 @@ export async function handleMultiAgent(
     ? await coordinator.createTaskThread({
         title: threadTitle,
         originalRequest: userRequest,
-        kind: "coding",
         roomId: message.roomId,
         worldId: message.worldId,
         ownerUserId:

@@ -587,7 +587,6 @@ export async function handleAgentRoutes(
                 ((metadata as Record<string, unknown>)?.label as string | undefined) ??
                 `Task ${Date.now()}`,
               originalRequest: task as string,
-              kind: "coding",
               metadata: {
                 workdir: workdir ?? null,
                 source: "api-spawn",

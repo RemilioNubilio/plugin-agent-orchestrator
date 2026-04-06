@@ -30,6 +30,7 @@ import {
 	markTaskAgentFrameworkUnavailable,
 } from "./task-agent-frameworks.js";
 import { deriveTaskAcceptanceCriteria } from "./task-acceptance.js";
+import { inferTaskThreadKind } from "./task-kind.js";
 import {
   type CreateTaskThreadInput,
   type TaskDecisionRecord,
@@ -811,11 +812,10 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 			? (async () => {
 					const existingThread = await this.taskRegistry.getThreadRecord(threadId);
 					if (!existingThread) {
-						await this.taskRegistry.createThread({
+						await this.createTaskThread({
 							id: threadId,
 							title: context.label,
 							originalRequest: context.originalTask,
-							kind: "coding",
 							metadata: {
 								repo: context.repo ?? null,
 								source: "register-task-fallback",
@@ -1010,12 +1010,19 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 	async createTaskThread(
 		input: CreateTaskThreadInput,
 	): Promise<TaskThreadSummary> {
-		const acceptance = await deriveTaskAcceptanceCriteria(this.runtime, input);
-		const thread = await this.taskRegistry.createThread({
+		const normalizedInput: CreateTaskThreadInput = {
 			...input,
+			kind: inferTaskThreadKind(input),
+		};
+		const acceptance = await deriveTaskAcceptanceCriteria(
+			this.runtime,
+			normalizedInput,
+		);
+		const thread = await this.taskRegistry.createThread({
+			...normalizedInput,
 			acceptanceCriteria: acceptance.criteria,
 			metadata: {
-				...(input.metadata ?? {}),
+				...(normalizedInput.metadata ?? {}),
 				acceptanceCriteriaSource: acceptance.source,
 			},
 		});
