@@ -279,6 +279,11 @@ export async function handleMultiAgent(
     error?: string;
   }> = [];
 
+  // Read LLM provider once before the spawn loop to avoid repeated sync I/O
+  // and ensure consistent provider selection across all agents in this swarm.
+  const llmProvider =
+    readConfigEnvKey("PARALLAX_LLM_PROVIDER") || "subscription";
+
   for (const [i, spec] of agentSpecs.entries()) {
     // Parse optional "agentType:task" prefix.
     // In fixed mode, ignore LLM-chosen prefixes — all agents use the
@@ -374,8 +379,7 @@ export async function handleMultiAgent(
           (approvalPreset as ApprovalPreset | undefined) ??
           ptyService.defaultApprovalPreset,
         customCredentials,
-        ...(coordinator &&
-        (readConfigEnvKey("PARALLAX_LLM_PROVIDER") || "subscription") === "subscription"
+        ...(coordinator && llmProvider === "subscription"
           ? { skipAdapterAutoResponse: true }
           : {}),
         metadata: {

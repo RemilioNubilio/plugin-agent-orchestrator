@@ -593,18 +593,25 @@ export class PTYService {
     return "fixed";
   }
 
-  /** Default agent type when strategy is "fixed" — env var takes precedence. */
+  /**
+   * Default agent type when strategy is "fixed".
+   * Precedence: config file (`milady.json` env section, written by the UI)
+   * > runtime/env setting > "claude" fallback.
+   */
   get defaultAgentType(): AdapterType {
-    // Check config file first (UI writes here), then fall back to runtime setting
     const fromConfig = readConfigEnvKey("PARALLAX_DEFAULT_AGENT_TYPE");
-    const fromEnv = fromConfig || (this.runtime.getSetting("PARALLAX_DEFAULT_AGENT_TYPE") as
-      | string
-      | undefined);
+    const fromRuntimeOrEnv =
+      fromConfig ||
+      (this.runtime.getSetting("PARALLAX_DEFAULT_AGENT_TYPE") as
+        | string
+        | undefined);
     if (
-      fromEnv &&
-      ["claude", "gemini", "codex", "aider"].includes(fromEnv.toLowerCase())
+      fromRuntimeOrEnv &&
+      ["claude", "gemini", "codex", "aider"].includes(
+        fromRuntimeOrEnv.toLowerCase(),
+      )
     ) {
-      return fromEnv.toLowerCase() as AdapterType;
+      return fromRuntimeOrEnv.toLowerCase() as AdapterType;
     }
     return "claude";
   }

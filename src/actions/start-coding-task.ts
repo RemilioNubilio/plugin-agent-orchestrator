@@ -13,25 +13,26 @@
  * @module actions/start-coding-task
  */
 
-import type {
-  Action,
-  ActionResult,
-  HandlerCallback,
-  HandlerOptions,
-  IAgentRuntime,
-  Memory,
-  State,
+import {
+  type Action,
+  type ActionResult,
+  type HandlerCallback,
+  type HandlerOptions,
+  type IAgentRuntime,
+  logger,
+  type Memory,
+  type State,
 } from "@elizaos/core";
 import type { AgentCredentials } from "coding-agent-adapters";
 import type { PTYService } from "../services/pty-service.js";
 import { getCoordinator } from "../services/pty-service.js";
 import { normalizeAgentType } from "../services/pty-types.js";
-import { readConfigCloudKey, readConfigEnvKey } from "../services/config-env.js";
 import type { CodingWorkspaceService } from "../services/workspace-service.js";
 import {
   type CodingTaskContext,
   handleMultiAgent,
 } from "./coding-task-handlers.js";
+import { buildAgentCredentials } from "./coding-task-helpers.js";
 
 export const startCodingTaskAction: Action = {
   name: "START_CODING_TASK",
@@ -189,35 +190,17 @@ export const startCodingTaskAction: Action = {
       }
     }
 
-    const llmProvider = readConfigEnvKey("PARALLAX_LLM_PROVIDER") || "subscription";
     let credentials: AgentCredentials;
-
-    if (llmProvider === "cloud") {
-      const cloudKey = readConfigCloudKey("apiKey");
-      credentials = {
-        anthropicKey: cloudKey,
-        openaiKey: cloudKey,
-        anthropicBaseUrl: "https://www.elizacloud.ai/api",
-        openaiBaseUrl: "https://www.elizacloud.ai/api/v1",
-        githubToken: runtime.getSetting("GITHUB_TOKEN") as string | undefined,
-      };
-    } else {
-      credentials = {
-        anthropicKey: runtime.getSetting("ANTHROPIC_API_KEY") as
-          | string
-          | undefined,
-        openaiKey: runtime.getSetting("OPENAI_API_KEY") as string | undefined,
-        googleKey: runtime.getSetting("GOOGLE_GENERATIVE_AI_API_KEY") as
-          | string
-          | undefined,
-        githubToken: runtime.getSetting("GITHUB_TOKEN") as string | undefined,
-        anthropicBaseUrl: runtime.getSetting("ANTHROPIC_BASE_URL") as
-          | string
-          | undefined,
-        openaiBaseUrl: runtime.getSetting("OPENAI_BASE_URL") as
-          | string
-          | undefined,
-      };
+    try {
+      credentials = buildAgentCredentials(runtime);
+    } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : "Failed to build credentials";
+      logger.error(`[start-coding-task] ${msg}`);
+      if (callback) {
+        await callback({ text: msg });
+      }
+      return { success: false, error: "INVALID_CREDENTIALS" };
     }
 
     const explicitLabel =

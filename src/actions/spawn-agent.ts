@@ -29,8 +29,9 @@ import {
   type SessionInfo,
   toPiCommand,
 } from "../services/pty-types.js";
-import { readConfigCloudKey, readConfigEnvKey } from "../services/config-env.js";
+import { readConfigEnvKey } from "../services/config-env.js";
 import type { CodingWorkspaceService } from "../services/workspace-service.js";
+import { buildAgentCredentials } from "./coding-task-helpers.js";
 
 export const spawnAgentAction: Action = {
   name: "SPAWN_CODING_AGENT",
@@ -115,10 +116,10 @@ export const spawnAgentAction: Action = {
     const params = options?.parameters;
     const content = message.content as Record<string, unknown>;
 
+    const explicitRawType =
+      (params?.agentType as string) ?? (content.agentType as string);
     const rawAgentType =
-      (params?.agentType as string) ??
-      (content.agentType as string) ??
-      "claude";
+      explicitRawType ?? (await ptyService.resolveAgentType());
     const agentType = normalizeAgentType(rawAgentType);
     const task = (params?.task as string) ?? (content.task as string);
     const piRequested = isPiAgentType(rawAgentType);
@@ -190,38 +191,20 @@ export const spawnAgentAction: Action = {
       }
     }
 
-    // Build credentials from runtime settings, with cloud mode override
-    const llmProvider = readConfigEnvKey("PARALLAX_LLM_PROVIDER") || "subscription";
+    // Build credentials based on the user's configured LLM provider.
+    // Throws if cloud mode is selected but no cloud API key is paired.
+    const llmProvider =
+      readConfigEnvKey("PARALLAX_LLM_PROVIDER") || "subscription";
     let credentials: AgentCredentials;
-
-    if (llmProvider === "cloud") {
-      // Cloud mode: use the Eliza Cloud API key + base URLs
-      const cloudKey = readConfigCloudKey("apiKey");
-      // Anthropic SDK appends /v1/messages, OpenAI SDK appends /chat/completions
-      credentials = {
-        anthropicKey: cloudKey,
-        openaiKey: cloudKey,
-        anthropicBaseUrl: "https://www.elizacloud.ai/api",
-        openaiBaseUrl: "https://www.elizacloud.ai/api/v1",
-        githubToken: runtime.getSetting("GITHUB_TOKEN") as string | undefined,
-      };
-    } else {
-      credentials = {
-        anthropicKey: runtime.getSetting("ANTHROPIC_API_KEY") as
-          | string
-          | undefined,
-        openaiKey: runtime.getSetting("OPENAI_API_KEY") as string | undefined,
-        googleKey: runtime.getSetting("GOOGLE_GENERATIVE_AI_API_KEY") as
-          | string
-          | undefined,
-        githubToken: runtime.getSetting("GITHUB_TOKEN") as string | undefined,
-        anthropicBaseUrl: runtime.getSetting("ANTHROPIC_BASE_URL") as
-          | string
-          | undefined,
-        openaiBaseUrl: runtime.getSetting("OPENAI_BASE_URL") as
-          | string
-          | undefined,
-      };
+    try {
+      credentials = buildAgentCredentials(runtime);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to build credentials";
+      logger.error(`[spawn-agent] ${msg}`);
+      if (callback) {
+        await callback({ text: msg });
+      }
+      return { success: false, error: "INVALID_CREDENTIALS" };
     }
 
     try {
