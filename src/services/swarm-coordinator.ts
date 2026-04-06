@@ -24,6 +24,22 @@ import type { IAgentRuntime } from "@elizaos/core";
 import { logger } from "@elizaos/core";
 import { extractDevServerUrl } from "./ansi-utils.js";
 import { SwarmHistory } from "./swarm-history.js";
+import {
+	isUsageExhaustedTaskAgentError,
+	markTaskAgentFrameworkHealthy,
+	markTaskAgentFrameworkUnavailable,
+} from "./task-agent-frameworks.js";
+import { deriveTaskAcceptanceCriteria } from "./task-acceptance.js";
+import {
+  type CreateTaskThreadInput,
+  type TaskDecisionRecord,
+  type TaskPendingDecisionRecord,
+  type TaskSessionRecord,
+  type TaskThreadDetail,
+  type TaskThreadStatus,
+  type TaskThreadSummary,
+  TaskRegistry,
+} from "./task-registry.js";
 import type { PTYService } from "./pty-service.js";
 import type { CodingAgentType } from "./pty-types.js";
 import type {
@@ -84,6 +100,7 @@ export type SwarmCompleteCallback = (payload: {
 export type SupervisionLevel = "autonomous" | "confirm" | "notify";
 
 export interface TaskContext {
+	threadId: string;
 	sessionId: string;
 	agentType: CodingAgentType;
 	label: string;
@@ -91,7 +108,13 @@ export interface TaskContext {
 	workdir: string;
 	/** Repository URL if provided, undefined for scratch directory tasks. */
 	repo?: string;
-	status: "active" | "completed" | "error" | "stopped";
+	status:
+		| "active"
+		| "blocked"
+		| "tool_running"
+		| "completed"
+		| "error"
+		| "stopped";
 	decisions: CoordinationDecision[];
 	autoResolvedCount: number;
 	registeredAt: number;
@@ -150,6 +173,7 @@ export interface PendingDecision {
 export interface SwarmCoordinatorContext {
 	readonly runtime: IAgentRuntime;
 	readonly ptyService: PTYService | null;
+	readonly taskRegistry: TaskRegistry;
 	readonly tasks: Map<string, TaskContext>;
 	readonly inFlightDecisions: Set<string>;
 	readonly pendingDecisions: Map<string, PendingDecision>;
@@ -188,6 +212,11 @@ export interface SwarmCoordinatorContext {
 	getSupervisionLevel(): SupervisionLevel;
 	getAgentDecisionCallback(): AgentDecisionCallback | null;
 	getSwarmCompleteCallback(): SwarmCompleteCallback | null;
+	recordDecision(
+		taskCtx: TaskContext,
+		decision: CoordinationDecision,
+	): Promise<void>;
+	syncTaskContext(taskCtx: TaskContext): Promise<void>;
 }
 
 // ─── Constants ───
@@ -217,6 +246,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 	static serviceType = "SWARM_COORDINATOR";
 
 	readonly runtime: IAgentRuntime;
+	readonly taskRegistry: TaskRegistry;
 	ptyService: PTYService | null = null;
 	private unsubscribeEvents: (() => void) | null = null;
 
@@ -316,6 +346,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 
 	constructor(runtime: IAgentRuntime) {
 		this.runtime = runtime;
+		this.taskRegistry = new TaskRegistry(runtime);
 	}
 
 	// ─── Chat Callback ───
@@ -354,8 +385,8 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 					: "It will be automatically cleaned up after the configured retention period.";
 				await chatCb(
 					`Task "${record.label}" finished. Code is at \`${record.path}\`.\n` +
-					`${ttlNote} To keep it, say "keep the workspace" or manage it in Settings → Coding Agents.`,
-					"coding-agent",
+					`${ttlNote} To keep it, say "keep the workspace" or manage it in Settings -> Task Agents.`,
+					"task-agent",
 				);
 			});
 			this.scratchDecisionWired = true;
@@ -429,7 +460,10 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 	 * Initialize the coordinator by subscribing to PTY session events.
 	 * Called from plugin init after services are ready.
 	 */
-	start(ptyService: PTYService): void {
+	async start(ptyService: PTYService): Promise<void> {
+		await this.taskRegistry.ensureSchema();
+		await this.taskRegistry.recoverInterruptedTasks();
+		await this.rehydratePendingDecisions();
 		this.ptyService = ptyService;
 		this.unsubscribeEvents = ptyService.onSessionEvent(
 			(sessionId, event, data) => {
@@ -449,7 +483,149 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 		this.log("SwarmCoordinator started");
 	}
 
-	stop(): void {
+	private restorePendingTaskContext(
+		record: TaskPendingDecisionRecord,
+	): TaskContext {
+		const raw = record.taskContext;
+		const status = (() => {
+			switch (typeof raw.status === "string" ? raw.status : "") {
+				case "active":
+				case "blocked":
+				case "tool_running":
+				case "completed":
+				case "error":
+				case "stopped":
+					return raw.status as TaskContext["status"];
+				default:
+					return "blocked";
+			}
+		})();
+		return {
+			threadId:
+				typeof raw.threadId === "string" && raw.threadId.trim().length > 0
+					? raw.threadId
+					: record.threadId,
+			sessionId: record.sessionId,
+			agentType:
+				typeof raw.agentType === "string" && raw.agentType.trim().length > 0
+					? (raw.agentType as CodingAgentType)
+					: "claude",
+			label:
+				typeof raw.label === "string" && raw.label.trim().length > 0
+					? raw.label
+					: `agent-${record.sessionId.slice(-8)}`,
+			originalTask:
+				typeof raw.originalTask === "string" ? raw.originalTask : record.promptText,
+			workdir: typeof raw.workdir === "string" ? raw.workdir : "",
+			...(typeof raw.repo === "string" && raw.repo.trim().length > 0
+				? { repo: raw.repo }
+				: {}),
+			status,
+			decisions: Array.isArray(raw.decisions)
+				? (raw.decisions.filter((entry) => Boolean(entry && typeof entry === "object")) as CoordinationDecision[])
+				: [],
+			autoResolvedCount:
+				typeof raw.autoResolvedCount === "number" ? raw.autoResolvedCount : 0,
+			registeredAt:
+				typeof raw.registeredAt === "number"
+					? raw.registeredAt
+					: record.createdAt,
+			lastActivityAt:
+				typeof raw.lastActivityAt === "number"
+					? raw.lastActivityAt
+					: record.createdAt,
+			idleCheckCount:
+				typeof raw.idleCheckCount === "number" ? raw.idleCheckCount : 0,
+			taskDelivered: raw.taskDelivered === true,
+			...(typeof raw.completionSummary === "string"
+				? { completionSummary: raw.completionSummary }
+				: {}),
+			lastSeenDecisionIndex:
+				typeof raw.lastSeenDecisionIndex === "number"
+					? raw.lastSeenDecisionIndex
+					: 0,
+			...(typeof raw.lastInputSentAt === "number"
+				? { lastInputSentAt: raw.lastInputSentAt }
+				: {}),
+			...(typeof raw.stoppedAt === "number" ? { stoppedAt: raw.stoppedAt } : {}),
+		};
+	}
+
+	private restorePendingLlmDecision(
+		record: TaskPendingDecisionRecord,
+	): CoordinationLLMResponse {
+		const raw = record.llmDecision;
+		const action =
+			typeof raw.action === "string" &&
+			["respond", "escalate", "ignore", "complete"].includes(raw.action)
+				? (raw.action as CoordinationLLMResponse["action"])
+				: "escalate";
+		return {
+			action,
+			...(typeof raw.response === "string" ? { response: raw.response } : {}),
+			...(raw.useKeys === true ? { useKeys: true } : {}),
+			...(Array.isArray(raw.keys)
+				? {
+						keys: raw.keys.filter(
+							(entry): entry is string => typeof entry === "string",
+						),
+					}
+				: {}),
+			reasoning:
+				typeof raw.reasoning === "string" && raw.reasoning.trim().length > 0
+					? raw.reasoning
+					: "Recovered pending confirmation from persisted coordinator state.",
+		};
+	}
+
+	private async rehydratePendingDecisions(): Promise<void> {
+		const records = await this.taskRegistry.listPendingDecisions();
+		for (const record of records) {
+			const taskContext = this.restorePendingTaskContext(record);
+			this.tasks.set(record.sessionId, taskContext);
+			this.pendingDecisions.set(record.sessionId, {
+				sessionId: record.sessionId,
+				promptText: record.promptText,
+				recentOutput: record.recentOutput,
+				llmDecision: this.restorePendingLlmDecision(record),
+				taskContext,
+				createdAt: record.createdAt,
+			});
+		}
+	}
+
+	async stop(): Promise<void> {
+		const persistOnShutdown = Array.from(this.tasks.values())
+			.filter(
+				(task) =>
+					task.status === "active" ||
+					task.status === "blocked" ||
+					task.status === "tool_running",
+			)
+			.map(async (task) => {
+				task.status = "stopped";
+				task.stoppedAt = Date.now();
+				await this.taskRegistry.updateSession(task.sessionId, {
+					status: "interrupted",
+					lastActivityAt: task.lastActivityAt,
+					idleCheckCount: task.idleCheckCount,
+					taskDelivered: task.taskDelivered,
+					autoResolvedCount: task.autoResolvedCount,
+					decisionCount: task.decisions.length,
+					completionSummary: task.completionSummary ?? null,
+					lastSeenDecisionIndex: task.lastSeenDecisionIndex,
+					lastInputSentAt: task.lastInputSentAt,
+					stoppedAt: task.stoppedAt,
+				});
+				await this.taskRegistry.appendEvent({
+					threadId: task.threadId,
+					sessionId: task.sessionId,
+					eventType: "session_interrupted",
+					summary: "Session interrupted during coordinator shutdown",
+					data: { reason: "coordinator_shutdown" },
+				});
+			});
+		await Promise.allSettled(persistOnShutdown);
 		if (this.idleWatchdogTimer) {
 			clearInterval(this.idleWatchdogTimer);
 			this.idleWatchdogTimer = null;
@@ -561,16 +737,18 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 
 	// ─── Task Registration ───
 
-	registerTask(
+	async registerTask(
 		sessionId: string,
 		context: {
+			threadId: string;
 			agentType: CodingAgentType;
 			label: string;
 			originalTask: string;
 			workdir: string;
 			repo?: string;
 		},
-	): void {
+	): Promise<void> {
+		const threadId = context.threadId?.trim() || sessionId;
 		// Reset swarm state when the first task of a new swarm is registered.
 		// Check for terminal-only tasks (all previous tasks in completed/stopped/error)
 		// rather than empty map, so reuse without stop() works.
@@ -594,6 +772,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 		}
 
 		this.tasks.set(sessionId, {
+			threadId,
 			sessionId,
 			agentType: context.agentType,
 			label: context.label,
@@ -627,6 +806,60 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 			originalTask: context.originalTask,
 		}).catch(() => {});
 
+		const taskCtx = this.tasks.get(sessionId);
+		const persistPromise = taskCtx
+			? (async () => {
+					const existingThread = await this.taskRegistry.getThreadRecord(threadId);
+					if (!existingThread) {
+						await this.taskRegistry.createThread({
+							id: threadId,
+							title: context.label,
+							originalRequest: context.originalTask,
+							kind: "coding",
+							metadata: {
+								repo: context.repo ?? null,
+								source: "register-task-fallback",
+							},
+						});
+					}
+					await Promise.all([
+						this.taskRegistry.registerSession({
+						threadId: taskCtx.threadId,
+						sessionId,
+						framework: context.agentType,
+						label: context.label,
+						originalTask: context.originalTask,
+						workdir: context.workdir,
+						repo: context.repo,
+						status: "active",
+						decisionCount: 0,
+						autoResolvedCount: 0,
+						registeredAt: taskCtx.registeredAt,
+						lastActivityAt: taskCtx.lastActivityAt,
+						idleCheckCount: taskCtx.idleCheckCount,
+						taskDelivered: false,
+						lastSeenDecisionIndex: 0,
+						metadata: {},
+					}),
+						this.taskRegistry.appendEvent({
+						threadId,
+						sessionId,
+						eventType: "task_registered",
+						timestamp: Date.now(),
+						summary: `Registered task "${context.label}"`,
+						data: {
+							label: context.label,
+							originalTask: context.originalTask,
+							repo: context.repo ?? null,
+						},
+					}),
+					]);
+			  })()
+			: Promise.resolve();
+		void persistPromise.catch((err) => {
+			this.log(`Failed to persist task registration for ${sessionId}: ${err}`);
+		});
+
 		this.broadcast({
 			type: "task_registered",
 			sessionId,
@@ -655,6 +888,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 				);
 			}
 		}
+		await persistPromise;
 	}
 
 	/**
@@ -686,7 +920,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 		const memoryRepo = this.getLastUsedRepo();
 		if (memoryRepo) return memoryRepo;
 		try {
-			return await this.history.getLastUsedRepo();
+			return (await this.taskRegistry.getLastUsedRepo()) ?? (await this.history.getLastUsedRepo());
 		} catch {
 			return undefined;
 		}
@@ -696,8 +930,172 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 		return this.tasks.get(sessionId);
 	}
 
+	private mapDecisionRecord(
+		record: TaskDecisionRecord,
+	): CoordinationDecision {
+		return {
+			timestamp: record.timestamp,
+			event: record.event,
+			promptText: record.promptText,
+			decision: record.decision as CoordinationDecision["decision"],
+			...(record.response ? { response: record.response } : {}),
+			reasoning: record.reasoning,
+		};
+	}
+
+	private mapSessionStatus(
+		status: TaskSessionRecord["status"],
+	): TaskContext["status"] {
+		switch (status) {
+			case "blocked":
+			case "waiting_on_user":
+				return "blocked";
+			case "tool_running":
+				return "tool_running";
+			case "completed":
+				return "completed";
+			case "error":
+				return "error";
+			case "stopped":
+			case "interrupted":
+				return "stopped";
+			default:
+				return "active";
+		}
+	}
+
+	private buildTaskContextFromSession(
+		session: TaskSessionRecord,
+		decisions: TaskDecisionRecord[],
+	): TaskContext {
+		return {
+			threadId: session.threadId,
+			sessionId: session.sessionId,
+			agentType: session.framework,
+			label: session.label,
+			originalTask: session.originalTask,
+			workdir: session.workdir,
+			...(session.repo ? { repo: session.repo } : {}),
+			status: this.mapSessionStatus(session.status),
+			decisions: decisions.map((decision) => this.mapDecisionRecord(decision)),
+			autoResolvedCount: session.autoResolvedCount,
+			registeredAt: session.registeredAt,
+			lastActivityAt: session.lastActivityAt,
+			idleCheckCount: session.idleCheckCount,
+			taskDelivered: session.taskDelivered,
+			...(session.completionSummary
+				? { completionSummary: session.completionSummary }
+				: {}),
+			lastSeenDecisionIndex: session.lastSeenDecisionIndex,
+			...(session.lastInputSentAt !== null
+				? { lastInputSentAt: session.lastInputSentAt }
+				: {}),
+			...(session.stoppedAt !== null ? { stoppedAt: session.stoppedAt } : {}),
+		};
+	}
+
+	async getTaskContextSnapshot(sessionId: string): Promise<TaskContext | null> {
+		const live = this.tasks.get(sessionId);
+		if (live) return live;
+		const session = await this.taskRegistry.getSession(sessionId);
+		if (!session) return null;
+		const decisions = await this.taskRegistry.listDecisionsForSession(sessionId);
+		return this.buildTaskContextFromSession(session, decisions);
+	}
+
 	getAllTaskContexts(): TaskContext[] {
 		return Array.from(this.tasks.values());
+	}
+
+	async createTaskThread(
+		input: CreateTaskThreadInput,
+	): Promise<TaskThreadSummary> {
+		const acceptance = await deriveTaskAcceptanceCriteria(this.runtime, input);
+		const thread = await this.taskRegistry.createThread({
+			...input,
+			acceptanceCriteria: acceptance.criteria,
+			metadata: {
+				...(input.metadata ?? {}),
+				acceptanceCriteriaSource: acceptance.source,
+			},
+		});
+		const summary = await this.taskRegistry.getThreadSummary(thread.id);
+		if (!summary) {
+			throw new Error(`Failed to load task thread ${thread.id}`);
+		}
+		return summary;
+	}
+
+	async listTaskThreads(options?: {
+		includeArchived?: boolean;
+		status?: TaskThreadStatus;
+		search?: string;
+		limit?: number;
+	}): Promise<TaskThreadSummary[]> {
+		return this.taskRegistry.listThreads(options);
+	}
+
+	async getTaskThread(threadId: string): Promise<TaskThreadDetail | null> {
+		return this.taskRegistry.getThread(threadId);
+	}
+
+	async archiveTaskThread(threadId: string): Promise<void> {
+		await this.taskRegistry.archiveThread(threadId);
+	}
+
+	async reopenTaskThread(threadId: string): Promise<void> {
+		await this.taskRegistry.reopenThread(threadId);
+	}
+
+	async syncTaskContext(taskCtx: TaskContext): Promise<void> {
+		await this.taskRegistry.updateSession(taskCtx.sessionId, {
+			status:
+				taskCtx.status === "completed"
+					? "completed"
+					: taskCtx.status === "error"
+						? "error"
+						: taskCtx.status === "stopped"
+							? "stopped"
+							: taskCtx.status === "blocked"
+								? "blocked"
+								: taskCtx.status === "tool_running"
+									? "tool_running"
+							: "active",
+			decisionCount: taskCtx.decisions.length,
+			autoResolvedCount: taskCtx.autoResolvedCount,
+			lastActivityAt: taskCtx.lastActivityAt,
+			idleCheckCount: taskCtx.idleCheckCount,
+			taskDelivered: taskCtx.taskDelivered,
+			completionSummary: taskCtx.completionSummary ?? null,
+			lastSeenDecisionIndex: taskCtx.lastSeenDecisionIndex,
+			lastInputSentAt: taskCtx.lastInputSentAt,
+			stoppedAt: taskCtx.stoppedAt,
+		});
+	}
+
+	async recordDecision(
+		taskCtx: TaskContext,
+		decision: CoordinationDecision,
+	): Promise<void> {
+		taskCtx.decisions.push(decision);
+		await this.taskRegistry.recordDecision({
+			threadId: taskCtx.threadId,
+			sessionId: taskCtx.sessionId,
+			timestamp: decision.timestamp,
+			event: decision.event,
+			promptText: decision.promptText,
+			decision: decision.decision,
+			response: decision.response,
+			reasoning: decision.reasoning,
+		});
+		await this.syncTaskContext(taskCtx);
+	}
+
+	async setTaskDelivered(sessionId: string): Promise<void> {
+		const taskCtx = this.tasks.get(sessionId);
+		if (!taskCtx) return;
+		taskCtx.taskDelivered = true;
+		await this.syncTaskContext(taskCtx);
 	}
 
 	// ─── Unregistered Buffer Retry ───
@@ -882,6 +1280,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 						`Recovering "${taskCtx.label}" from stopped on late task_complete (${Math.round(ageMs / 1000)}s old)`,
 					);
 					taskCtx.status = "active";
+					taskCtx.stoppedAt = undefined;
 					recoveredFromStopped = true;
 				} else {
 					this.log(
@@ -978,10 +1377,40 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 				// Send error message to chat UI
 				const errorMsg =
 					(data as { message?: string }).message ?? "unknown error";
+				if (
+					(taskCtx.agentType === "claude" ||
+						taskCtx.agentType === "codex" ||
+						taskCtx.agentType === "gemini" ||
+						taskCtx.agentType === "aider") &&
+					isUsageExhaustedTaskAgentError(errorMsg)
+				) {
+					markTaskAgentFrameworkUnavailable(taskCtx.agentType, errorMsg);
+					await this.taskRegistry.appendEvent({
+						threadId: taskCtx.threadId,
+						sessionId,
+						eventType: "framework_unavailable",
+						summary: `${taskCtx.agentType} temporarily disabled after provider depletion`,
+						data: {
+							framework: taskCtx.agentType,
+							reason: errorMsg,
+						},
+					});
+					this.sendChatMessage(
+						`"${taskCtx.label}" ran into a ${taskCtx.agentType} quota/credit failure. Milady will prefer another task-agent framework until ${taskCtx.agentType} is healthy again.`,
+						"coding-agent",
+					);
+				}
 				this.sendChatMessage(
 					`"${taskCtx.label}" hit an error: ${errorMsg}`,
 					"coding-agent",
 				);
+				await this.taskRegistry.appendEvent({
+					threadId: taskCtx.threadId,
+					sessionId,
+					eventType: "task_status_changed",
+					summary: `Task "${taskCtx.label}" errored`,
+					data: { status: "error", message: errorMsg },
+				});
 				checkAllTasksComplete(this);
 				break;
 			}
@@ -1000,20 +1429,44 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 					timestamp: Date.now(),
 					data,
 				});
+				await this.taskRegistry.appendEvent({
+					threadId: taskCtx.threadId,
+					sessionId,
+					eventType: "task_status_changed",
+					summary: `Task "${taskCtx.label}" stopped`,
+					data: { status: taskCtx.status },
+				});
 				checkAllTasksComplete(this);
 				break;
 
 			case "ready":
+				taskCtx.status = "active";
+				if (
+					taskCtx.agentType === "claude" ||
+					taskCtx.agentType === "codex" ||
+					taskCtx.agentType === "gemini" ||
+					taskCtx.agentType === "aider"
+				) {
+					markTaskAgentFrameworkHealthy(taskCtx.agentType);
+				}
 				this.broadcast({
 					type: "ready",
 					sessionId,
 					timestamp: Date.now(),
 					data,
 				});
+				await this.taskRegistry.appendEvent({
+					threadId: taskCtx.threadId,
+					sessionId,
+					eventType: "session_updated",
+					summary: `Session "${taskCtx.label}" ready`,
+					data: { status: "ready" },
+				});
 				break;
 
 			case "tool_running": {
 				// Agent is actively working via an external tool — keep watchdog happy
+				taskCtx.status = "tool_running";
 				taskCtx.lastActivityAt = Date.now();
 				taskCtx.idleCheckCount = 0;
 
@@ -1083,6 +1536,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 					data,
 				});
 		}
+		await this.syncTaskContext(taskCtx);
 	}
 
 	// ─── LLM Decision (delegated) ───
@@ -1150,7 +1604,6 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 			throw new Error(`No pending decision for session ${sessionId}`);
 		}
 
-		this.pendingDecisions.delete(sessionId);
 		const taskCtx = this.tasks.get(sessionId);
 
 		if (approved) {
@@ -1166,7 +1619,9 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 				: pending.llmDecision;
 
 			if (taskCtx) {
-				taskCtx.decisions.push({
+				taskCtx.status = "active";
+				taskCtx.autoResolvedCount = 0;
+				await this.recordDecision(taskCtx, {
 					timestamp: Date.now(),
 					event: "blocked",
 					promptText: pending.promptText,
@@ -1179,10 +1634,23 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 							: undefined,
 					reasoning: `Human-approved: ${decision.reasoning}`,
 				});
-				taskCtx.autoResolvedCount = 0;
 			}
 
 			await this.executeDecision(sessionId, decision);
+			this.pendingDecisions.delete(sessionId);
+			await this.taskRegistry.deletePendingDecision(sessionId);
+			if (taskCtx) {
+				await this.taskRegistry.appendEvent({
+					threadId: taskCtx.threadId,
+					sessionId,
+					eventType: "confirmation_approved",
+					summary: `Approved pending confirmation for "${taskCtx.label}"`,
+					data: {
+						action: decision.action,
+						response: decision.response ?? null,
+					},
+				});
+			}
 
 			this.broadcast({
 				type: "confirmation_approved",
@@ -1198,12 +1666,24 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 		} else {
 			// Rejected — record and broadcast
 			if (taskCtx) {
-				taskCtx.decisions.push({
+				taskCtx.status = "blocked";
+				await this.recordDecision(taskCtx, {
 					timestamp: Date.now(),
 					event: "blocked",
 					promptText: pending.promptText,
 					decision: "escalate",
 					reasoning: "Human rejected the suggested action",
+				});
+			}
+			this.pendingDecisions.delete(sessionId);
+			await this.taskRegistry.deletePendingDecision(sessionId);
+			if (pending.taskContext.threadId) {
+				await this.taskRegistry.appendEvent({
+					threadId: pending.taskContext.threadId,
+					sessionId,
+					eventType: "confirmation_rejected",
+					summary: `Rejected pending confirmation for "${pending.taskContext.label}"`,
+					data: { prompt: pending.promptText },
 				});
 			}
 

@@ -20,7 +20,7 @@ type RouteContext = import("../api/routes.js").RouteContext;
 function createMockReq(
   method: string,
   url: string,
-  body?: Record<string, unknown>,
+  body?: Record<string, unknown> | string,
   // biome-ignore lint/suspicious/noExplicitAny: test mock for IncomingMessage
 ): any {
   // biome-ignore lint/suspicious/noExplicitAny: EventEmitter needs dynamic props for mock
@@ -28,9 +28,9 @@ function createMockReq(
   req.method = method;
   req.url = url;
   req.headers = { host: "localhost:2138" };
-  if (body) {
+  if (body !== undefined) {
     setTimeout(() => {
-      req.emit("data", JSON.stringify(body));
+      req.emit("data", typeof body === "string" ? body : JSON.stringify(body));
       req.emit("end");
     }, 0);
   } else {
@@ -70,6 +70,11 @@ function createMockRes(): any {
 const createMockCoordinator = () => ({
   getAllTaskContexts: jest.fn().mockReturnValue([]),
   getTaskContext: jest.fn(),
+  getTaskContextSnapshot: jest.fn(),
+  listTaskThreads: jest.fn().mockResolvedValue([]),
+  getTaskThread: jest.fn(),
+  archiveTaskThread: jest.fn().mockResolvedValue(undefined),
+  reopenTaskThread: jest.fn().mockResolvedValue(undefined),
   getSupervisionLevel: jest.fn().mockReturnValue("autonomous"),
   setSupervisionLevel: jest.fn(),
   getPendingConfirmations: jest.fn().mockReturnValue([]),
@@ -195,6 +200,28 @@ describe("coordinator routes", () => {
           autoResolvedCount: 2,
         },
       ]);
+      asMock(ctx.coordinator).listTaskThreads.mockResolvedValue([
+        {
+          id: "thread-1",
+          title: "Fix bug",
+          kind: "coding",
+          status: "active",
+          originalRequest: "Fix bug",
+          summary: "Investigating",
+          sessionCount: 1,
+          activeSessionCount: 1,
+          latestSessionId: "s-1",
+          latestSessionLabel: "test",
+          latestWorkdir: "/w",
+          latestRepo: null,
+          latestActivityAt: Date.now(),
+          decisionCount: 1,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          closedAt: null,
+          archivedAt: null,
+        },
+      ]);
 
       const req = createMockReq("GET", `${PREFIX}/status`);
       const res = createMockRes();
@@ -207,6 +234,168 @@ describe("coordinator routes", () => {
       expect(json.taskCount).toBe(1);
       expect(json.tasks[0].sessionId).toBe("s-1");
       expect(json.tasks[0].decisionCount).toBe(1);
+      expect(json.taskThreads[0].id).toBe("thread-1");
+      expect(json.recentTasks[0].sessionId).toBe("s-1");
+      expect(json.preferredAgentType).toEqual(expect.any(String));
+      expect(Array.isArray(json.frameworks)).toBe(true);
+    });
+
+    it("filters terminal tasks from active tasks while keeping them in recent tasks", async () => {
+      asMock(ctx.coordinator).getAllTaskContexts.mockReturnValue([
+        {
+          threadId: "thread-active",
+          sessionId: "s-active",
+          agentType: "claude",
+          label: "active",
+          originalTask: "Keep working",
+          workdir: "/w1",
+          status: "active",
+          decisions: [],
+          autoResolvedCount: 0,
+          registeredAt: 10,
+          lastActivityAt: 20,
+        },
+        {
+          threadId: "thread-done",
+          sessionId: "s-done",
+          agentType: "codex",
+          label: "done",
+          originalTask: "Already finished",
+          workdir: "/w2",
+          status: "completed",
+          decisions: [],
+          autoResolvedCount: 0,
+          completionSummary: "Finished",
+          registeredAt: 30,
+          lastActivityAt: 40,
+        },
+      ]);
+
+      const req = createMockReq("GET", `${PREFIX}/status`);
+      const res = createMockRes();
+
+      await handleCoordinatorRoutes(req, res, `${PREFIX}/status`, ctx);
+
+      const json = res._getJson();
+      expect(json.tasks).toHaveLength(1);
+      expect(json.tasks[0].sessionId).toBe("s-active");
+      expect(json.recentTasks.map((task: { sessionId: string }) => task.sessionId)).toEqual([
+        "s-done",
+        "s-active",
+      ]);
+    });
+  });
+
+  describe("task thread routes", () => {
+    it("lists persisted task threads", async () => {
+      asMock(ctx.coordinator).listTaskThreads.mockResolvedValue([
+        { id: "thread-1", title: "Persist tasks" },
+      ]);
+
+      const req = createMockReq("GET", `${PREFIX}/threads`);
+      const res = createMockRes();
+
+      await handleCoordinatorRoutes(req, res, `${PREFIX}/threads`, ctx);
+
+      expect(res._getStatus()).toBe(200);
+      expect(res._getJson()[0].id).toBe("thread-1");
+    });
+
+    it("forwards query params when listing persisted task threads", async () => {
+      const req = createMockReq(
+        "GET",
+        `${PREFIX}/threads?includeArchived=true&status=archived&search=failover&limit=25`,
+      );
+      const res = createMockRes();
+
+      await handleCoordinatorRoutes(req, res, `${PREFIX}/threads`, ctx);
+
+      expect(asMock(ctx.coordinator).listTaskThreads).toHaveBeenCalledWith({
+        includeArchived: true,
+        status: "archived",
+        search: "failover",
+        limit: 25,
+      });
+    });
+
+    it("drops invalid limits when listing persisted task threads", async () => {
+      const req = createMockReq("GET", `${PREFIX}/threads?limit=not-a-number`);
+      const res = createMockRes();
+
+      await handleCoordinatorRoutes(req, res, `${PREFIX}/threads`, ctx);
+
+      expect(asMock(ctx.coordinator).listTaskThreads).toHaveBeenCalledWith({
+        includeArchived: false,
+        status: undefined,
+        search: undefined,
+        limit: undefined,
+      });
+    });
+
+    it("returns a persisted task thread by id", async () => {
+      asMock(ctx.coordinator).getTaskThread.mockResolvedValue({
+        id: "thread-1",
+        title: "Persist tasks",
+      });
+
+      const req = createMockReq("GET", `${PREFIX}/threads/thread-1`);
+      const res = createMockRes();
+
+      await handleCoordinatorRoutes(req, res, `${PREFIX}/threads/thread-1`, ctx);
+
+      expect(res._getStatus()).toBe(200);
+      expect(res._getJson().id).toBe("thread-1");
+    });
+
+    it("returns 404 when a persisted task thread is not found", async () => {
+      asMock(ctx.coordinator).getTaskThread.mockResolvedValue(null);
+
+      const req = createMockReq("GET", `${PREFIX}/threads/missing-thread`);
+      const res = createMockRes();
+
+      await handleCoordinatorRoutes(
+        req,
+        res,
+        `${PREFIX}/threads/missing-thread`,
+        ctx,
+      );
+
+      expect(res._getStatus()).toBe(404);
+      expect(res._getJson().error).toContain("Task thread not found");
+    });
+
+    it("archives a task thread", async () => {
+      const req = createMockReq("POST", `${PREFIX}/threads/thread-1/archive`);
+      const res = createMockRes();
+
+      await handleCoordinatorRoutes(
+        req,
+        res,
+        `${PREFIX}/threads/thread-1/archive`,
+        ctx,
+      );
+
+      expect(asMock(ctx.coordinator).archiveTaskThread).toHaveBeenCalledWith(
+        "thread-1",
+      );
+      expect(res._getJson().status).toBe("archived");
+    });
+
+    it("reopens a task thread", async () => {
+      const req = createMockReq("POST", `${PREFIX}/threads/thread-1/reopen`);
+      const res = createMockRes();
+
+      await handleCoordinatorRoutes(
+        req,
+        res,
+        `${PREFIX}/threads/thread-1/reopen`,
+        ctx,
+      );
+
+      expect(asMock(ctx.coordinator).reopenTaskThread).toHaveBeenCalledWith(
+        "thread-1",
+      );
+      expect(res._getJson().status).toBe("open");
     });
   });
 
@@ -225,7 +414,7 @@ describe("coordinator routes", () => {
         decisions: [],
         autoResolvedCount: 0,
       };
-      asMock(ctx.coordinator).getTaskContext.mockReturnValue(task);
+      asMock(ctx.coordinator).getTaskContextSnapshot.mockResolvedValue(task);
 
       const req = createMockReq("GET", `${PREFIX}/tasks/s-1`);
       const res = createMockRes();
@@ -237,7 +426,7 @@ describe("coordinator routes", () => {
     });
 
     it("returns 404 for unknown session", async () => {
-      asMock(ctx.coordinator).getTaskContext.mockReturnValue(undefined);
+      asMock(ctx.coordinator).getTaskContextSnapshot.mockResolvedValue(null);
 
       const req = createMockReq("GET", `${PREFIX}/tasks/s-unknown`);
       const res = createMockRes();
@@ -245,6 +434,39 @@ describe("coordinator routes", () => {
       await handleCoordinatorRoutes(req, res, `${PREFIX}/tasks/s-unknown`, ctx);
 
       expect(res._getStatus()).toBe(404);
+    });
+
+    it("returns persisted task context after restart when live memory is empty", async () => {
+      asMock(ctx.coordinator).getTaskContextSnapshot.mockResolvedValue({
+        threadId: "thread-1",
+        sessionId: "s-recovered",
+        agentType: "codex",
+        label: "recovered-agent",
+        originalTask: "Finish validation",
+        workdir: "/workspace/recovered",
+        status: "stopped",
+        decisions: [],
+        autoResolvedCount: 1,
+        registeredAt: 1,
+        lastActivityAt: 2,
+        idleCheckCount: 0,
+        taskDelivered: true,
+        lastSeenDecisionIndex: 0,
+      });
+
+      const req = createMockReq("GET", `${PREFIX}/tasks/s-recovered`);
+      const res = createMockRes();
+
+      await handleCoordinatorRoutes(
+        req,
+        res,
+        `${PREFIX}/tasks/s-recovered`,
+        ctx,
+      );
+
+      expect(res._getStatus()).toBe(200);
+      expect(res._getJson().sessionId).toBe("s-recovered");
+      expect(res._getJson().status).toBe("stopped");
     });
   });
 
@@ -349,6 +571,29 @@ describe("coordinator routes", () => {
 
       expect(res._getStatus()).toBe(404);
     });
+
+    it("defaults approval to true when the body omits approved", async () => {
+      const req = createMockReq("POST", `${PREFIX}/confirm/s-1`, {});
+      const res = createMockRes();
+
+      await handleCoordinatorRoutes(req, res, `${PREFIX}/confirm/s-1`, ctx);
+
+      expect(asMock(ctx.coordinator).confirmDecision).toHaveBeenCalledWith(
+        "s-1",
+        true,
+        undefined,
+      );
+    });
+
+    it("returns 500 when confirmation JSON is invalid", async () => {
+      const req = createMockReq("POST", `${PREFIX}/confirm/s-1`, "{oops");
+      const res = createMockRes();
+
+      await handleCoordinatorRoutes(req, res, `${PREFIX}/confirm/s-1`, ctx);
+
+      expect(res._getStatus()).toBe(500);
+      expect(res._getJson().error).toContain("Invalid JSON body");
+    });
   });
 
   // =========================================================================
@@ -390,6 +635,16 @@ describe("coordinator routes", () => {
 
       expect(res._getStatus()).toBe(400);
       expect(res._getJson().error).toContain("Invalid supervision level");
+    });
+
+    it("POST returns 500 when supervision JSON is invalid", async () => {
+      const req = createMockReq("POST", `${PREFIX}/supervision`, "{oops");
+      const res = createMockRes();
+
+      await handleCoordinatorRoutes(req, res, `${PREFIX}/supervision`, ctx);
+
+      expect(res._getStatus()).toBe(500);
+      expect(res._getJson().error).toContain("Invalid JSON body");
     });
   });
 });

@@ -1,5 +1,5 @@
 /**
- * SEND_TO_CODING_AGENT action - Send input to a running coding agent
+ * SEND_TO_AGENT action - Send input to a running task agent.
  *
  * Allows sending text or commands to an active PTY session.
  * Useful for responding to prompts, providing feedback, or giving new instructions.
@@ -16,33 +16,38 @@ import type {
   Memory,
   State,
 } from "@elizaos/core";
-import type { PTYService } from "../services/pty-service.js";
+import { getCoordinator, type PTYService } from "../services/pty-service.js";
+import { requireTaskAgentAccess } from "../services/task-policy.js";
+import { normalizeAgentType } from "../services/pty-types.js";
 
 export const sendToAgentAction: Action = {
-  name: "SEND_TO_CODING_AGENT",
+  name: "SEND_TO_AGENT",
 
   similes: [
+    "SEND_TO_CODING_AGENT",
     "MESSAGE_CODING_AGENT",
     "INPUT_TO_AGENT",
     "RESPOND_TO_AGENT",
     "TELL_CODING_AGENT",
+    "MESSAGE_AGENT",
+    "TELL_TASK_AGENT",
   ],
 
   description:
-    "Send text input to a running coding agent session. " +
-    "Use this to respond to agent prompts, provide feedback, or give new instructions.",
+    "Send text input or key presses to a running task-agent session. " +
+    "Use this to respond to agent prompts, provide feedback, continue a task, or assign a fresh tracked task to an existing agent.",
 
   examples: [
     [
       {
         name: "{{user1}}",
-        content: { text: "Tell the coding agent to accept the changes" },
+        content: { text: "Tell the running sub-agent to accept the changes" },
       },
       {
         name: "{{agentName}}",
         content: {
-          text: "I'll send the approval to the coding agent.",
-          action: "SEND_TO_CODING_AGENT",
+          text: "I'll send the approval to the task agent.",
+          action: "SEND_TO_AGENT",
         },
       },
     ],
@@ -55,7 +60,7 @@ export const sendToAgentAction: Action = {
         name: "{{agentName}}",
         content: {
           text: "Sending confirmation to the agent.",
-          action: "SEND_TO_CODING_AGENT",
+          action: "SEND_TO_AGENT",
         },
       },
     ],
@@ -91,9 +96,19 @@ export const sendToAgentAction: Action = {
     runtime: IAgentRuntime,
     message: Memory,
     state?: State,
-    _options?: HandlerOptions,
+    options?: HandlerOptions,
     callback?: HandlerCallback,
   ): Promise<ActionResult | undefined> => {
+    const access = await requireTaskAgentAccess(runtime, message, "interact");
+    if (!access.allowed) {
+      if (callback) {
+        await callback({
+          text: access.reason,
+        });
+      }
+      return { success: false, error: "FORBIDDEN", text: access.reason };
+    }
+
     const ptyService = runtime.getService("PTY_SERVICE") as unknown as
       | PTYService
       | undefined;
@@ -106,14 +121,17 @@ export const sendToAgentAction: Action = {
       return { success: false, error: "SERVICE_UNAVAILABLE" };
     }
 
+    const params = options?.parameters as Record<string, unknown> | undefined;
     const content = message.content as {
       sessionId?: string;
       input?: string;
       keys?: string;
+      task?: string;
+      label?: string;
     };
 
     // Get session ID from content or state
-    let sessionId = content.sessionId;
+    let sessionId = (params?.sessionId as string) ?? content.sessionId;
     if (!sessionId && state?.codingSession) {
       sessionId = (state.codingSession as { id: string }).id;
     }
@@ -124,7 +142,7 @@ export const sendToAgentAction: Action = {
       if (sessions.length === 0) {
         if (callback) {
           await callback({
-            text: "No active coding sessions. Spawn an agent first.",
+            text: "No active task-agent sessions. Spawn an agent first.",
           });
         }
         return { success: false, error: "NO_SESSION" };
@@ -143,36 +161,87 @@ export const sendToAgentAction: Action = {
     }
 
     try {
-      if (content.keys) {
+      const keys = (params?.keys as string) ?? content.keys;
+      const trackedTask = (params?.task as string) ?? content.task;
+      const taskLabel = (params?.label as string) ?? content.label;
+      const input = (params?.input as string) ?? content.input ?? trackedTask;
+
+      if (keys) {
         // Send special key sequence
-        await ptyService.sendKeysToSession(sessionId, content.keys);
+        await ptyService.sendKeysToSession(sessionId, keys);
         if (callback) {
           await callback({
-            text: `Sent key sequence to coding agent.`,
+            text: "Sent key sequence to task agent.",
           });
         }
         return {
           success: true,
           text: "Sent key sequence",
-          data: { sessionId, keys: content.keys },
+          data: { sessionId, keys },
         };
-      } else if (content.input) {
+      } else if (input) {
         // Send text input
-        await ptyService.sendToSession(sessionId, content.input);
+        await ptyService.sendToSession(sessionId, input);
+        if (trackedTask) {
+          const coordinator = getCoordinator(runtime);
+          const existingTask = coordinator?.getTaskContext(sessionId);
+          const taskThread =
+            coordinator && !existingTask
+              ? await coordinator.createTaskThread({
+                  title:
+                    taskLabel ||
+                    (typeof session.metadata?.label === "string"
+                      ? session.metadata.label
+                      : `agent-${sessionId.slice(-8)}`),
+                  originalRequest: trackedTask,
+                  kind: "coding",
+                  roomId:
+                    typeof (message as unknown as Record<string, unknown>).roomId === "string"
+                      ? ((message as unknown as Record<string, unknown>).roomId as string)
+                      : null,
+                  ownerUserId:
+                    typeof (message as unknown as Record<string, unknown>).userId === "string"
+                      ? ((message as unknown as Record<string, unknown>).userId as string)
+                      : null,
+                  metadata: {
+                    source: "send-to-agent-action",
+                    messageId: message.id,
+                    sessionId,
+                  },
+                })
+              : null;
+          if (coordinator) {
+            await coordinator.registerTask(sessionId, {
+              threadId: existingTask?.threadId ?? taskThread?.id ?? sessionId,
+              agentType: normalizeAgentType(session.agentType),
+              label:
+                taskLabel ||
+                existingTask?.label ||
+                (typeof session.metadata?.label === "string"
+                  ? session.metadata.label
+                  : `agent-${sessionId.slice(-8)}`),
+              originalTask: trackedTask,
+              workdir: session.workdir,
+              ...(existingTask?.repo ? { repo: existingTask.repo } : {}),
+            });
+          }
+        }
         if (callback) {
           await callback({
-            text: `Sent to coding agent: "${content.input}"`,
+            text: trackedTask
+              ? `Assigned new tracked task to task agent: "${trackedTask}"`
+              : `Sent to task agent: "${input}"`,
           });
         }
         return {
           success: true,
-          text: "Sent input to agent",
-          data: { sessionId, input: content.input },
+          text: trackedTask ? "Assigned new task to agent" : "Sent input to agent",
+          data: { sessionId, input, ...(trackedTask ? { task: trackedTask } : {}) },
         };
       } else {
         if (callback) {
           await callback({
-            text: "No input provided. Specify 'input' or 'keys' parameter.",
+            text: "No input provided. Specify 'input', 'task', or 'keys' parameter.",
           });
         }
         return { success: false, error: "NO_INPUT" };
@@ -193,13 +262,27 @@ export const sendToAgentAction: Action = {
     {
       name: "sessionId",
       description:
-        "ID of the coding session to send to. If not specified, uses the current session.",
+        "ID of the task-agent session to send to. If not specified, uses the current session.",
       required: false,
       schema: { type: "string" as const },
     },
     {
       name: "input",
-      description: "Text input to send to the agent.",
+      description: "Text input to send to the running task agent.",
+      required: false,
+      schema: { type: "string" as const },
+    },
+    {
+      name: "task",
+      description:
+        "New tracked task to assign to the existing agent. This is also sent as the next input so LIST_AGENTS and provider status reflect the new assignment.",
+      required: false,
+      schema: { type: "string" as const },
+    },
+    {
+      name: "label",
+      description:
+        "Optional label to use when tracking a newly assigned task on an existing agent.",
       required: false,
       schema: { type: "string" as const },
     },
@@ -212,3 +295,5 @@ export const sendToAgentAction: Action = {
     },
   ],
 };
+
+export const sendToTaskAgentAction = sendToAgentAction;

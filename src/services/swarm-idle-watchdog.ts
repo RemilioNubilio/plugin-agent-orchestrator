@@ -43,7 +43,9 @@ export async function scanIdleSessions(
 ): Promise<void> {
   const now = Date.now();
   for (const taskCtx of ctx.tasks.values()) {
-    if (taskCtx.status !== "active") continue;
+    if (taskCtx.status !== "active" && taskCtx.status !== "tool_running") {
+      continue;
+    }
 
     // Liveness check: if the PTY session no longer exists in the worker
     // (e.g. parent process was SIGKILL'd and restarted), mark it dead.
@@ -55,7 +57,7 @@ export async function scanIdleSessions(
         );
         taskCtx.status = "stopped";
         taskCtx.stoppedAt = now;
-        taskCtx.decisions.push({
+        await ctx.recordDecision(taskCtx, {
           timestamp: now,
           event: "idle_watchdog",
           promptText: "PTY session no longer exists",
@@ -123,7 +125,7 @@ export async function scanIdleSessions(
       );
       taskCtx.status = "stopped";
       taskCtx.stoppedAt = now;
-      taskCtx.decisions.push({
+      await ctx.recordDecision(taskCtx, {
         timestamp: now,
         event: "idle_watchdog",
         promptText: `Session idle for ${idleMinutes} minutes`,
@@ -151,6 +153,7 @@ export async function scanIdleSessions(
         } catch (err) {
           ctx.log(`Idle watchdog: failed to stop session ${taskCtx.sessionId}: ${err}`);
           taskCtx.status = "error";
+          await ctx.syncTaskContext(taskCtx);
           ctx.broadcast({
             type: "error",
             sessionId: taskCtx.sessionId,
@@ -264,7 +267,7 @@ export async function handleIdleCheck(
     }
 
     // Record the decision
-    taskCtx.decisions.push({
+    await ctx.recordDecision(taskCtx, {
       timestamp: Date.now(),
       event: "idle_watchdog",
       promptText: `Session idle for ${idleMinutes} minutes`,

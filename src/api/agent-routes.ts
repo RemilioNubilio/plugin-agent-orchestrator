@@ -1,7 +1,7 @@
 /**
- * Coding Agent Route Handlers
+ * Task Agent Route Handlers
  *
- * Handles routes for PTY-based coding agent management:
+ * Handles routes for PTY-based task-agent management:
  * - Preflight checks, metrics, workspace files
  * - Approval presets and config
  * - Agent CRUD: list, spawn, get, send, stop, output
@@ -22,6 +22,7 @@ import {
   normalizeAgentType,
   toPiCommand,
 } from "../services/pty-types.js";
+import { getTaskAgentFrameworkState } from "../services/task-agent-frameworks.js";
 import type { RouteContext } from "./routes.js";
 import { parseBody, sendError, sendJson } from "./routes.js";
 
@@ -216,7 +217,7 @@ async function runBenchmarkPreflight(workdir: string): Promise<void> {
 }
 
 /**
- * Handle coding agent routes (/api/coding-agents/*)
+ * Handle task-agent routes (/api/coding-agents/*)
  * Returns true if the route was handled, false otherwise
  */
 export async function handleAgentRoutes(
@@ -427,10 +428,18 @@ export async function handleAgentRoutes(
       sendError(res, "PTY Service not available", 503);
       return true;
     }
+    const frameworkState = await getTaskAgentFrameworkState(
+      ctx.runtime,
+      ctx.ptyService,
+    );
     sendJson(res, {
       defaultApprovalPreset: ctx.ptyService.defaultApprovalPreset,
       agentSelectionStrategy: ctx.ptyService.agentSelectionStrategy,
       defaultAgentType: ctx.ptyService.defaultAgentType,
+      preferredAgentType: frameworkState.preferred.id,
+      preferredAgentReason: frameworkState.preferred.reason,
+      configuredSubscriptionProvider: frameworkState.configuredSubscriptionProvider,
+      frameworks: frameworkState.frameworks,
     } as unknown as JsonValue);
     return true;
   }
@@ -604,6 +613,26 @@ export async function handleAgentRoutes(
 
       // Check if coordinator is active — route blocking prompts through it
       const coordinator = getCoordinator(ctx.runtime);
+      const requestedThreadId =
+        typeof (metadata as Record<string, unknown>)?.threadId === "string"
+          ? ((metadata as Record<string, unknown>).threadId as string)
+          : null;
+      const taskThread =
+        coordinator && task && !requestedThreadId
+          ? await coordinator.createTaskThread({
+              title:
+                ((metadata as Record<string, unknown>)?.label as string | undefined) ??
+                `Task ${Date.now()}`,
+              originalRequest: task as string,
+              kind: "coding",
+              metadata: {
+                workdir: workdir ?? null,
+                source: "api-spawn",
+              },
+            })
+          : requestedThreadId
+            ? await coordinator?.getTaskThread(requestedThreadId)
+            : null;
 
       const session = await ctx.ptyService.spawnSession({
         name: `agent-${Date.now()}`,
@@ -623,6 +652,7 @@ export async function handleAgentRoutes(
         // Let adapter auto-response handle known prompts (permissions, trust, etc.)
         // instantly. The coordinator handles only unrecognized prompts via LLM.
         metadata: {
+          threadId: taskThread?.id ?? requestedThreadId,
           requestedType: agentStr,
           ...(metadata as Record<string, unknown>),
           ...(aiderProvider ? { provider: aiderProvider } : {}),
@@ -636,7 +666,8 @@ export async function handleAgentRoutes(
         const label = (metadata as Record<string, unknown>)?.label as
           | string
           | undefined;
-        coordinator.registerTask(session.id, {
+        await coordinator.registerTask(session.id, {
+          threadId: taskThread?.id ?? requestedThreadId ?? session.id,
           agentType:
             agentStr as import("../services/pty-service.js").CodingAgentType,
           label: label || `agent-${session.id.slice(-8)}`,

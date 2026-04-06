@@ -1,30 +1,37 @@
 # @elizaos/plugin-agent-orchestrator
 
-Orchestrate CLI-based coding agents (Claude Code, Codex, Gemini CLI, Aider, Pi) via PTY sessions and manage git workspaces for autonomous coding tasks.
+Orchestrate CLI task agents (Claude Code, Codex, Gemini CLI, Aider, Pi) via PTY sessions and git workspaces for open-ended background work.
 
-Built for [Milady](https://github.com/milady-ai/milady). The plugin registers ElizaOS-compatible actions and services, so any ElizaOS agent can spawn and manage coding agents via chat. The full experience — live xterm terminal views, real-time PTY output streaming, and the swarm monitoring dashboard — requires the Milady frontend and server.
+Built for [Milady](https://github.com/milady-ai/milady). The plugin registers elizaOS-compatible actions and services so any Eliza agent can delegate substantial work to sub-agents while continuing the user conversation. The full experience, including live xterm views, PTY output streaming, and swarm monitoring, is available through the Milady frontend and server.
 
 ## Features
 
-- **PTY Session Management**: Spawn, control, and monitor coding agents running in pseudo-terminals
-- **Git Workspace Provisioning**: Clone repos, create worktrees, manage branches
-- **PR Workflow**: Commit changes, push to remote, create pull requests
-- **Multi-Agent Support**: Claude Code, Codex, Gemini CLI, Aider, Pi, or generic shell
+- **Open-ended task delegation**: Use task agents for anything beyond a simple reply, including coding, research, drafting, debugging, repo work, and multi-step execution
+- **PTY session management**: Spawn, control, and monitor task agents running in pseudo-terminals
+- **Current task status**: Surface active sessions, coordinator task state, and pending confirmations so the main agent can keep the user updated
+- **Subscription-aware framework preference**: Prefer Claude Code or Codex when Milady knows the user is logged in with Anthropic or OpenAI-backed subscriptions
+- **Git workspace provisioning**: Clone repos, create worktrees, manage branches, commits, pushes, and pull requests
+- **Multi-agent support**: Claude Code, Codex, Gemini CLI, Aider, Pi, or generic shell flows through the same orchestration surface
 
 ## Prerequisites
 
-This plugin spawns CLI coding agents in PTY sessions. You need **at least one** of the following installed on your machine:
+This plugin spawns CLI task agents in PTY sessions. You need at least one supported framework installed locally:
 
-| Agent | Install | Docs |
-|-------|---------|------|
+| Framework | Install | Docs |
+|-----------|---------|------|
 | **Claude Code** | `npm install -g @anthropic-ai/claude-code` | [claude.ai/claude-code](https://claude.ai/claude-code) |
 | **Codex** | `npm install -g @openai/codex` | [github.com/openai/codex](https://github.com/openai/codex) |
 | **Gemini CLI** | `npm install -g @google/gemini-cli` | [github.com/google-gemini/gemini-cli](https://github.com/google-gemini/gemini-cli) |
 | **Aider** | `pip install aider-chat` | [aider.chat](https://aider.chat) |
+| **Pi** | install the `pi` CLI available on your host | provider-specific |
 
-Each agent also requires its own API key (e.g., `ANTHROPIC_API_KEY` for Claude Code, `OPENAI_API_KEY` for Codex, `GOOGLE_GENERATIVE_AI_API_KEY` for Gemini). Set these in your environment or runtime settings.
+Each framework also needs its own auth. API keys still work, but the orchestrator can also detect subscription-backed CLI logins:
 
-The plugin auto-detects which agents are available at spawn time and will report if a requested agent isn't installed.
+- `ANTHROPIC_API_KEY` or a Claude Code subscription login for Claude Code
+- `OPENAI_API_KEY` or a Codex login for Codex
+- `GOOGLE_GENERATIVE_AI_API_KEY` or `GOOGLE_API_KEY` for Gemini CLI
+
+The provider surface exposes the currently available frameworks and the preferred default. If the user does not specify a framework, the plugin picks the best available option automatically.
 
 ## Installation
 
@@ -43,47 +50,45 @@ The following peer dependencies will be installed automatically:
 ### Register the Plugin
 
 ```typescript
-import { codingAgentPlugin } from "@elizaos/plugin-agent-orchestrator";
+import taskAgentPlugin from "@elizaos/plugin-agent-orchestrator";
 
-// Add to your Milady or ElizaOS agent configuration
+// Add to your Milady or elizaOS agent configuration
 const agent = {
-  plugins: [codingAgentPlugin],
+  plugins: [taskAgentPlugin],
   // ... other config
 };
 ```
 
-### Actions
+`codingAgentPlugin` is still exported as a compatibility alias, but `taskAgentPlugin` is the canonical export.
 
-#### PTY Session Management
-
-| Action | Description |
-|--------|-------------|
-| `SPAWN_CODING_AGENT` | Spawn a new coding agent session |
-| `SEND_TO_CODING_AGENT` | Send input or keys to a running agent |
-| `STOP_CODING_AGENT` | Terminate an agent session |
-| `LIST_CODING_AGENTS` | List all active sessions |
-
-#### Workspace Management
+### Canonical Actions
 
 | Action | Description |
 |--------|-------------|
+| `CREATE_TASK` | Create an asynchronous task-agent job for substantial work |
+| `SPAWN_AGENT` | Spawn a task agent session immediately |
+| `SEND_TO_AGENT` | Send input or keys to a running task agent |
+| `LIST_AGENTS` | List active sessions and current task status |
+| `STOP_AGENT` | Terminate an agent session |
 | `PROVISION_WORKSPACE` | Clone a repo or create a worktree |
 | `FINALIZE_WORKSPACE` | Commit, push, and optionally create PR |
+
+Legacy action names such as `START_CODING_TASK`, `SPAWN_CODING_AGENT`, `SEND_TO_CODING_AGENT`, `LIST_CODING_AGENTS`, and `STOP_CODING_AGENT` remain supported as aliases.
 
 ### Example Conversation
 
 ```
-User: Spawn Claude Code to fix the auth bug in src/auth.ts
-Agent: Starting claude-code agent in /workspace...
+User: This is bigger than a simple reply. Create a background task to inspect the repo, fix the auth bug, and open a PR.
+Agent: Starting a task agent for the repo work...
        Session ID: abc123, Status: running
 
-User: What coding agents are running?
-Agent: Active sessions:
-       1. claude-code (abc123...) - running
+User: What task agents are running?
+Agent: Active task agents:
+       1. Claude Code (abc123...) - running
           Working in: /workspace
 
 User: Tell it to accept the changes
-Agent: Sent "y" to coding agent.
+Agent: Sent "y" to the task agent.
 
 User: Create a PR for the fix
 Agent: Workspace finalized!
@@ -95,7 +100,7 @@ Agent: Workspace finalized!
 
 ### PTYService
 
-Manages PTY sessions for coding agents.
+Manages PTY sessions for task agents.
 
 ```typescript
 import { PTYService } from "@elizaos/plugin-agent-orchestrator";
@@ -105,7 +110,7 @@ const ptyService = runtime.getService("PTY_SERVICE") as PTYService;
 
 // Spawn a session
 const session = await ptyService.spawnSession({
-  agentType: "claude-code",
+  agentType: "claude",
   workdir: "/path/to/project",
   initialTask: "Fix the auth bug",
 });
@@ -123,7 +128,7 @@ await ptyService.stopSession(session.id);
 
 ### CodingWorkspaceService
 
-Manages git workspaces for coding tasks.
+Manages git workspaces for task-agent jobs.
 
 ```typescript
 import { CodingWorkspaceService } from "@elizaos/plugin-agent-orchestrator";
@@ -160,7 +165,7 @@ const pr = await workspaceService.createPR(workspace.id, {
 
 ## Configuration
 
-Configure via runtime settings:
+Configure via runtime settings and Milady config:
 
 ```typescript
 // PTY Service config
@@ -178,7 +183,43 @@ runtime.setSetting("CODING_WORKSPACE_CONFIG", {
   },
   debug: true,
 });
+
+// Optional fixed default when you do not want auto-selection
+runtime.setSetting("PARALLAX_DEFAULT_AGENT_TYPE", "codex");
+
+// Selection strategy: "heuristic" | "fixed"
+runtime.setSetting("PARALLAX_AGENT_SELECTION_STRATEGY", "heuristic");
 ```
+
+To bias the preferred framework toward the user's paid subscription, Milady can store a provider hint in `~/.milady/milady.json`:
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "subscriptionProvider": "anthropic-subscription"
+    }
+  }
+}
+```
+
+Supported subscription hints currently include Anthropic and OpenAI-backed flows, which map to Claude Code and Codex when those CLIs are installed and authenticated.
+
+## Testing
+
+Run the standard suite:
+
+```bash
+bun test
+```
+
+Run the opt-in live smoke tests against real Claude Code and Codex sessions:
+
+```bash
+bun run test:live
+```
+
+The live suite creates a temporary workspace, asks the real CLI to complete a small file-writing task, and verifies both task execution and task-status visibility.
 
 ## Dependencies
 

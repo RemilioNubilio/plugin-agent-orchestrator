@@ -133,8 +133,8 @@ export function buildCoordinationPrompt(
       : "";
 
   return (
-    `You are Milady, an AI orchestrator managing a swarm of coding agents. ` +
-    `A ${taskCtx.agentType} coding agent ("${taskCtx.label}", session: ${taskCtx.sessionId}) ` +
+    `You are Milady, an AI orchestrator managing a swarm of task agents. ` +
+    `A ${taskCtx.agentType} task agent ("${taskCtx.label}", session: ${taskCtx.sessionId}) ` +
     `is blocked and waiting for input.\n\n` +
     `Original task: "${taskCtx.originalTask}"\n` +
     `Working directory: ${taskCtx.workdir}\n` +
@@ -214,8 +214,8 @@ export function buildIdleCheckPrompt(
       : "";
 
   return (
-    `You are Milady, an AI orchestrator managing a swarm of coding agents. ` +
-    `A ${taskCtx.agentType} coding agent ("${taskCtx.label}", session: ${taskCtx.sessionId}) ` +
+    `You are Milady, an AI orchestrator managing a swarm of task agents. ` +
+    `A ${taskCtx.agentType} task agent ("${taskCtx.label}", session: ${taskCtx.sessionId}) ` +
     `has been idle for ${idleMinutes} minutes with no events or output changes.\n\n` +
     `Original task: "${taskCtx.originalTask}"\n` +
     `Working directory: ${taskCtx.workdir}\n` +
@@ -286,8 +286,8 @@ export function buildTurnCompletePrompt(
       : "";
 
   return (
-    `You are Milady, an AI orchestrator managing a swarm of coding agents. ` +
-    `A ${taskCtx.agentType} coding agent ("${taskCtx.label}", session: ${taskCtx.sessionId}) ` +
+    `You are Milady, an AI orchestrator managing a swarm of task agents. ` +
+    `A ${taskCtx.agentType} task agent ("${taskCtx.label}", session: ${taskCtx.sessionId}) ` +
     `just finished a turn and is back at the idle prompt waiting for input.\n\n` +
     `Original task: "${taskCtx.originalTask}"\n` +
     `Working directory: ${taskCtx.workdir}\n` +
@@ -350,7 +350,7 @@ export function buildBlockedEventMessage(
       : "";
 
   return (
-    `[Coding Agent Event] A ${taskCtx.agentType} agent ("${taskCtx.label}") is blocked and waiting for input.\n\n` +
+    `[Task Agent Event] A ${taskCtx.agentType} agent ("${taskCtx.label}") is blocked and waiting for input.\n\n` +
     `Task: "${taskCtx.originalTask}"\n` +
     `Workdir: ${taskCtx.workdir}\n` +
     `Repo: ${taskCtx.repo ?? "none (scratch directory)"}\n` +
@@ -404,7 +404,7 @@ export function buildTurnCompleteEventMessage(
       : "";
 
   return (
-    `[Coding Agent Event] A ${taskCtx.agentType} agent ("${taskCtx.label}") just finished a turn and is idle.\n\n` +
+    `[Task Agent Event] A ${taskCtx.agentType} agent ("${taskCtx.label}") just finished a turn and is idle.\n\n` +
     `Task: "${taskCtx.originalTask}"\n` +
     `Workdir: ${taskCtx.workdir}\n` +
     `Repo: ${taskCtx.repo ?? "none (scratch directory)"}\n` +

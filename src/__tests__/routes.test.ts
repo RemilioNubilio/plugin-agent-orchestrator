@@ -73,6 +73,9 @@ const createMockPTYService = () => ({
   checkAvailableAgents: jest.fn().mockResolvedValue([]),
   getAgentMetrics: jest.fn().mockReturnValue({}),
   listSessions: jest.fn().mockResolvedValue([]),
+  defaultApprovalPreset: "autonomous",
+  agentSelectionStrategy: "fixed",
+  defaultAgentType: "claude",
   spawnSession: jest.fn().mockResolvedValue({
     id: "s1",
     agentType: "claude",
@@ -347,6 +350,44 @@ describe("handleCodingAgentRoutes", () => {
       expect(pty.getSessionOutput).toHaveBeenCalledWith("s1", 50);
       expect(res._getStatus()).toBe(200);
       expect(res._getJson().output).toBe("output text");
+    });
+  });
+
+  describe("settings and aliases", () => {
+    it("GET /api/coding-agents/settings includes preferred framework details", async () => {
+      const req = createMockReq("GET", "/api/coding-agents/settings");
+      const res = createMockRes();
+
+      await handleCodingAgentRoutes(
+        req,
+        res,
+        "/api/coding-agents/settings",
+        ctx,
+      );
+
+      expect(res._getStatus()).toBe(200);
+      expect(res._getJson()).toEqual(
+        expect.objectContaining({
+          defaultApprovalPreset: "autonomous",
+          agentSelectionStrategy: "fixed",
+          defaultAgentType: "claude",
+          preferredAgentType: expect.any(String),
+          frameworks: expect.any(Array),
+        }),
+      );
+    });
+
+    it("supports /api/task-agents alias paths", async () => {
+      const pty = asMock(ctx.ptyService);
+      pty.listSessions.mockResolvedValue([{ id: "s1" }]);
+
+      const req = createMockReq("GET", "/api/task-agents");
+      const res = createMockRes();
+
+      await handleCodingAgentRoutes(req, res, "/api/task-agents", ctx);
+
+      expect(res._getStatus()).toBe(200);
+      expect(res._getJson()).toEqual([{ id: "s1" }]);
     });
   });
 

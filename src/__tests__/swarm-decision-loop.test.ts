@@ -18,9 +18,20 @@ const { handleBlocked, handleTurnComplete, executeDecision } = await import(
 function createMockCtx(overrides: Record<string, unknown> = {}) {
   return {
     runtime: {
-      useModel: jest.fn().mockResolvedValue(
-        '{"action":"respond","response":"y","reasoning":"Approve"}',
-      ),
+      useModel: jest
+        .fn()
+        .mockImplementation(
+          async (
+            _modelType: string,
+            options?: { prompt?: string },
+          ) => {
+            if (options?.prompt?.includes("Return strict JSON only")) {
+              return '{"verdict":"pass","summary":"Validation confirmed the task is complete."}';
+            }
+            return '{"action":"respond","response":"y","reasoning":"Approve"}';
+          },
+        ),
+      getService: jest.fn().mockReturnValue(null),
     },
     ptyService: {
       sendToSession: jest.fn().mockResolvedValue(undefined),
@@ -39,6 +50,46 @@ function createMockCtx(overrides: Record<string, unknown> = {}) {
     getSwarmCompleteCallback: () => null,
     sharedDecisions: [],
     getSwarmContext: () => "",
+    syncTaskContext: jest.fn().mockResolvedValue(undefined),
+    recordDecision: jest
+      .fn()
+      .mockImplementation(
+        async (
+          taskCtx: { decisions: Array<Record<string, unknown>> },
+          decision: Record<string, unknown>,
+        ) => {
+          taskCtx.decisions.push(decision);
+        },
+      ),
+    taskRegistry: {
+      getThread: jest.fn().mockResolvedValue({
+        id: "thread-1",
+        title: "test-agent",
+        kind: "coding",
+        status: "active",
+        originalRequest: "Fix bug",
+        summary: "",
+        sessionCount: 1,
+        activeSessionCount: 1,
+        latestSessionId: "s-1",
+        latestSessionLabel: "test-agent",
+        latestWorkdir: "/workspace/project",
+        latestRepo: null,
+        latestActivityAt: Date.now(),
+        decisionCount: 0,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        acceptanceCriteria: ["Fix bug", "Run validation"],
+        sessions: [],
+        decisions: [],
+        events: [],
+        artifacts: [],
+        transcripts: [],
+      }),
+      appendEvent: jest.fn().mockResolvedValue(undefined),
+      recordArtifact: jest.fn().mockResolvedValue(undefined),
+      updateThreadSummary: jest.fn().mockResolvedValue(undefined),
+    },
     broadcast: jest.fn(),
     sendChatMessage: jest.fn(),
     log: jest.fn(),
@@ -49,10 +100,12 @@ function createMockCtx(overrides: Record<string, unknown> = {}) {
 function createTaskCtx(overrides: Record<string, unknown> = {}) {
   return {
     sessionId: "s-1",
+    threadId: "thread-1",
     agentType: "claude",
     label: "test-agent",
     originalTask: "Fix bug",
     workdir: "/workspace/project",
+    repo: null,
     status: "active",
     decisions: [] as Array<Record<string, unknown>>,
     autoResolvedCount: 0,
@@ -111,6 +164,88 @@ describe("handleBlocked", () => {
     });
 
     expect(ctx.ptyService.sendToSession).toHaveBeenCalledWith("s-1", "y");
+  });
+
+  it("uses adapter suggested key responses immediately in autonomous mode", async () => {
+    const ctx = createMockCtx();
+    const taskCtx = createTaskCtx();
+    ctx.tasks.set("s-1", taskCtx);
+
+    await handleBlocked(ctx as never, "s-1", taskCtx as never, {
+      promptInfo: {
+        prompt: "Codex tool approval",
+        type: "permission",
+        canAutoRespond: true,
+        suggestedResponse: "keys:enter",
+      },
+      autoResponded: false,
+    });
+
+    expect(ctx.runtime.useModel).not.toHaveBeenCalled();
+    expect(ctx.ptyService.sendKeysToSession).toHaveBeenCalledWith("s-1", [
+      "enter",
+    ]);
+    expect(taskCtx.decisions[0].decision).toBe("auto_resolved");
+  });
+
+  it("falls back to enter for autonomous permission prompts that omit a suggested response", async () => {
+    const ctx = createMockCtx();
+    const taskCtx = createTaskCtx();
+    ctx.tasks.set("s-1", taskCtx);
+
+    await handleBlocked(ctx as never, "s-1", taskCtx as never, {
+      promptInfo: {
+        prompt: "Codex tool approval",
+        type: "permission",
+        canAutoRespond: true,
+      },
+      autoResponded: false,
+    });
+
+    expect(ctx.runtime.useModel).not.toHaveBeenCalled();
+    expect(ctx.ptyService.sendKeysToSession).toHaveBeenCalledWith("s-1", [
+      "enter",
+    ]);
+    expect(taskCtx.decisions[0].decision).toBe("auto_resolved");
+  });
+
+  it("auto-answers routine Codex browser follow-up questions", async () => {
+    const ctx = createMockCtx();
+    const taskCtx = createTaskCtx({ agentType: "codex" });
+    ctx.tasks.set("s-1", taskCtx);
+
+    await handleBlocked(ctx as never, "s-1", taskCtx as never, {
+      promptInfo: {
+        prompt: "The page is accessible. Should I open the page in a new tab instead?",
+        type: "unknown",
+        canAutoRespond: false,
+      },
+      autoResponded: false,
+    });
+
+    expect(ctx.runtime.useModel).not.toHaveBeenCalled();
+    expect(ctx.ptyService.sendToSession).toHaveBeenCalledWith("s-1", "yes");
+    expect(taskCtx.decisions[0].decision).toBe("auto_resolved");
+  });
+
+  it("keeps the current Codex model for routine selection prompts", async () => {
+    const ctx = createMockCtx();
+    const taskCtx = createTaskCtx({ agentType: "codex" });
+    ctx.tasks.set("s-1", taskCtx);
+
+    await handleBlocked(ctx as never, "s-1", taskCtx as never, {
+      promptInfo: {
+        prompt:
+          "1. GPT-5 Mini ex. Cheaper, faster, but less capable. 2. Keep current model 3. Keep current mode",
+        type: "unknown",
+        canAutoRespond: false,
+      },
+      autoResponded: false,
+    });
+
+    expect(ctx.runtime.useModel).not.toHaveBeenCalled();
+    expect(ctx.ptyService.sendToSession).toHaveBeenCalledWith("s-1", "2");
+    expect(taskCtx.decisions[0].decision).toBe("auto_resolved");
   });
 
   it("declines and redirects out-of-scope path access in autonomous mode", async () => {
@@ -302,6 +437,40 @@ describe("executeDecision", () => {
     );
     expect(ctx.ptyService.stopSession).toHaveBeenCalledWith("s-1", true);
   });
+
+  it("sends the agent back to work when validation requests revision", async () => {
+    const ctx = createMockCtx();
+    ctx.runtime.useModel.mockImplementation(
+      async (_modelType: string, options?: { prompt?: string }) => {
+        if (options?.prompt?.includes("Return strict JSON only")) {
+          return JSON.stringify({
+            verdict: "revise",
+            summary: "Tests and verification evidence are still missing.",
+            followUpPrompt: "Run the full test suite, verify the output, and report the evidence.",
+          });
+        }
+        return '{"action":"respond","response":"y","reasoning":"Approve"}';
+      },
+    );
+    const taskCtx = createTaskCtx();
+    ctx.tasks.set("s-1", taskCtx);
+
+    await executeDecision(ctx as never, "s-1", {
+      action: "complete",
+      reasoning: "Task done",
+    });
+
+    expect(taskCtx.status).toBe("active");
+    expect(ctx.ptyService.sendToSession).toHaveBeenCalledWith(
+      "s-1",
+      "Run the full test suite, verify the output, and report the evidence.",
+    );
+    expect(ctx.ptyService.stopSession).not.toHaveBeenCalled();
+    expect(ctx.sendChatMessage).toHaveBeenCalledWith(
+      expect.stringContaining("Validation asked the agent to continue"),
+      "coding-agent",
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -329,8 +498,13 @@ describe("handleTurnComplete", () => {
 
   it("completes session when LLM says complete", async () => {
     const ctx = createMockCtx();
-    ctx.runtime.useModel.mockResolvedValue(
-      '{"action":"complete","reasoning":"All objectives met"}',
+    ctx.runtime.useModel.mockImplementation(
+      async (_modelType: string, options?: { prompt?: string }) => {
+        if (options?.prompt?.includes("Return strict JSON only")) {
+          return '{"verdict":"pass","summary":"Validation confirmed the PR and verification evidence."}';
+        }
+        return '{"action":"complete","reasoning":"All objectives met"}';
+      },
     );
     const taskCtx = createTaskCtx();
     ctx.tasks.set("s-1", taskCtx);

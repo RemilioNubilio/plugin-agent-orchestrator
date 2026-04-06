@@ -1,21 +1,44 @@
 # Changelog
 
-## 0.5.0
+## 0.6.0
 
 ### Added
+
 - **Eliza Cloud proxy support**: When `PARALLAX_LLM_PROVIDER=cloud`, coding agents route LLM calls through Eliza Cloud using the paired `cloud.apiKey`. Claude Code gets `ANTHROPIC_BASE_URL`, Codex gets `OPENAI_BASE_URL`, Aider gets both `ANTHROPIC_API_BASE` and `OPENAI_API_BASE`. Base URLs auto-configured per SDK requirements.
-- **Auth trigger API**: `POST /api/coding-agents/auth/:agent` triggers CLI authentication flows. Claude opens browser OAuth, Codex requests device code, Gemini returns manual instructions.
+- **Auth trigger API**: `POST /api/coding-agents/auth/:agent` triggers CLI authentication flows. Claude opens browser OAuth, Codex requests device code, Gemini returns manual instructions. Validates agent type and returns 400 for unsupported values.
 - **Claude API key auto-response**: Pushed auto-response rule handles the "Do you want to use this API key?" prompt during startup when API key or cloud mode is active.
 - **Config-env utilities**: `readConfigCloudKey()` reads from the cloud section of milady.json. Both `readConfigEnvKey` and `readConfigCloudKey` used for live settings without restart.
+- **Shared `buildAgentCredentials` helper**: Centralizes credential building across `spawn-agent.ts` and `start-coding-task.ts`. Validates that cloud `apiKey` is paired before use; throws a clear error if missing. Documents that Eliza Cloud does not proxy Google/Gemini (`googleKey: undefined` in cloud mode).
 - **Config-env tests**: 7 tests covering env and cloud key reading, missing files, non-string values.
 
 ### Changed
-- **Agent type no longer defaults to Claude**: Removed `default: "claude"` from `START_CODING_TASK` and `SPAWN_CODING_AGENT` action parameter schemas. The LLM now omits agentType unless the user explicitly requests one, falling back to `resolveAgentType()` which reads the user's configured preference.
-- **Default agent type reads from config**: `ptyService.defaultAgentType` checks `readConfigEnvKey("PARALLAX_DEFAULT_AGENT_TYPE")` first so UI settings take effect without restart.
-- **Adapter auto-response enabled for cloud/API key mode**: `skipAdapterAutoResponse` is only set when `PARALLAX_LLM_PROVIDER=subscription`. In cloud/API key mode, adapter rules handle startup prompts (API key acceptance, trust) instead of the coordinator, preventing timing races.
+
+- **Agent type no longer defaults to Claude**: Removed `default: "claude"` from `CREATE_TASK` and `SPAWN_AGENT` action parameter schemas, and the hardcoded `"claude"` fallback in `spawn-agent.ts`. The LLM now omits agentType unless the user explicitly requests one, falling back to `resolveAgentType()` which reads the user's configured preference.
+- **Default agent type reads from config**: `ptyService.defaultAgentType` checks `readConfigEnvKey("PARALLAX_DEFAULT_AGENT_TYPE")` first so UI settings take effect without restart. Precedence: config file > runtime/env > "claude" fallback.
+- **Adapter auto-response enabled for cloud/API key mode**: `skipAdapterAutoResponse` is only set when `PARALLAX_LLM_PROVIDER=subscription`. In cloud/API key mode, adapter rules handle startup prompts (API key acceptance, trust) instead of the coordinator, preventing timing races. The provider lookup is hoisted out of the per-agent spawn loop in `coding-task-handlers.ts` to avoid repeated sync I/O.
 
 ### Fixed
-- **Mock module completeness**: `start-coding-task.test.ts` mock for `config-env.js` now includes `readConfigCloudKey` alongside `readConfigEnvKey`.
+
+- **Mock module completeness**: `start-coding-task.test.ts` mock for `config-env.js` now includes `readConfigCloudKey` and delegates to real fs reads when called from config-env tests so they can exercise the real exported functions.
+
+## 0.5.0
+
+### Added
+
+- **Task-agent framework discovery**: Provider and API surfaces now report the currently available task-agent frameworks, their auth readiness, and the preferred default across Claude Code, Codex, Gemini CLI, Aider, and Pi.
+- **Subscription-aware framework preference**: Milady config can now bias framework selection toward the user's Anthropic or OpenAI-backed subscription login so Claude Code and Codex use the user's existing paid access when available.
+- **Current task status in action/API responses**: `LIST_AGENTS`, `/api/coding-agents/settings`, and `/api/coding-agents/coordinator/status` now expose preferred framework information and richer current-task status details.
+- **Opt-in live CLI smoke tests**: Added live e2e coverage for real Claude Code and Codex runs, plus a dedicated `bun run test:live` script.
+
+### Changed
+
+- **Canonical task-agent naming**: The plugin now treats task agents as the primary abstraction rather than coding agents. Canonical action names are `CREATE_TASK`, `SPAWN_AGENT`, `SEND_TO_AGENT`, `LIST_AGENTS`, and `STOP_AGENT`, with older coding-agent names preserved as aliases.
+- **Provider guidance broadened beyond coding**: Action examples and active workspace context now direct the main agent to orchestrate any substantial open-ended work through sub-agents, not only repository changes.
+- **Package docs and exports**: Default export is now `taskAgentPlugin`, with `codingAgentPlugin` kept as a compatibility alias.
+
+### Fixed
+
+- **Live test preload isolation**: Shared Bun test mocks are now disabled during live runs so the real PTY manager and adapter stack are exercised instead of mocked implementations.
 
 ## 0.4.3
 

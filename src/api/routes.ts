@@ -1,5 +1,5 @@
 /**
- * Coding Agent API Routes — Dispatcher
+ * Task Agent API Routes — Dispatcher
  *
  * Provides shared helpers (parseBody, sendJson, sendError), types, and the
  * top-level route dispatcher that delegates to domain-specific route modules.
@@ -83,7 +83,7 @@ export function sendError(
 }
 
 /**
- * Handle coding agent routes
+ * Handle task-agent routes
  * Returns true if the route was handled, false otherwise
  */
 export async function handleCodingAgentRoutes(
@@ -92,28 +92,32 @@ export async function handleCodingAgentRoutes(
   pathname: string,
   ctx: RouteContext,
 ): Promise<boolean> {
+  const normalizedPathname = pathname.startsWith("/api/task-agents")
+    ? pathname.replace(/^\/api\/task-agents/, "/api/coding-agents")
+    : pathname;
+
   // Delegate to hook routes first — hooks need fast responses
-  if (await handleHookRoutes(req, res, pathname, ctx)) {
+  if (await handleHookRoutes(req, res, normalizedPathname, ctx)) {
     return true;
   }
 
   // Delegate to coordinator routes (before agent routes — more specific prefix)
-  if (await handleCoordinatorRoutes(req, res, pathname, ctx)) {
+  if (await handleCoordinatorRoutes(req, res, normalizedPathname, ctx)) {
     return true;
   }
 
   // Delegate to agent routes
-  if (await handleAgentRoutes(req, res, pathname, ctx)) {
+  if (await handleAgentRoutes(req, res, normalizedPathname, ctx)) {
     return true;
   }
 
   // Delegate to workspace routes
-  if (await handleWorkspaceRoutes(req, res, pathname, ctx)) {
+  if (await handleWorkspaceRoutes(req, res, normalizedPathname, ctx)) {
     return true;
   }
 
   // Delegate to issue routes
-  if (await handleIssueRoutes(req, res, pathname, ctx)) {
+  if (await handleIssueRoutes(req, res, normalizedPathname, ctx)) {
     return true;
   }
 
@@ -128,20 +132,23 @@ export function createCodingAgentRouteHandler(
   runtime: IAgentRuntime,
   coordinator?: SwarmCoordinator,
 ) {
-  const ptyService = runtime.getService(
-    "PTY_SERVICE",
-  ) as unknown as PTYService | null;
-  const workspaceService = runtime.getService(
-    "CODING_WORKSPACE_SERVICE",
-  ) as unknown as CodingWorkspaceService | null;
-
-  const ctx: RouteContext = {
-    runtime,
-    ptyService,
-    workspaceService,
-    coordinator,
+  return (req: IncomingMessage, res: ServerResponse, pathname: string) => {
+    const ctx: RouteContext = {
+      runtime,
+      ptyService: runtime.getService("PTY_SERVICE") as unknown as
+        | PTYService
+        | null,
+      workspaceService: runtime.getService(
+        "CODING_WORKSPACE_SERVICE",
+      ) as unknown as CodingWorkspaceService | null,
+      coordinator:
+        coordinator ??
+        (runtime.getService("SWARM_COORDINATOR") as unknown as
+          | SwarmCoordinator
+          | undefined),
+    };
+    return handleCodingAgentRoutes(req, res, pathname, ctx);
   };
-
-  return (req: IncomingMessage, res: ServerResponse, pathname: string) =>
-    handleCodingAgentRoutes(req, res, pathname, ctx);
 }
+
+export const createTaskAgentRouteHandler = createCodingAgentRouteHandler;

@@ -12,6 +12,8 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { SwarmCoordinator } from "../services/swarm-coordinator.js";
+import type { TaskThreadStatus } from "../services/task-registry.js";
+import { getTaskAgentFrameworkState } from "../services/task-agent-frameworks.js";
 import type { RouteContext } from "./routes.js";
 import { parseBody, sendError, sendJson } from "./routes.js";
 
@@ -86,15 +88,28 @@ export async function handleCoordinatorRoutes(
   // GET /api/coding-agents/coordinator/status
   if (method === "GET" && subPath === "/status") {
     const allTasks = coordinator.getAllTaskContexts();
+    const persistedThreads = await coordinator.listTaskThreads({
+      includeArchived: false,
+      limit: 50,
+    });
     // Only return active tasks — stopped/completed/error are terminal states
     // and should not appear in the UI after refresh.
     const tasks = allTasks.filter(
       (t) => t.status !== "stopped" && t.status !== "completed" && t.status !== "error",
     );
+    const recentTasks = allTasks
+      .slice()
+      .sort((left, right) => right.registeredAt - left.registeredAt)
+      .slice(0, 10);
+    const frameworkState = await getTaskAgentFrameworkState(
+      ctx.runtime,
+      ctx.ptyService ?? undefined,
+    );
     sendJson(res, {
       supervisionLevel: coordinator.getSupervisionLevel(),
       taskCount: tasks.length,
       tasks: tasks.map((t) => ({
+        threadId: t.threadId,
         sessionId: t.sessionId,
         agentType: t.agentType,
         label: t.label,
@@ -103,9 +118,95 @@ export async function handleCoordinatorRoutes(
         status: t.status,
         decisionCount: t.decisions.length,
         autoResolvedCount: t.autoResolvedCount,
+        completionSummary: t.completionSummary,
+        lastActivityAt: t.lastActivityAt,
+      })),
+      recentTasks: recentTasks.map((t) => ({
+        threadId: t.threadId,
+        sessionId: t.sessionId,
+        agentType: t.agentType,
+        label: t.label,
+        status: t.status,
+        originalTask: t.originalTask,
+        completionSummary: t.completionSummary,
+        registeredAt: t.registeredAt,
+        lastActivityAt: t.lastActivityAt,
+      })),
+      taskThreadCount: persistedThreads.length,
+      taskThreads: persistedThreads.map((thread) => ({
+        id: thread.id,
+        title: thread.title,
+        kind: thread.kind,
+        status: thread.status,
+        originalRequest: thread.originalRequest,
+        summary: thread.summary,
+        sessionCount: thread.sessionCount,
+        activeSessionCount: thread.activeSessionCount,
+        latestSessionId: thread.latestSessionId,
+        latestSessionLabel: thread.latestSessionLabel,
+        latestWorkdir: thread.latestWorkdir,
+        latestRepo: thread.latestRepo,
+        latestActivityAt: thread.latestActivityAt,
+        decisionCount: thread.decisionCount,
+        createdAt: thread.createdAt,
+        updatedAt: thread.updatedAt,
+        closedAt: thread.closedAt,
+        archivedAt: thread.archivedAt,
       })),
       pendingConfirmations: coordinator.getPendingConfirmations().length,
+      preferredAgentType: frameworkState.preferred.id,
+      preferredAgentReason: frameworkState.preferred.reason,
+      frameworks: frameworkState.frameworks,
     } as unknown as JsonValue);
+    return true;
+  }
+
+  // === Task Threads ===
+  // GET /api/coding-agents/coordinator/threads
+  if (method === "GET" && subPath === "/threads") {
+    const url = new URL(req.url ?? pathname, "http://localhost");
+    const includeArchived = url.searchParams.get("includeArchived") === "true";
+    const status = url.searchParams.get("status") ?? undefined;
+    const search = url.searchParams.get("search") ?? undefined;
+    const limitRaw = url.searchParams.get("limit");
+    const limit =
+      limitRaw && Number.isFinite(Number(limitRaw)) ? Number(limitRaw) : undefined;
+
+    const threads = await coordinator.listTaskThreads({
+      includeArchived,
+      status: (status as TaskThreadStatus | null) ?? undefined,
+      search,
+      limit,
+    });
+    sendJson(res, threads as unknown as JsonValue);
+    return true;
+  }
+
+  // GET /api/coding-agents/coordinator/threads/:threadId
+  const threadMatch = subPath.match(/^\/threads\/([^/]+)$/);
+  if (method === "GET" && threadMatch) {
+    const thread = await coordinator.getTaskThread(threadMatch[1]);
+    if (!thread) {
+      sendError(res, "Task thread not found", 404);
+      return true;
+    }
+    sendJson(res, thread as unknown as JsonValue);
+    return true;
+  }
+
+  // POST /api/coding-agents/coordinator/threads/:threadId/archive
+  const archiveMatch = subPath.match(/^\/threads\/([^/]+)\/archive$/);
+  if (method === "POST" && archiveMatch) {
+    await coordinator.archiveTaskThread(archiveMatch[1]);
+    sendJson(res, { success: true, threadId: archiveMatch[1], status: "archived" });
+    return true;
+  }
+
+  // POST /api/coding-agents/coordinator/threads/:threadId/reopen
+  const reopenMatch = subPath.match(/^\/threads\/([^/]+)\/reopen$/);
+  if (method === "POST" && reopenMatch) {
+    await coordinator.reopenTaskThread(reopenMatch[1]);
+    sendJson(res, { success: true, threadId: reopenMatch[1], status: "open" });
     return true;
   }
 
@@ -114,7 +215,7 @@ export async function handleCoordinatorRoutes(
   const taskMatch = subPath.match(/^\/tasks\/([^/]+)$/);
   if (method === "GET" && taskMatch) {
     const sessionId = taskMatch[1];
-    const task = coordinator.getTaskContext(sessionId);
+    const task = await coordinator.getTaskContextSnapshot(sessionId);
     if (!task) {
       sendError(res, "Task context not found", 404);
       return true;

@@ -1,8 +1,8 @@
 /**
- * Coding Agent Plugin for Milady
+ * Task Agent Plugin for Milady
  *
- * Provides orchestration capabilities for CLI-based coding agents:
- * - PTY session management (spawn, control, monitor coding agents)
+ * Provides orchestration capabilities for CLI-based task agents:
+ * - PTY session management (spawn, control, monitor task agents)
  * - Git workspace provisioning (clone, branch, PR creation)
  * - GitHub issue management (create, list, update, close)
  * - Integration with Claude Code, Codex, Gemini CLI, Aider, Pi, etc.
@@ -30,11 +30,11 @@ import { activeWorkspaceContextProvider } from "./providers/active-workspace-con
 import { PTYService } from "./services/pty-service.js";
 import { CodingWorkspaceService } from "./services/workspace-service.js";
 
-export const codingAgentPlugin: Plugin = {
+export const taskAgentPlugin: Plugin = {
   name: "@elizaos/plugin-agent-orchestrator",
   description:
-    "Orchestrate CLI coding agents (Claude Code, Codex, Gemini, Aider, Pi, etc.) via PTY sessions, " +
-    "manage git workspaces, and handle GitHub issues for autonomous coding tasks",
+    "Orchestrate open-ended task agents (Claude Code, Codex, Gemini CLI, Aider, Pi, etc.) via PTY sessions, " +
+    "manage workspaces, track current task status, and keep background work moving while the main agent stays in conversation",
 
   // NOTE: init() is NOT reliably called by ElizaOS for workspace plugins.
   // SwarmCoordinator and auth callback wiring is done in PTYService.start()
@@ -70,7 +70,9 @@ export const codingAgentPlugin: Plugin = {
   ],
 };
 
-export default codingAgentPlugin;
+export const codingAgentPlugin = taskAgentPlugin;
+
+export default taskAgentPlugin;
 
 // Re-export coding agent adapter types
 export type {
@@ -91,12 +93,18 @@ export { manageIssuesAction } from "./actions/manage-issues.js";
 export { provisionWorkspaceAction } from "./actions/provision-workspace.js";
 export { sendToAgentAction } from "./actions/send-to-agent.js";
 export { spawnAgentAction } from "./actions/spawn-agent.js";
+export { createTaskAction } from "./actions/start-coding-task.js";
+export { listTaskAgentsAction } from "./actions/list-agents.js";
+export { sendToTaskAgentAction } from "./actions/send-to-agent.js";
+export { spawnTaskAgentAction } from "./actions/spawn-agent.js";
 // Re-export actions
 export { startCodingTaskAction } from "./actions/start-coding-task.js";
 export { stopAgentAction } from "./actions/stop-agent.js";
+export { stopTaskAgentAction } from "./actions/stop-agent.js";
 // Re-export API routes for server integration
 export {
   createCodingAgentRouteHandler,
+  createTaskAgentRouteHandler,
   handleCodingAgentRoutes,
 } from "./api/routes.js";
 // Re-export service types

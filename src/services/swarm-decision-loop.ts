@@ -12,6 +12,7 @@ import * as path from "node:path";
 import { ModelType } from "@elizaos/core";
 import { cleanForChat, extractCompletionSummary } from "./ansi-utils.js";
 import type {
+  PendingDecision,
   SwarmCoordinatorContext,
   TaskContext,
 } from "./swarm-coordinator.js";
@@ -31,6 +32,7 @@ import {
   classifyEventTier,
   type TriageContext,
 } from "./swarm-event-triage.js";
+import { validateTaskCompletion } from "./task-validation.js";
 import { withTrajectoryContext } from "./trajectory-context.js";
 
 // ─── Constants ───
@@ -250,6 +252,63 @@ function formatDecisionResponse(
     : decision.response;
 }
 
+function decisionFromSuggestedResponse(
+  suggestedResponse: string,
+  reasoning = "Used adapter-provided auto-response for a routine blocking prompt.",
+): CoordinationLLMResponse {
+  if (suggestedResponse.startsWith("keys:")) {
+    return {
+      action: "respond",
+      useKeys: true,
+      keys: suggestedResponse
+        .slice("keys:".length)
+        .split(",")
+        .map((part) => part.trim())
+        .filter(Boolean),
+      reasoning,
+    };
+  }
+  return {
+    action: "respond",
+    response: suggestedResponse,
+    reasoning,
+  };
+}
+
+function inferRoutinePromptResponse(
+  promptText: string,
+  promptType?: string,
+): { suggestedResponse: string; reasoning: string } | null {
+  if (promptType && promptType !== "unknown") {
+    return null;
+  }
+
+  if (
+    /should i open (?:the )?(?:page|link|url).*(?:new tab|browser tab).*instead\??/i.test(
+      promptText,
+    )
+  ) {
+    return {
+      suggestedResponse: "yes",
+      reasoning:
+        "Accepted routine browser follow-up so the agent can keep using its web tool without human intervention.",
+    };
+  }
+
+  if (
+    /cheaper,\s*faster,\s*but less capable/i.test(promptText) &&
+    /keep current model/i.test(promptText)
+  ) {
+    return {
+      suggestedResponse: "2",
+      reasoning:
+        "Kept the current Codex model so a routine model-selection prompt does not stall the task.",
+    };
+  }
+
+  return null;
+}
+
 /** Check if a permission prompt references paths outside the workspace. */
 export function isOutOfScopeAccess(
   promptText: string,
@@ -341,8 +400,8 @@ export function checkAllTasksComplete(ctx: SwarmCoordinatorContext): void {
   const swarmCompleteCb = ctx.getSwarmCompleteCallback();
   const sendFallbackSummary = () => {
     ctx.sendChatMessage(
-      `All ${tasks.length} coding agents finished (${parts.join(", ")}). Review their work when you're ready.`,
-      "coding-agent",
+      `All ${tasks.length} task agents finished (${parts.join(", ")}). Review their work when you're ready.`,
+      "task-agent",
     );
   };
 
@@ -459,6 +518,9 @@ export async function executeDecision(
   switch (decision.action) {
     case "respond": {
       const taskCtx = ctx.tasks.get(sessionId);
+      if (taskCtx) {
+        taskCtx.status = "active";
+      }
       if (decision.useKeys && decision.keys) {
         await ctx.ptyService.sendKeysToSession(sessionId, decision.keys);
       } else if (decision.response !== undefined) {
@@ -475,35 +537,15 @@ export async function executeDecision(
       }
       // Mark the send time so stall/turn-complete events are suppressed
       // during the grace period while the agent processes this input.
-      if (taskCtx) taskCtx.lastInputSentAt = Date.now();
+      if (taskCtx) {
+        taskCtx.lastInputSentAt = Date.now();
+        await ctx.syncTaskContext(taskCtx);
+      }
       break;
     }
 
     case "complete": {
-      // LLM recognized the task is done — trigger completion flow
       const taskCtx = ctx.tasks.get(sessionId);
-      if (taskCtx) {
-        taskCtx.status = "completed";
-        // Log to persistent history (non-blocking but observed)
-        (ctx as { history?: { append: (e: unknown) => Promise<void> } }).history?.append({
-          timestamp: Date.now(),
-          type: "task_completed",
-          sessionId,
-          label: taskCtx.label,
-          agentType: taskCtx.agentType,
-          repo: taskCtx.repo,
-          workdir: taskCtx.workdir,
-          completionSummary: decision.reasoning,
-        }).catch((err) => {
-          ctx.log(`Failed to persist task completion for "${taskCtx.label}" (${sessionId}): ${err}`);
-        });
-      }
-      ctx.broadcast({
-        type: "task_complete",
-        sessionId,
-        timestamp: Date.now(),
-        data: { reasoning: decision.reasoning },
-      });
 
       // Extract meaningful artifacts (PR URLs, commits) instead of
       // dumping raw terminal output which is full of TUI noise.
@@ -515,15 +557,184 @@ export async function executeDecision(
         /* ignore */
       }
 
-      // Store summary on task context for swarm-wide synthesis
-      if (taskCtx) {
-        taskCtx.completionSummary = summary || decision.reasoning || "";
+      if (!taskCtx) {
+        ctx.broadcast({
+          type: "task_complete",
+          sessionId,
+          timestamp: Date.now(),
+          data: { reasoning: decision.reasoning },
+        });
+        ctx.ptyService.stopSession(sessionId, /* force */ true).catch((err) => {
+          ctx.log(`Failed to stop session after LLM-detected completion: ${err}`);
+        });
+        break;
       }
 
+      taskCtx.completionSummary = summary || decision.reasoning || "";
+      taskCtx.status = "tool_running";
+      await Promise.all([
+        ctx.syncTaskContext(taskCtx),
+        ctx.taskRegistry.appendEvent({
+          threadId: taskCtx.threadId,
+          sessionId,
+          eventType: "validation_started",
+          summary: `Validation started for "${taskCtx.label}"`,
+          data: {
+            completionReasoning: decision.reasoning,
+            completionSummary: taskCtx.completionSummary,
+          },
+        }),
+      ]);
+      ctx.broadcast({
+        type: "tool_running",
+        sessionId,
+        timestamp: Date.now(),
+        data: {
+          description: "validation",
+        },
+      });
+
+      const validation = await validateTaskCompletion(ctx, {
+        sessionId,
+        taskCtx,
+        completionReasoning: decision.reasoning,
+        completionSummary: taskCtx.completionSummary,
+        turnOutput: taskCtx.completionSummary,
+      }).catch(
+        (err) =>
+          ({
+            verdict: "escalate" as const,
+            summary:
+              err instanceof Error
+                ? `Validation failed: ${err.message}`
+                : `Validation failed: ${String(err)}`,
+            followUpPrompt: undefined,
+            reportPath: "",
+            artifacts: [],
+          }) satisfies Awaited<ReturnType<typeof validateTaskCompletion>>,
+      );
+
+      for (const artifact of validation.artifacts) {
+        await ctx.taskRegistry.recordArtifact({
+          threadId: taskCtx.threadId,
+          sessionId,
+          artifactType: artifact.artifactType,
+          title: artifact.title,
+          path: artifact.path ?? null,
+          uri: artifact.uri ?? null,
+          mimeType: artifact.mimeType ?? null,
+          metadata: artifact.metadata ?? {},
+        });
+      }
+
+      if (validation.verdict !== "pass") {
+        const followUpPrompt =
+          validation.followUpPrompt?.trim() ||
+          `Validation found the task incomplete. Continue working until this is resolved:\n\n${validation.summary}`;
+        const nextStatus = validation.verdict === "escalate" ? "blocked" : "active";
+        taskCtx.status = nextStatus;
+        await Promise.all([
+          ctx.syncTaskContext(taskCtx),
+          ctx.taskRegistry.appendEvent({
+            threadId: taskCtx.threadId,
+            sessionId,
+            eventType: "validation_failed",
+            summary: `Validation did not approve "${taskCtx.label}"`,
+            data: {
+              verdict: validation.verdict,
+              summary: validation.summary,
+              followUpPrompt:
+                validation.verdict === "revise" ? followUpPrompt : null,
+              reportPath: validation.reportPath || null,
+            },
+          }),
+        ]);
+
+        if (validation.verdict === "revise") {
+          await ctx.ptyService.sendToSession(sessionId, followUpPrompt);
+          taskCtx.lastInputSentAt = Date.now();
+          await ctx.syncTaskContext(taskCtx);
+          ctx.sendChatMessage(
+            `[${taskCtx.label}] Validation asked the agent to continue: ${validation.summary}`,
+            "coding-agent",
+          );
+        } else {
+          ctx.broadcast({
+            type: "escalation",
+            sessionId,
+            timestamp: Date.now(),
+            data: {
+              reason: "validation_escalation",
+              summary: validation.summary,
+            },
+          });
+          ctx.sendChatMessage(
+            `[${taskCtx.label}] Validation needs human review: ${validation.summary}`,
+            "coding-agent",
+          );
+        }
+        break;
+      }
+
+      taskCtx.status = "completed";
+      await Promise.all([
+        ctx.syncTaskContext(taskCtx),
+        ctx.taskRegistry.updateThreadSummary(
+          taskCtx.threadId,
+          taskCtx.completionSummary,
+        ),
+        ctx.taskRegistry.appendEvent({
+          threadId: taskCtx.threadId,
+          sessionId,
+          eventType: "validation_passed",
+          summary: `Validation passed for "${taskCtx.label}"`,
+          data: {
+            summary: validation.summary,
+            reportPath: validation.reportPath || null,
+          },
+        }),
+        ctx.taskRegistry.appendEvent({
+          threadId: taskCtx.threadId,
+          sessionId,
+          eventType: "task_status_changed",
+          summary: `Task "${taskCtx.label}" completed`,
+          data: {
+            status: "completed",
+            completionSummary: taskCtx.completionSummary,
+            validationSummary: validation.summary,
+          },
+        }),
+      ]);
+
+      // Log to persistent history (non-blocking but observed)
+      (ctx as { history?: { append: (e: unknown) => Promise<void> } }).history?.append({
+        timestamp: Date.now(),
+        type: "task_completed",
+        sessionId,
+        label: taskCtx.label,
+        agentType: taskCtx.agentType,
+        repo: taskCtx.repo,
+        workdir: taskCtx.workdir,
+        completionSummary: taskCtx.completionSummary,
+        validationSummary: validation.summary,
+      }).catch((err) => {
+        ctx.log(`Failed to persist task completion for "${taskCtx.label}" (${sessionId}): ${err}`);
+      });
+
+      ctx.broadcast({
+        type: "task_complete",
+        sessionId,
+        timestamp: Date.now(),
+        data: {
+          reasoning: decision.reasoning,
+          validationSummary: validation.summary,
+        },
+      });
+
       ctx.sendChatMessage(
-        summary
-          ? `Finished "${taskCtx?.label ?? sessionId}".\n\n${summary}`
-          : `Finished "${taskCtx?.label ?? sessionId}".`,
+        taskCtx.completionSummary
+          ? `Finished "${taskCtx.label}".\n\n${taskCtx.completionSummary}`
+          : `Finished "${taskCtx.label}".`,
         "coding-agent",
       );
 
@@ -573,6 +784,7 @@ export async function handleBlocked(
       type?: string;
       prompt?: string;
       canAutoRespond?: boolean;
+      suggestedResponse?: string;
       instructions?: string;
     };
     autoResponded?: boolean;
@@ -588,7 +800,8 @@ export async function handleBlocked(
     // The approval already happened in pty-manager, but we can stop the session
     // and alert the user to prevent further damage.
     if (isOutOfScopeAccess(promptText, taskCtx.workdir)) {
-      taskCtx.decisions.push({
+      taskCtx.status = "error";
+      await ctx.recordDecision(taskCtx, {
         timestamp: Date.now(),
         event: "blocked",
         promptText,
@@ -614,7 +827,6 @@ export async function handleBlocked(
       );
 
       // Force-kill the session to prevent further out-of-scope access
-      taskCtx.status = "error";
       ctx.ptyService?.stopSession(sessionId, /* force */ true).catch((err) => {
         ctx.log(
           `Failed to stop session after out-of-scope auto-approval: ${err}`,
@@ -624,7 +836,7 @@ export async function handleBlocked(
     }
 
     taskCtx.autoResolvedCount++;
-    taskCtx.decisions.push({
+    await ctx.recordDecision(taskCtx, {
       timestamp: Date.now(),
       event: "blocked",
       promptText,
@@ -653,6 +865,57 @@ export async function handleBlocked(
     return;
   }
 
+  const adapterSuggestedResponse =
+    typeof eventData.promptInfo?.suggestedResponse === "string" &&
+    eventData.promptInfo.suggestedResponse.trim().length > 0
+      ? eventData.promptInfo.suggestedResponse.trim()
+      : eventData.promptInfo?.canAutoRespond &&
+          eventData.promptInfo?.type === "permission"
+        ? "keys:enter"
+        : undefined;
+  const inferredPromptResponse = inferRoutinePromptResponse(
+    promptText,
+    eventData.promptInfo?.type,
+  );
+  const routineSuggestedResponse =
+    adapterSuggestedResponse ?? inferredPromptResponse?.suggestedResponse;
+
+  if (
+    ctx.getSupervisionLevel() === "autonomous" &&
+    (eventData.promptInfo?.canAutoRespond || inferredPromptResponse) &&
+    routineSuggestedResponse
+  ) {
+    const fastDecision = decisionFromSuggestedResponse(
+      routineSuggestedResponse,
+      inferredPromptResponse?.reasoning,
+    );
+
+    taskCtx.autoResolvedCount++;
+    await ctx.recordDecision(taskCtx, {
+      timestamp: Date.now(),
+      event: "blocked",
+      promptText,
+      decision: "auto_resolved",
+      response: formatDecisionResponse(fastDecision),
+      reasoning: fastDecision.reasoning,
+    });
+
+    ctx.broadcast({
+      type: "blocked_auto_resolved",
+      sessionId,
+      timestamp: Date.now(),
+      data: {
+        prompt: promptText,
+        promptType: eventData.promptInfo?.type,
+        autoResolvedCount: taskCtx.autoResolvedCount,
+        strategy: "adapter_suggested_response",
+      },
+    });
+
+    await executeDecision(ctx, sessionId, fastDecision);
+    return;
+  }
+
   // Deduplicate: if an LLM decision is already in-flight for this session
   // AND the prompt text matches the one already being handled, skip.
   // TUI re-renders fire the same prompt many times; a *different* prompt
@@ -671,6 +934,8 @@ export async function handleBlocked(
     return;
   }
   ctx.lastBlockedPromptFingerprint.set(sessionId, promptFingerprint);
+  taskCtx.status = "blocked";
+  await ctx.syncTaskContext(taskCtx);
 
   // Broadcast that the agent is blocked (for all supervision levels)
   ctx.broadcast({
@@ -686,7 +951,7 @@ export async function handleBlocked(
 
   // Safety check: escalate after too many consecutive auto-responses
   if (taskCtx.autoResolvedCount >= MAX_AUTO_RESPONSES) {
-    taskCtx.decisions.push({
+    await ctx.recordDecision(taskCtx, {
       timestamp: Date.now(),
       event: "blocked",
       promptText,
@@ -717,7 +982,7 @@ export async function handleBlocked(
 
     case "notify":
       // Notify mode — broadcast only, no action
-      taskCtx.decisions.push({
+      await ctx.recordDecision(taskCtx, {
         timestamp: Date.now(),
         event: "blocked",
         promptText,
@@ -825,7 +1090,7 @@ export async function handleTurnComplete(
       ctx.log(
         `Turn assessment for "${taskCtx.label}": complete (fast-path: PR detected in output)`,
       );
-      taskCtx.decisions.push({
+      await ctx.recordDecision(taskCtx, {
         timestamp: Date.now(),
         event: "turn_complete",
         promptText: "Agent finished a turn",
@@ -900,7 +1165,7 @@ export async function handleTurnComplete(
     );
 
     // Record
-    taskCtx.decisions.push({
+    await ctx.recordDecision(taskCtx, {
       timestamp: Date.now(),
       event: "turn_complete",
       promptText: "Agent finished a turn",
@@ -1036,7 +1301,7 @@ export async function handleAutonomousDecision(
 
     if (!decision) {
       // All decision paths returned invalid response — escalate
-      taskCtx.decisions.push({
+      await ctx.recordDecision(taskCtx, {
         timestamp: Date.now(),
         event: "blocked",
         promptText,
@@ -1075,7 +1340,8 @@ export async function handleAutonomousDecision(
     }
 
     // Record the decision
-    taskCtx.decisions.push({
+    taskCtx.autoResolvedCount = 0;
+    await ctx.recordDecision(taskCtx, {
       timestamp: Date.now(),
       event: "blocked",
       promptText,
@@ -1086,9 +1352,6 @@ export async function handleAutonomousDecision(
 
     // Layer 2: capture significant decisions for cross-agent sharing
     recordKeyDecision(ctx, taskCtx.label, decision);
-
-    // Reset auto-resolved count on manual decision
-    taskCtx.autoResolvedCount = 0;
 
     // Broadcast the decision
     ctx.broadcast({
@@ -1215,7 +1478,9 @@ export async function handleConfirmDecision(
 
     if (!decision) {
       // Queue for human with no suggestion
-      ctx.pendingDecisions.set(sessionId, {
+      taskCtx.status = "blocked";
+      await ctx.syncTaskContext(taskCtx);
+      const pendingDecision: PendingDecision = {
         sessionId,
         promptText,
         recentOutput: output,
@@ -1225,18 +1490,51 @@ export async function handleConfirmDecision(
         },
         taskContext: taskCtx,
         createdAt: Date.now(),
+      };
+      ctx.pendingDecisions.set(sessionId, pendingDecision);
+      await ctx.taskRegistry.upsertPendingDecision({
+        sessionId,
+        threadId: taskCtx.threadId,
+        promptText,
+        recentOutput: output,
+        llmDecision: pendingDecision.llmDecision as unknown as Record<string, unknown>,
+        taskContext: taskCtx as unknown as Record<string, unknown>,
+        createdAt: pendingDecision.createdAt,
       });
     } else {
       // Queue the LLM's suggestion for human approval
-      ctx.pendingDecisions.set(sessionId, {
+      taskCtx.status = "blocked";
+      await ctx.syncTaskContext(taskCtx);
+      const pendingDecision: PendingDecision = {
         sessionId,
         promptText,
         recentOutput: output,
         llmDecision: decision,
         taskContext: taskCtx,
         createdAt: Date.now(),
+      };
+      ctx.pendingDecisions.set(sessionId, pendingDecision);
+      await ctx.taskRegistry.upsertPendingDecision({
+        sessionId,
+        threadId: taskCtx.threadId,
+        promptText,
+        recentOutput: output,
+        llmDecision: decision as unknown as Record<string, unknown>,
+        taskContext: taskCtx as unknown as Record<string, unknown>,
+        createdAt: pendingDecision.createdAt,
       });
     }
+
+    await ctx.taskRegistry.appendEvent({
+      threadId: taskCtx.threadId,
+      sessionId,
+      eventType: "pending_confirmation",
+      summary: `Queued human confirmation for "${taskCtx.label}"`,
+      data: {
+        promptText,
+        suggestedAction: decision?.action ?? "escalate",
+      },
+    });
 
     // When Milaidy's pipeline made the suggestion, she already spoke via WS broadcast.
     // Only broadcast the pending_confirmation event for small-LLM suggestions or

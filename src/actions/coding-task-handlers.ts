@@ -284,6 +284,34 @@ export async function handleMultiAgent(
   const llmProvider =
     readConfigEnvKey("PARALLAX_LLM_PROVIDER") || "subscription";
 
+  const coordinator = getCoordinator(runtime);
+  const threadTitle = explicitLabel || generateLabel(repo, userRequest);
+  const taskThread = coordinator
+    ? await coordinator.createTaskThread({
+        title: threadTitle,
+        originalRequest: userRequest,
+        kind: "coding",
+        roomId: message.roomId,
+        worldId: message.worldId,
+        ownerUserId:
+          ((message as unknown as Record<string, unknown>).userId as
+            | string
+            | undefined) ?? message.entityId,
+        currentPlan:
+          swarmContext && cleanSubtasks.length > 1
+            ? {
+                sharedContext: swarmContext,
+                subtasks: cleanSubtasks,
+              }
+            : { subtasks: cleanSubtasks },
+        metadata: {
+          repo: repo ?? null,
+          messageId: message.id,
+          requestedAgents: agentSpecs.length,
+        },
+      })
+    : null;
+
   for (const [i, spec] of agentSpecs.entries()) {
     // Parse optional "agentType:task" prefix.
     // In fixed mode, ignore LLM-chosen prefixes — all agents use the
@@ -350,8 +378,6 @@ export async function handleMultiAgent(
       }
 
       // Check if coordinator is active — route blocking prompts through it
-      const coordinator = getCoordinator(runtime);
-
       // Spawn the agent — prepend shared context brief if available
       const taskWithContext = swarmContext
         ? `${specTask}\n\n--- Shared Context (from project planning) ---\n${swarmContext}\n--- End Shared Context ---`
@@ -383,6 +409,7 @@ export async function handleMultiAgent(
           ? { skipAdapterAutoResponse: true }
           : {}),
         metadata: {
+          threadId: taskThread?.id,
           requestedType: specRequestedType,
           messageId: message.id,
           userId: (message as unknown as Record<string, unknown>).userId,
@@ -405,7 +432,8 @@ export async function handleMultiAgent(
         !!coordinator,
       );
       if (coordinator && specTask) {
-        coordinator.registerTask(session.id, {
+        await coordinator.registerTask(session.id, {
+          threadId: taskThread?.id ?? session.id,
           agentType: specAgentType,
           label: specLabel,
           originalTask: specTask,
@@ -474,4 +502,3 @@ export async function handleMultiAgent(
     data: { agents: results },
   };
 }
-

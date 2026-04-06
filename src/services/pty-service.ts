@@ -27,11 +27,8 @@ import type {
   WorkerSessionHandle,
 } from "pty-manager";
 import { AgentMetricsTracker } from "./agent-metrics.js";
+import { type AgentSelectionStrategy } from "./agent-selection.js";
 import { readConfigEnvKey } from "./config-env.js";
-import {
-  type AgentSelectionStrategy,
-  selectAgentType,
-} from "./agent-selection.js";
 import {
   handleGeminiAuth as handleGeminiAuthFlow,
   pushDefaultRules as pushDefaultAutoResponseRules,
@@ -70,6 +67,10 @@ import {
   captureSessionOpen,
   isDebugCaptureEnabled,
 } from "./debug-capture.js";
+import {
+  getTaskAgentFrameworkState,
+  type TaskAgentFrameworkState,
+} from "./task-agent-frameworks.js";
 
 export type {
   CodingAgentType,
@@ -96,17 +97,29 @@ export function getCoordinator(
 
 export class PTYService {
   static serviceType = "PTY_SERVICE";
-  capabilityDescription = "Manages PTY sessions for CLI coding agents";
+  capabilityDescription =
+    "Manages asynchronous PTY task-agent sessions for open-ended background work";
 
   private runtime: IAgentRuntime;
   private manager: PTYManager | BunCompatiblePTYManager | null = null;
   private usingBunWorker: boolean = false;
   private serviceConfig: PTYServiceConfig;
+  private sessionNames: Map<string, string> = new Map();
   private sessionMetadata: Map<string, Record<string, unknown>> = new Map();
   private sessionWorkdirs: Map<string, string> = new Map();
   private eventCallbacks: SessionEventCallback[] = [];
   private outputUnsubscribers: Map<string, () => void> = new Map();
+  private transcriptUnsubscribers: Map<string, () => void> = new Map();
   private sessionOutputBuffers: Map<string, string[]> = new Map();
+  private terminalSessionStates: Map<
+    string,
+    {
+      status: SessionInfo["status"];
+      createdAt: Date;
+      lastActivityAt: Date;
+      reason?: string;
+    }
+  > = new Map();
   private adapterCache: Map<string, BaseCodingAdapter> = new Map();
   /** Tracks the buffer index when a task was sent, so we can capture the response on completion */
   private taskResponseMarkers: Map<string, number> = new Map();
@@ -127,7 +140,7 @@ export class PTYService {
       debug: config.debug ?? false,
       registerCodingAdapters: config.registerCodingAdapters ?? true,
       maxConcurrentSessions: config.maxConcurrentSessions ?? 8,
-      defaultApprovalPreset: config.defaultApprovalPreset ?? "permissive",
+      defaultApprovalPreset: config.defaultApprovalPreset ?? "autonomous",
     };
   }
 
@@ -152,7 +165,7 @@ export class PTYService {
     } else {
       try {
         const coordinator = new SwarmCoordinator(runtime);
-        coordinator.start(service);
+        await coordinator.start(service);
         service.coordinator = coordinator;
 
         // Register the coordinator as a discoverable runtime service so
@@ -192,6 +205,7 @@ export class PTYService {
       traceEntries: this.traceEntries,
       maxTraceEntries: PTYService.MAX_TRACE_ENTRIES,
       log: (msg) => this.log(msg),
+      handleWorkerExit: (info) => this.handleWorkerExit(info),
       hasActiveTask: (sessionId) => {
         const coordinator = this.coordinator;
         if (!coordinator) return false;
@@ -211,8 +225,7 @@ export class PTYService {
       markTaskDelivered: (sessionId) => {
         const coordinator = this.coordinator;
         if (!coordinator) return;
-        const taskCtx = coordinator.getTaskContext(sessionId);
-        if (taskCtx) taskCtx.taskDelivered = true;
+        void coordinator.setTaskDelivered(sessionId);
       },
     });
     this.manager = result.manager;
@@ -234,7 +247,7 @@ export class PTYService {
   async stop(): Promise<void> {
     // Stop the coordinator if one was wired to this service
     if (this.coordinator) {
-      this.coordinator.stop();
+      await this.coordinator.stop();
       // Remove from runtime services map
       (this.runtime.services as Map<string, Service[]>).delete("SWARM_COORDINATOR");
       this.coordinator = null;
@@ -249,12 +262,17 @@ export class PTYService {
       unsubscribe();
     }
     this.outputUnsubscribers.clear();
+    for (const unsubscribe of this.transcriptUnsubscribers.values()) {
+      unsubscribe();
+    }
+    this.transcriptUnsubscribers.clear();
 
     if (this.manager) {
       await this.manager.shutdown();
       this.manager = null;
     }
     this.sessionMetadata.clear();
+    this.sessionNames.clear();
     this.sessionWorkdirs.clear();
     this.sessionOutputBuffers.clear();
     this.log("PTYService shutdown complete");
@@ -290,6 +308,9 @@ export class PTYService {
     const resolvedInitialTask = piRequested
       ? toPiCommand(options.initialTask)
       : options.initialTask;
+    const effectiveApprovalPreset =
+      options.approvalPreset ??
+      (resolvedAgentType !== "shell" ? this.defaultApprovalPreset : undefined);
 
     const maxSessions = this.serviceConfig.maxConcurrentSessions ?? 8;
     const activeSessions = (await this.listSessions()).length;
@@ -320,7 +341,7 @@ export class PTYService {
     }
 
     // Write approval config files to workspace before spawn
-    if (options.approvalPreset && resolvedAgentType !== "shell") {
+    if (effectiveApprovalPreset && resolvedAgentType !== "shell") {
       try {
         const written = await this.getAdapter(
           resolvedAgentType as AdapterType,
@@ -328,10 +349,10 @@ export class PTYService {
           name: options.name,
           type: resolvedAgentType,
           workdir,
-          adapterConfig: { approvalPreset: options.approvalPreset },
+          adapterConfig: { approvalPreset: effectiveApprovalPreset },
         } as SpawnConfig);
         this.log(
-          `Wrote approval config (${options.approvalPreset}) for ${resolvedAgentType}: ${written.join(", ")}`,
+          `Wrote approval config (${effectiveApprovalPreset}) for ${resolvedAgentType}: ${written.join(", ")}`,
         );
       } catch (err) {
         this.log(`Failed to write approval config: ${err}`);
@@ -426,10 +447,13 @@ export class PTYService {
         ...options,
         agentType: resolvedAgentType,
         initialTask: resolvedInitialTask,
+        approvalPreset: effectiveApprovalPreset,
       },
       workdir,
     );
     const session = await this.manager.spawn(spawnConfig);
+    this.terminalSessionStates.delete(session.id);
+    this.sessionNames.set(session.id, options.name);
 
     // Store metadata separately (always include agentType for stall classification)
     this.sessionMetadata.set(session.id, {
@@ -454,6 +478,15 @@ export class PTYService {
         this.sendToSession(id, input),
       sendKeysToSession: (id: string, keys: string | string[]) =>
         this.sendKeysToSession(id, keys),
+      writeRawToSession: async (id: string, data: string) => {
+        if (!this.manager) return;
+        if (this.usingBunWorker) {
+          await (this.manager as BunCompatiblePTYManager).writeRaw(id, data);
+          return;
+        }
+        const ptySession = (this.manager as PTYManager).getSession(id);
+        ptySession?.writeRaw(data);
+      },
       pushDefaultRules: (id: string, type: string) =>
         this.pushDefaultRules(id, type),
       toSessionInfo: (s: SessionHandle | WorkerSessionHandle, w?: string) =>
@@ -462,8 +495,7 @@ export class PTYService {
       markTaskDelivered: (sessionId: string) => {
         const coordinator = this.coordinator;
         if (!coordinator) return;
-        const taskCtx = coordinator.getTaskContext(sessionId);
-        if (taskCtx) taskCtx.taskDelivered = true;
+        void coordinator.setTaskDelivered(sessionId);
       },
     };
 
@@ -490,6 +522,8 @@ export class PTYService {
         }
       }
     }
+
+    this.wireTranscriptCapture(session.id);
 
     // Defer initial task until session is ready.
     // IMPORTANT: Set up the listener BEFORE pushDefaultRules (which has a 1500ms sleep),
@@ -544,6 +578,7 @@ export class PTYService {
   ): Promise<SessionMessage | undefined> {
     if (!this.manager) throw new Error("PTYService not initialized");
     captureFeed(sessionId, input, "stdin");
+    void this.persistTranscript(sessionId, "stdin", input);
     return sendToSessionIO(this.ioContext(), sessionId, input);
   }
 
@@ -552,20 +587,26 @@ export class PTYService {
     keys: string | string[],
   ): Promise<void> {
     if (!this.manager) throw new Error("PTYService not initialized");
+    const content = Array.isArray(keys) ? keys.join(",") : keys;
+    void this.persistTranscript(sessionId, "keys", content);
     return sendKeysToSessionIO(this.ioContext(), sessionId, keys);
   }
 
   async stopSession(sessionId: string, force = false): Promise<void> {
     if (!this.manager) throw new Error("PTYService not initialized");
     captureLifecycle(sessionId, "session_stopped", force ? "force" : undefined);
-    return stopSessionIO(
-      this.ioContext(),
-      sessionId,
-      this.sessionMetadata,
-      this.sessionWorkdirs,
-      (msg) => this.log(msg),
-      force,
-    );
+    try {
+      return await stopSessionIO(
+        this.ioContext(),
+        sessionId,
+        this.sessionMetadata,
+        this.sessionWorkdirs,
+        (msg) => this.log(msg),
+        force,
+      );
+    } finally {
+      this.clearTranscriptCapture(sessionId);
+    }
   }
 
   /** Default approval preset — runtime env var takes precedence over config. */
@@ -579,7 +620,7 @@ export class PTYService {
     ) {
       return fromEnv as ApprovalPreset;
     }
-    return this.serviceConfig.defaultApprovalPreset ?? "permissive";
+    return this.serviceConfig.defaultApprovalPreset ?? "autonomous";
   }
 
   /** Agent selection strategy — env var takes precedence. */
@@ -624,28 +665,18 @@ export class PTYService {
    *   metrics, and returns the highest scorer
    */
   async resolveAgentType(): Promise<string> {
-    const strategy = this.agentSelectionStrategy;
-    const fixedAgentType = this.defaultAgentType;
+    const frameworkState = await this.getFrameworkState();
+    return frameworkState.preferred.id;
+  }
 
-    if (strategy === "fixed") {
-      return fixedAgentType;
-    }
-
-    // Ranked mode — need installed agents list
-    const preflight = await this.checkAvailableAgents();
-    const metrics = this.metricsTracker.getAll();
-
-    return selectAgentType({
-      config: { strategy, fixedAgentType },
-      metrics,
-      installedAgents: preflight,
-    });
+  async getFrameworkState(): Promise<TaskAgentFrameworkState> {
+    return getTaskAgentFrameworkState(this.runtime, this);
   }
 
   getSession(sessionId: string): SessionInfo | undefined {
     if (!this.manager) return undefined;
     const session = this.manager.get(sessionId);
-    if (!session) return undefined;
+    if (!session) return this.toTerminalSessionInfo(sessionId);
     return this.toSessionInfo(session, this.sessionWorkdirs.get(sessionId));
   }
 
@@ -654,9 +685,14 @@ export class PTYService {
     const sessions = this.usingBunWorker
       ? await (this.manager as BunCompatiblePTYManager).list()
       : (this.manager as PTYManager).list(filter);
-    return sessions.map((s) =>
+    const liveSessions = sessions.map((s) =>
       this.toSessionInfo(s, this.sessionWorkdirs.get(s.id)),
     );
+    const terminalSessions = Array.from(this.terminalSessionStates.keys())
+      .filter((sessionId) => !sessions.some((session) => session.id === sessionId))
+      .map((sessionId) => this.toTerminalSessionInfo(sessionId))
+      .filter((session): session is SessionInfo => session !== undefined);
+    return [...liveSessions, ...terminalSessions];
   }
 
   subscribeToOutput(
@@ -670,6 +706,79 @@ export class PTYService {
   async getSessionOutput(sessionId: string, lines?: number): Promise<string> {
     if (!this.manager) throw new Error("PTYService not initialized");
     return getSessionOutputIO(this.ioContext(), sessionId, lines);
+  }
+
+  private clearTranscriptCapture(sessionId: string): void {
+    const unsubscribe = this.transcriptUnsubscribers.get(sessionId);
+    if (unsubscribe) {
+      try {
+        unsubscribe();
+      } catch {
+        // Ignore cleanup failures on dead sessions.
+      }
+    }
+    this.transcriptUnsubscribers.delete(sessionId);
+  }
+
+  private async resolveTaskThreadId(sessionId: string): Promise<string | null> {
+    const liveThreadId = this.coordinator?.getTaskContext(sessionId)?.threadId;
+    if (liveThreadId) return liveThreadId;
+    const metadataThreadId = this.sessionMetadata.get(sessionId)?.threadId;
+    if (typeof metadataThreadId === "string" && metadataThreadId.trim()) {
+      return metadataThreadId;
+    }
+    return (
+      (await this.coordinator?.taskRegistry.findThreadIdBySessionId(sessionId)) ??
+      null
+    );
+  }
+
+  private async persistTranscript(
+    sessionId: string,
+    direction: "stdout" | "stderr" | "stdin" | "keys" | "system",
+    content: string,
+  ): Promise<void> {
+    if (!content || !this.coordinator) return;
+    const threadId = await this.resolveTaskThreadId(sessionId);
+    if (!threadId) return;
+    await this.coordinator.taskRegistry.recordTranscript({
+      threadId,
+      sessionId,
+      direction,
+      content,
+    });
+  }
+
+  private wireTranscriptCapture(sessionId: string): void {
+    if (!this.manager) return;
+    this.clearTranscriptCapture(sessionId);
+
+    if (this.usingBunWorker) {
+      const unsubscribe = (this.manager as BunCompatiblePTYManager).onSessionData(
+        sessionId,
+        (data: string) => {
+          void this.persistTranscript(sessionId, "stdout", data);
+        },
+      );
+      this.transcriptUnsubscribers.set(sessionId, unsubscribe);
+      return;
+    }
+
+    const ptySession = (this.manager as PTYManager).getSession(sessionId);
+    if (
+      !ptySession ||
+      typeof (ptySession as { on?: unknown }).on !== "function" ||
+      typeof (ptySession as { off?: unknown }).off !== "function"
+    ) {
+      return;
+    }
+    const onOutput = (data: string) => {
+      void this.persistTranscript(sessionId, "stdout", data);
+    };
+    ptySession.on("output", onOutput);
+    this.transcriptUnsubscribers.set(sessionId, () => {
+      ptySession.off("output", onOutput);
+    });
   }
 
   isSessionBlocked(sessionId: string): boolean {
@@ -1018,7 +1127,60 @@ export class PTYService {
     };
   }
 
+  private toTerminalSessionInfo(sessionId: string): SessionInfo | undefined {
+    const terminal = this.terminalSessionStates.get(sessionId);
+    if (!terminal) return undefined;
+    const metadata = this.sessionMetadata.get(sessionId);
+    const requestedType =
+      typeof metadata?.requestedType === "string"
+        ? metadata.requestedType
+        : undefined;
+    const storedAgentType =
+      typeof metadata?.agentType === "string" ? metadata.agentType : "unknown";
+    const displayAgentType =
+      storedAgentType === "shell" && isPiAgentType(requestedType)
+        ? "pi"
+        : storedAgentType;
+    return {
+      id: sessionId,
+      name:
+        this.sessionNames.get(sessionId) ?? sessionId,
+      agentType: displayAgentType,
+      workdir: this.sessionWorkdirs.get(sessionId) ?? process.cwd(),
+      status: terminal.status,
+      createdAt: terminal.createdAt,
+      lastActivityAt: terminal.lastActivityAt,
+      metadata,
+    };
+  }
+
   private emitEvent(sessionId: string, event: string, data: unknown): void {
+    if (event === "stopped" || event === "error") {
+      const liveSession = this.manager?.get(sessionId);
+      const createdAt =
+        liveSession?.startedAt instanceof Date
+          ? liveSession.startedAt
+          : liveSession?.startedAt
+            ? new Date(liveSession.startedAt)
+            : new Date();
+      const lastActivityAt =
+        liveSession?.lastActivityAt instanceof Date
+          ? liveSession.lastActivityAt
+          : liveSession?.lastActivityAt
+            ? new Date(liveSession.lastActivityAt)
+            : new Date();
+      const reason =
+        event === "stopped"
+          ? (data as { reason?: string } | undefined)?.reason
+          : (data as { message?: string } | undefined)?.message;
+      this.terminalSessionStates.set(sessionId, {
+        status: event,
+        createdAt,
+        lastActivityAt,
+        reason,
+      });
+    }
+
     for (const callback of this.eventCallbacks) {
       try {
         callback(sessionId, event, data);
@@ -1036,5 +1198,36 @@ export class PTYService {
 
   private log(message: string): void {
     logger.debug(`[PTYService] ${message}`);
+  }
+
+  private handleWorkerExit(info: {
+    code: number | null;
+    signal: string | null;
+  }): void {
+    const trackedSessionIds = new Set([
+      ...this.sessionMetadata.keys(),
+      ...this.sessionWorkdirs.keys(),
+    ]);
+    if (trackedSessionIds.size === 0) {
+      return;
+    }
+
+    const reason = info.signal
+      ? `PTY worker exited unexpectedly (signal ${info.signal})`
+      : `PTY worker exited unexpectedly (code ${info.code ?? "unknown"})`;
+
+    for (const sessionId of trackedSessionIds) {
+      const terminalState = this.terminalSessionStates.get(sessionId);
+      if (
+        terminalState?.status === "stopped" ||
+        terminalState?.status === "error"
+      ) {
+        continue;
+      }
+      this.emitEvent(sessionId, "error", {
+        message: reason,
+        workerExit: info,
+      });
+    }
   }
 }

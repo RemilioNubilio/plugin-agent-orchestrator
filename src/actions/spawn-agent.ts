@@ -1,7 +1,7 @@
 /**
- * SPAWN_CODING_AGENT action - Spawns a CLI coding agent
+ * SPAWN_AGENT action - Spawns a CLI task agent.
  *
- * Creates a new PTY session for a coding agent (Claude Code, Codex, etc.)
+ * Creates a new PTY session for a task agent (Claude Code, Codex, etc.)
  * and returns a session ID for subsequent interactions.
  *
  * @module actions/spawn-agent
@@ -34,45 +34,51 @@ import type { CodingWorkspaceService } from "../services/workspace-service.js";
 import { buildAgentCredentials } from "./coding-task-helpers.js";
 
 export const spawnAgentAction: Action = {
-  name: "SPAWN_CODING_AGENT",
+  name: "SPAWN_AGENT",
 
   similes: [
+    "SPAWN_CODING_AGENT",
     "START_CODING_AGENT",
     "LAUNCH_CODING_AGENT",
     "CREATE_CODING_AGENT",
     "SPAWN_CODER",
     "RUN_CODING_AGENT",
+    "SPAWN_SUB_AGENT",
+    "START_TASK_AGENT",
+    "CREATE_AGENT",
   ],
 
   description:
-    "Spawn a CLI coding agent (Claude Code, Codex, Gemini, Aider, Pi) to work on a coding task. " +
-    "The agent runs in a PTY session and can execute code, run tests, and make changes. " +
+    "Spawn a specific task agent inside an existing workspace when you need direct control. " +
+    "These agents are intentionally open-ended and can handle investigation, writing, planning, testing, synthesis, repo work, and general async task execution. " +
     "Returns a session ID that can be used to interact with the agent.",
 
   examples: [
     [
       {
         name: "{{user1}}",
-        content: { text: "Spawn Claude Code to fix the bug in auth.ts" },
+        content: {
+          text: "Start a Codex task agent in that workspace and have it continue the investigation.",
+        },
       },
       {
         name: "{{agentName}}",
         content: {
-          text: "I'll spawn Claude Code to work on that. Let me set up the coding session.",
-          action: "SPAWN_CODING_AGENT",
+          text: "I'll spawn a task agent in the current workspace and hand it the next chunk of work.",
+          action: "SPAWN_AGENT",
         },
       },
     ],
     [
       {
         name: "{{user1}}",
-        content: { text: "Start a coding agent to implement the new feature" },
+        content: { text: "Spin up a task agent for the follow-up work in this repo." },
       },
       {
         name: "{{agentName}}",
         content: {
-          text: "I'll create a coding session for that task.",
-          action: "SPAWN_CODING_AGENT",
+          text: "I'll create a task-agent session for that.",
+          action: "SPAWN_AGENT",
         },
       },
     ],
@@ -87,7 +93,7 @@ export const spawnAgentAction: Action = {
       | PTYService
       | undefined;
     if (!ptyService) {
-      logger.warn("[SPAWN_CODING_AGENT] PTYService not available");
+      logger.warn("[SPAWN_AGENT] PTYService not available");
       return false;
     }
     return true;
@@ -106,7 +112,7 @@ export const spawnAgentAction: Action = {
     if (!ptyService) {
       if (callback) {
         await callback({
-          text: "PTY Service is not available. Cannot spawn coding agent.",
+          text: "PTY Service is not available. Cannot spawn a task agent.",
         });
       }
       return { success: false, error: "SERVICE_UNAVAILABLE" };
@@ -228,10 +234,31 @@ export const spawnAgentAction: Action = {
 
       // Check if coordinator is active — route blocking prompts through it
       const coordinator = getCoordinator(runtime);
+      const taskThread =
+        coordinator && task
+          ? await coordinator.createTaskThread({
+              title: `agent-${Date.now()}`,
+              originalRequest: task,
+              kind: "coding",
+              roomId:
+                typeof (message as unknown as Record<string, unknown>).roomId === "string"
+                  ? ((message as unknown as Record<string, unknown>).roomId as string)
+                  : null,
+              ownerUserId:
+                typeof (message as unknown as Record<string, unknown>).userId === "string"
+                  ? ((message as unknown as Record<string, unknown>).userId as string)
+                  : null,
+              metadata: {
+                source: "spawn-agent-action",
+                messageId: message.id,
+                requestedType: rawAgentType,
+              },
+            })
+          : null;
 
       // Spawn the PTY session
       const session: SessionInfo = await ptyService.spawnSession({
-        name: `coding-${Date.now()}`,
+        name: `task-${Date.now()}`,
         agentType,
         workdir,
         initialTask,
@@ -248,6 +275,7 @@ export const spawnAgentAction: Action = {
           ? { skipAdapterAutoResponse: true }
           : {}),
         metadata: {
+          threadId: taskThread?.id,
           requestedType: rawAgentType,
           messageId: message.id,
           userId: (message as unknown as Record<string, unknown>).userId,
@@ -268,27 +296,28 @@ export const spawnAgentAction: Action = {
           // Handle blocked state - agent is waiting for input
           if (event === "blocked" && callback) {
             callback({
-              text: `Coding agent is waiting for input: ${(data as { prompt?: string }).prompt ?? "unknown prompt"}`,
+              text: `Task agent is waiting for input: ${(data as { prompt?: string }).prompt ?? "unknown prompt"}`,
             });
           }
 
           // Handle completion
           if (event === "completed" && callback) {
             callback({
-              text: "Coding agent completed the task.",
+              text: "Task agent completed the task.",
             });
           }
 
           // Handle errors
           if (event === "error" && callback) {
             callback({
-              text: `Coding agent encountered an error: ${(data as { message?: string }).message ?? "unknown error"}`,
+              text: `Task agent encountered an error: ${(data as { message?: string }).message ?? "unknown error"}`,
             });
           }
         }
       });
       if (coordinator && task) {
-        coordinator.registerTask(session.id, {
+        await coordinator.registerTask(session.id, {
+          threadId: taskThread?.id ?? session.id,
           agentType,
           label: `agent-${session.id.slice(-8)}`,
           originalTask: task,
@@ -309,13 +338,13 @@ export const spawnAgentAction: Action = {
 
       if (callback) {
         await callback({
-          text: `Started ${piRequested ? "pi" : agentType} coding agent in ${workdir}${task ? ` with task: "${task}"` : ""}. Session ID: ${session.id}`,
+          text: `Started ${piRequested ? "pi" : agentType} task agent in ${workdir}${task ? ` with task: "${task}"` : ""}. Session ID: ${session.id}`,
         });
       }
 
       return {
         success: true,
-        text: `Started ${piRequested ? "pi" : agentType} coding agent`,
+        text: `Started ${piRequested ? "pi" : agentType} task agent`,
         data: {
           sessionId: session.id,
           agentType: piRequested ? "pi" : session.agentType,
@@ -326,11 +355,11 @@ export const spawnAgentAction: Action = {
     } catch (error) {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
-      logger.error("[SPAWN_CODING_AGENT] Failed to spawn agent:", errorMessage);
+      logger.error("[SPAWN_AGENT] Failed to spawn agent:", errorMessage);
 
       if (callback) {
         await callback({
-          text: `Failed to spawn coding agent: ${errorMessage}`,
+          text: `Failed to spawn task agent: ${errorMessage}`,
         });
       }
 
@@ -342,9 +371,8 @@ export const spawnAgentAction: Action = {
     {
       name: "agentType",
       description:
-        "Type of coding agent to spawn. Options: claude, codex, gemini, aider. " +
-        "Only set this if the user explicitly requests a specific agent. " +
-        "Otherwise omit to use the user's configured preference.",
+        "Specific task-agent framework to spawn. Options: claude (Claude Code), codex (OpenAI Codex), gemini (Google Gemini), aider, pi, shell (generic shell). " +
+        "If omitted, the orchestrator picks the preferred available framework.",
       required: false,
       schema: { type: "string" as const },
     },
@@ -357,21 +385,21 @@ export const spawnAgentAction: Action = {
     },
     {
       name: "task",
-      description: "Initial task or prompt to send to the agent once spawned.",
+      description: "Open-ended task or prompt to send to the task agent once spawned.",
       required: false,
       schema: { type: "string" as const },
     },
     {
       name: "memoryContent",
       description:
-        "Instructions/context to write to the agent's memory file (e.g. CLAUDE.md) before spawning.",
+        "Instructions or shared context to write to the task agent's memory file before spawning.",
       required: false,
       schema: { type: "string" as const },
     },
     {
       name: "approvalPreset",
       description:
-        "Permission level: readonly (safe audit), standard (reads+web auto, writes prompt), permissive (file ops auto, shell prompts), autonomous (all auto, use with sandbox)",
+        "Permission level for the task agent: readonly (safe audit), standard (reads+web auto, writes prompt), permissive (file ops auto, shell prompts), autonomous (all auto, use with sandbox)",
       required: false,
       schema: {
         type: "string" as const,
@@ -380,3 +408,5 @@ export const spawnAgentAction: Action = {
     },
   ],
 };
+
+export const spawnTaskAgentAction = spawnAgentAction;
