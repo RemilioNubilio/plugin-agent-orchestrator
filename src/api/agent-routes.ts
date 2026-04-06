@@ -254,13 +254,13 @@ export async function handleAgentRoutes(
   if (method === "POST" && authMatch) {
     const rawAgentType = authMatch[1];
 
-    // Validate agent type before instantiating an adapter
+    // Validate agent type before instantiating an adapter.
+    // Must stay in sync with PTYService.checkAvailableAgents() default list.
     const SUPPORTED_AGENTS: ReadonlyArray<string> = [
       "claude",
       "codex",
       "gemini",
       "aider",
-      "hermes",
     ];
     if (!SUPPORTED_AGENTS.includes(rawAgentType)) {
       sendError(res, `Unsupported agent type: ${rawAgentType}`, 400);
@@ -279,7 +279,11 @@ export async function handleAgentRoutes(
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : "Auth trigger failed";
-      // Map "unknown adapter" failures to 400, everything else to 500
+      // Defensive fallback: primary input validation is handled by
+      // SUPPORTED_AGENTS above, so reaching here means the adapter package's
+      // own validation failed (e.g. internal lookup table mismatch). The regex
+      // is brittle if `coding-agent-adapters` changes its error wording, but
+      // it lets us return 400 instead of 500 for likely client errors.
       const status = /unknown adapter|unsupported/i.test(msg) ? 400 : 500;
       sendError(res, msg, status);
     }
