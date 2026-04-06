@@ -8,11 +8,46 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { IAgentRuntime, Memory } from "@elizaos/core";
 
-// Isolate scratch dir creation from host filesystem: mock readConfigEnvKey
+// Isolate scratch dir creation from host filesystem: mock config-env
 // so it never reads the real milady.json config file.
-mock.module("../services/config-env.js", () => ({
-  readConfigEnvKey: () => undefined,
-}));
+//
+// NOTE: This `mock.module` is global to Bun's test runner. We delegate to a
+// real fs/json read when the caller has set MILADY_STATE_DIR to a temp dir
+// (used by config-env.test.ts) so those tests can exercise the real logic.
+mock.module("../services/config-env.js", () => {
+  const fs = require("node:fs") as typeof import("node:fs");
+  const path = require("node:path") as typeof import("node:path");
+  const os = require("node:os") as typeof import("node:os");
+  function readRealConfig(): Record<string, unknown> | undefined {
+    try {
+      const configPath = path.join(
+        process.env.MILADY_STATE_DIR ??
+          process.env.ELIZA_STATE_DIR ??
+          path.join(os.homedir(), ".milady"),
+        process.env.ELIZA_NAMESPACE === "milady" || !process.env.ELIZA_NAMESPACE
+          ? "milady.json"
+          : `${process.env.ELIZA_NAMESPACE}.json`,
+      );
+      return JSON.parse(fs.readFileSync(configPath, "utf-8"));
+    } catch {
+      return undefined;
+    }
+  }
+  const isConfigEnvTest = () =>
+    process.env.MILADY_STATE_DIR?.includes("config-env-test-") ?? false;
+  return {
+    readConfigEnvKey: (key: string) => {
+      if (!isConfigEnvTest()) return undefined;
+      const v = (readRealConfig()?.env as Record<string, unknown> | undefined)?.[key];
+      return typeof v === "string" ? v : undefined;
+    },
+    readConfigCloudKey: (key: string) => {
+      if (!isConfigEnvTest()) return undefined;
+      const v = (readRealConfig()?.cloud as Record<string, unknown> | undefined)?.[key];
+      return typeof v === "string" ? v : undefined;
+    },
+  };
+});
 
 // Dynamic import after preload mocks are registered
 const { startCodingTaskAction } = await import(

@@ -29,7 +29,9 @@ import {
   type SessionInfo,
   toPiCommand,
 } from "../services/pty-types.js";
+import { readConfigEnvKey } from "../services/config-env.js";
 import type { CodingWorkspaceService } from "../services/workspace-service.js";
+import { buildAgentCredentials } from "./coding-task-helpers.js";
 
 export const spawnAgentAction: Action = {
   name: "SPAWN_AGENT",
@@ -120,10 +122,10 @@ export const spawnAgentAction: Action = {
     const params = options?.parameters;
     const content = message.content as Record<string, unknown>;
 
+    const explicitRawType =
+      (params?.agentType as string) ?? (content.agentType as string);
     const rawAgentType =
-      (params?.agentType as string) ??
-      (content.agentType as string) ??
-      (await ptyService.resolveAgentType());
+      explicitRawType ?? (await ptyService.resolveAgentType());
     const agentType = normalizeAgentType(rawAgentType);
     const task = (params?.task as string) ?? (content.task as string);
     const piRequested = isPiAgentType(rawAgentType);
@@ -195,17 +197,21 @@ export const spawnAgentAction: Action = {
       }
     }
 
-    // Build credentials from runtime settings
-    const credentials: AgentCredentials = {
-      anthropicKey: runtime.getSetting("ANTHROPIC_API_KEY") as
-        | string
-        | undefined,
-      openaiKey: runtime.getSetting("OPENAI_API_KEY") as string | undefined,
-      googleKey: runtime.getSetting("GOOGLE_GENERATIVE_AI_API_KEY") as
-        | string
-        | undefined,
-      githubToken: runtime.getSetting("GITHUB_TOKEN") as string | undefined,
-    };
+    // Build credentials based on the user's configured LLM provider.
+    // Throws if cloud mode is selected but no cloud API key is paired.
+    const llmProvider =
+      readConfigEnvKey("PARALLAX_LLM_PROVIDER") || "subscription";
+    let credentials: AgentCredentials;
+    try {
+      credentials = buildAgentCredentials(runtime);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to build credentials";
+      logger.error(`[spawn-agent] ${msg}`);
+      if (callback) {
+        await callback({ text: msg });
+      }
+      return { success: false, error: "INVALID_CREDENTIALS" };
+    }
 
     try {
       // Check if the agent CLI is installed (for non-shell agents)
@@ -262,7 +268,12 @@ export const spawnAgentAction: Action = {
           (approvalPreset as ApprovalPreset | undefined) ??
           ptyService.defaultApprovalPreset,
         customCredentials,
-        ...(coordinator ? { skipAdapterAutoResponse: true } : {}),
+        // Let adapter auto-response handle startup prompts (API key, trust, etc.)
+        // when using cloud/API key mode — the LLM coordinator misinterprets these.
+        // In subscription mode, the coordinator handles all prompts.
+        ...(coordinator && llmProvider === "subscription"
+          ? { skipAdapterAutoResponse: true }
+          : {}),
         metadata: {
           threadId: taskThread?.id,
           requestedType: rawAgentType,

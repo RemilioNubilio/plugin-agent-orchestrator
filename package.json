@@ -1,6 +1,6 @@
 {
   "name": "@elizaos/plugin-agent-orchestrator",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "Task-agent orchestration plugin - spawn and manage open-ended CLI task agents via PTY",
   "type": "module",
   "main": "dist/index.js",
@@ -43,7 +43,7 @@
   },
   "license": "MIT",
   "dependencies": {
-    "coding-agent-adapters": "0.15.0",
+    "coding-agent-adapters": "0.16.0",
     "pty-console": "0.3.1",
     "pty-state-capture": "0.2.0"
   }

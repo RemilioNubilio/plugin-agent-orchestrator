@@ -249,6 +249,47 @@ export async function handleAgentRoutes(
     return true;
   }
 
+  // POST /api/coding-agents/auth/:agent — trigger CLI auth flow
+  const authMatch = pathname.match(/^\/api\/coding-agents\/auth\/(\w+)$/);
+  if (method === "POST" && authMatch) {
+    const rawAgentType = authMatch[1];
+
+    // Validate agent type before instantiating an adapter.
+    // Must stay in sync with PTYService.checkAvailableAgents() default list.
+    const SUPPORTED_AGENTS: ReadonlyArray<string> = [
+      "claude",
+      "codex",
+      "gemini",
+      "aider",
+    ];
+    if (!SUPPORTED_AGENTS.includes(rawAgentType)) {
+      sendError(res, `Unsupported agent type: ${rawAgentType}`, 400);
+      return true;
+    }
+
+    const agentType = rawAgentType as import("coding-agent-adapters").AdapterType;
+    try {
+      const { createAdapter } = await import("coding-agent-adapters");
+      const adapter = createAdapter(agentType);
+      const result = await adapter.triggerAuth();
+      if (!result) {
+        sendError(res, `No auth flow available for ${agentType}`, 400);
+      } else {
+        sendJson(res, result as unknown as JsonValue);
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "Auth trigger failed";
+      // Defensive fallback: primary input validation is handled by
+      // SUPPORTED_AGENTS above, so reaching here means the adapter package's
+      // own validation failed (e.g. internal lookup table mismatch). The regex
+      // is brittle if `coding-agent-adapters` changes its error wording, but
+      // it lets us return 400 instead of 500 for likely client errors.
+      const status = /unknown adapter|unsupported/i.test(msg) ? 400 : 500;
+      sendError(res, msg, status);
+    }
+    return true;
+  }
+
   // GET /api/coding-agents/metrics
   if (method === "GET" && pathname === "/api/coding-agents/metrics") {
     if (!ctx.ptyService) {

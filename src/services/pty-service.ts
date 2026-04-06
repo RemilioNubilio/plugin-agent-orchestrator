@@ -28,6 +28,7 @@ import type {
 } from "pty-manager";
 import { AgentMetricsTracker } from "./agent-metrics.js";
 import { type AgentSelectionStrategy } from "./agent-selection.js";
+import { readConfigEnvKey } from "./config-env.js";
 import {
   handleGeminiAuth as handleGeminiAuthFlow,
   pushDefaultRules as pushDefaultAutoResponseRules,
@@ -633,16 +634,25 @@ export class PTYService {
     return "fixed";
   }
 
-  /** Default agent type when strategy is "fixed" — env var takes precedence. */
+  /**
+   * Default agent type when strategy is "fixed".
+   * Precedence: config file (`milady.json` env section, written by the UI)
+   * > runtime/env setting > "claude" fallback.
+   */
   get defaultAgentType(): AdapterType {
-    const fromEnv = this.runtime.getSetting("PARALLAX_DEFAULT_AGENT_TYPE") as
-      | string
-      | undefined;
+    const fromConfig = readConfigEnvKey("PARALLAX_DEFAULT_AGENT_TYPE");
+    const fromRuntimeOrEnv =
+      fromConfig ||
+      (this.runtime.getSetting("PARALLAX_DEFAULT_AGENT_TYPE") as
+        | string
+        | undefined);
     if (
-      fromEnv &&
-      ["claude", "gemini", "codex", "aider"].includes(fromEnv.toLowerCase())
+      fromRuntimeOrEnv &&
+      ["claude", "gemini", "codex", "aider"].includes(
+        fromRuntimeOrEnv.toLowerCase(),
+      )
     ) {
-      return fromEnv.toLowerCase() as AdapterType;
+      return fromRuntimeOrEnv.toLowerCase() as AdapterType;
     }
     return "claude";
   }

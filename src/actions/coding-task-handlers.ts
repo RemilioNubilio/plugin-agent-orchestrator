@@ -26,6 +26,7 @@ import {
   type SessionInfo,
   toPiCommand,
 } from "../services/pty-types.js";
+import { readConfigEnvKey } from "../services/config-env.js";
 import type { CodingWorkspaceService } from "../services/workspace-service.js";
 import type { AgentSelectionStrategy } from "../services/agent-selection.js";
 import { withTrajectoryContext } from "../services/trajectory-context.js";
@@ -278,6 +279,11 @@ export async function handleMultiAgent(
     error?: string;
   }> = [];
 
+  // Read LLM provider once before the spawn loop to avoid repeated sync I/O
+  // and ensure consistent provider selection across all agents in this swarm.
+  const llmProvider =
+    readConfigEnvKey("PARALLAX_LLM_PROVIDER") || "subscription";
+
   const coordinator = getCoordinator(runtime);
   const threadTitle = explicitLabel || generateLabel(repo, userRequest);
   const taskThread = coordinator
@@ -399,7 +405,9 @@ export async function handleMultiAgent(
           (approvalPreset as ApprovalPreset | undefined) ??
           ptyService.defaultApprovalPreset,
         customCredentials,
-        ...(coordinator ? { skipAdapterAutoResponse: true } : {}),
+        ...(coordinator && llmProvider === "subscription"
+          ? { skipAdapterAutoResponse: true }
+          : {}),
         metadata: {
           threadId: taskThread?.id,
           requestedType: specRequestedType,
