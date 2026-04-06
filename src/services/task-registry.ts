@@ -182,6 +182,7 @@ export interface TaskThreadDetail extends TaskThreadSummary {
   events: TaskEventRecord[];
   artifacts: TaskArtifactRecord[];
   transcripts: TaskTranscriptRecord[];
+  pendingDecisions: TaskPendingDecisionRecord[];
 }
 
 export interface CreateTaskThreadInput {
@@ -934,13 +935,15 @@ export class TaskRegistry {
     const summary = await this.getThreadSummary(threadId);
     if (!summary) return null;
 
-    const [sessions, decisions, events, artifacts, transcripts] = await Promise.all([
-      this.listSessionsForThread(threadId),
-      this.listDecisionsForThread(threadId),
-      this.listEventsForThread(threadId),
-      this.listArtifactsForThread(threadId),
-      this.listTranscriptsForThread(threadId),
-    ]);
+    const [sessions, decisions, events, artifacts, transcripts, pendingDecisions] =
+      await Promise.all([
+        this.listSessionsForThread(threadId),
+        this.listDecisionsForThread(threadId),
+        this.listEventsForThread(threadId),
+        this.listArtifactsForThread(threadId),
+        this.listTranscriptsForThread(threadId),
+        this.listPendingDecisionsForThread(threadId),
+      ]);
 
     return {
       ...summary,
@@ -949,6 +952,7 @@ export class TaskRegistry {
       events,
       artifacts,
       transcripts,
+      pendingDecisions,
     };
   }
 
@@ -1488,6 +1492,20 @@ export class TaskRegistry {
       this.runtime,
       `SELECT *
          FROM orchestrator_task_pending_decisions
+        ORDER BY created_at ASC`,
+    );
+    return rows.map(parsePendingDecisionRow);
+  }
+
+  async listPendingDecisionsForThread(
+    threadId: string,
+  ): Promise<TaskPendingDecisionRecord[]> {
+    await this.ensureSchema();
+    const rows = await executeRawSql(
+      this.runtime,
+      `SELECT *
+         FROM orchestrator_task_pending_decisions
+        WHERE thread_id = ${sqlQuote(threadId)}
         ORDER BY created_at ASC`,
     );
     return rows.map(parsePendingDecisionRow);

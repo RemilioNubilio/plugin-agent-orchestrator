@@ -239,7 +239,6 @@ export const spawnAgentAction: Action = {
           ? await coordinator.createTaskThread({
               title: `agent-${Date.now()}`,
               originalRequest: task,
-              kind: "coding",
               roomId:
                 typeof (message as unknown as Record<string, unknown>).roomId === "string"
                   ? ((message as unknown as Record<string, unknown>).roomId as string)
