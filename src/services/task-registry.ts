@@ -1047,6 +1047,18 @@ export class TaskRegistry {
     return rows[0] ? toText(rows[0].thread_id) : null;
   }
 
+  async getSession(sessionId: string): Promise<TaskSessionRecord | null> {
+    await this.ensureSchema();
+    const rows = await executeRawSql(
+      this.runtime,
+      `SELECT *
+         FROM orchestrator_task_sessions
+        WHERE session_id = ${sqlQuote(sessionId)}
+        LIMIT 1`,
+    );
+    return rows[0] ? parseSessionRow(rows[0]) : null;
+  }
+
   async registerSession(input: RegisterTaskSessionInput): Promise<void> {
     await this.ensureSchema();
     const nowIso = isoNow();
@@ -1511,6 +1523,19 @@ export class TaskRegistry {
       `SELECT *
          FROM orchestrator_task_decisions
         WHERE thread_id = ${sqlQuote(threadId)}
+        ORDER BY timestamp ASC`,
+    );
+    return rows.map(parseDecisionRow);
+  }
+
+  async listDecisionsForSession(
+    sessionId: string,
+  ): Promise<TaskDecisionRecord[]> {
+    const rows = await executeRawSql(
+      this.runtime,
+      `SELECT *
+         FROM orchestrator_task_decisions
+        WHERE session_id = ${sqlQuote(sessionId)}
         ORDER BY timestamp ASC`,
     );
     return rows.map(parseDecisionRow);

@@ -70,6 +70,7 @@ function createMockRes(): any {
 const createMockCoordinator = () => ({
   getAllTaskContexts: jest.fn().mockReturnValue([]),
   getTaskContext: jest.fn(),
+  getTaskContextSnapshot: jest.fn(),
   listTaskThreads: jest.fn().mockResolvedValue([]),
   getTaskThread: jest.fn(),
   archiveTaskThread: jest.fn().mockResolvedValue(undefined),
@@ -320,7 +321,7 @@ describe("coordinator routes", () => {
         decisions: [],
         autoResolvedCount: 0,
       };
-      asMock(ctx.coordinator).getTaskContext.mockReturnValue(task);
+      asMock(ctx.coordinator).getTaskContextSnapshot.mockResolvedValue(task);
 
       const req = createMockReq("GET", `${PREFIX}/tasks/s-1`);
       const res = createMockRes();
@@ -332,7 +333,7 @@ describe("coordinator routes", () => {
     });
 
     it("returns 404 for unknown session", async () => {
-      asMock(ctx.coordinator).getTaskContext.mockReturnValue(undefined);
+      asMock(ctx.coordinator).getTaskContextSnapshot.mockResolvedValue(null);
 
       const req = createMockReq("GET", `${PREFIX}/tasks/s-unknown`);
       const res = createMockRes();
@@ -340,6 +341,39 @@ describe("coordinator routes", () => {
       await handleCoordinatorRoutes(req, res, `${PREFIX}/tasks/s-unknown`, ctx);
 
       expect(res._getStatus()).toBe(404);
+    });
+
+    it("returns persisted task context after restart when live memory is empty", async () => {
+      asMock(ctx.coordinator).getTaskContextSnapshot.mockResolvedValue({
+        threadId: "thread-1",
+        sessionId: "s-recovered",
+        agentType: "codex",
+        label: "recovered-agent",
+        originalTask: "Finish validation",
+        workdir: "/workspace/recovered",
+        status: "stopped",
+        decisions: [],
+        autoResolvedCount: 1,
+        registeredAt: 1,
+        lastActivityAt: 2,
+        idleCheckCount: 0,
+        taskDelivered: true,
+        lastSeenDecisionIndex: 0,
+      });
+
+      const req = createMockReq("GET", `${PREFIX}/tasks/s-recovered`);
+      const res = createMockRes();
+
+      await handleCoordinatorRoutes(
+        req,
+        res,
+        `${PREFIX}/tasks/s-recovered`,
+        ctx,
+      );
+
+      expect(res._getStatus()).toBe(200);
+      expect(res._getJson().sessionId).toBe("s-recovered");
+      expect(res._getJson().status).toBe("stopped");
     });
   });
 

@@ -589,7 +589,7 @@ export async function handleAgentRoutes(
               originalRequest: task as string,
               kind: "coding",
               metadata: {
-                repo: workdir ?? null,
+                workdir: workdir ?? null,
                 source: "api-spawn",
               },
             })

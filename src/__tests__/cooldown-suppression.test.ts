@@ -22,6 +22,7 @@ function createMockCtx(overrides: Record<string, unknown> = {}) {
       useModel: jest.fn().mockResolvedValue(
         '{"action":"respond","response":"Continue","reasoning":"Follow up"}',
       ),
+      getService: jest.fn().mockReturnValue(null),
     },
     ptyService: {
       sendToSession: jest.fn().mockResolvedValue(undefined),
@@ -40,6 +41,46 @@ function createMockCtx(overrides: Record<string, unknown> = {}) {
     getSwarmCompleteCallback: () => null,
     sharedDecisions: [],
     getSwarmContext: () => "",
+    syncTaskContext: jest.fn().mockResolvedValue(undefined),
+    recordDecision: jest
+      .fn()
+      .mockImplementation(
+        async (
+          taskCtx: { decisions: Array<Record<string, unknown>> },
+          decision: Record<string, unknown>,
+        ) => {
+          taskCtx.decisions.push(decision);
+        },
+      ),
+    taskRegistry: {
+      getThread: jest.fn().mockResolvedValue({
+        id: "thread-1",
+        title: "test-agent",
+        kind: "coding",
+        status: "active",
+        originalRequest: "Fix bug",
+        summary: "",
+        sessionCount: 1,
+        activeSessionCount: 1,
+        latestSessionId: "s-1",
+        latestSessionLabel: "test-agent",
+        latestWorkdir: "/workspace/project",
+        latestRepo: null,
+        latestActivityAt: Date.now(),
+        decisionCount: 0,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        acceptanceCriteria: ["Fix bug", "Run validation"],
+        sessions: [],
+        decisions: [],
+        events: [],
+        artifacts: [],
+        transcripts: [],
+      }),
+      appendEvent: jest.fn().mockResolvedValue(undefined),
+      recordArtifact: jest.fn().mockResolvedValue(undefined),
+      updateThreadSummary: jest.fn().mockResolvedValue(undefined),
+    },
     broadcast: jest.fn(),
     sendChatMessage: jest.fn(),
     log: jest.fn(),
@@ -50,10 +91,12 @@ function createMockCtx(overrides: Record<string, unknown> = {}) {
 function createTaskCtx(overrides: Record<string, unknown> = {}) {
   return {
     sessionId: "s-1",
+    threadId: "thread-1",
     agentType: "claude",
     label: "test-agent",
     originalTask: "Fix bug",
     workdir: "/workspace/project",
+    repo: null,
     status: "active",
     decisions: [] as Array<Record<string, unknown>>,
     autoResolvedCount: 0,

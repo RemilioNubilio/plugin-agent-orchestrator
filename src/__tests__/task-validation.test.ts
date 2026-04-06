@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { IAgentRuntime } from "@elizaos/core";
@@ -95,11 +96,13 @@ function createThreadDetail() {
 describe("validateTaskCompletion", () => {
   let stateDir: string;
   let originalStateDir: string | undefined;
+  let originalApiPort: string | undefined;
   let originalFetch: typeof globalThis.fetch | undefined;
 
   beforeEach(async () => {
     stateDir = await mkdtemp(path.join(tmpdir(), "task-validation-"));
     originalStateDir = process.env.MILADY_STATE_DIR;
+    originalApiPort = process.env.MILADY_API_PORT;
     process.env.MILADY_STATE_DIR = stateDir;
     originalFetch = globalThis.fetch;
     globalThis.fetch = jest
@@ -112,6 +115,11 @@ describe("validateTaskCompletion", () => {
       delete process.env.MILADY_STATE_DIR;
     } else {
       process.env.MILADY_STATE_DIR = originalStateDir;
+    }
+    if (originalApiPort === undefined) {
+      delete process.env.MILADY_API_PORT;
+    } else {
+      process.env.MILADY_API_PORT = originalApiPort;
     }
     if (originalFetch) {
       globalThis.fetch = originalFetch;
@@ -189,12 +197,102 @@ describe("validateTaskCompletion", () => {
     const report = JSON.parse(await readFile(result.reportPath, "utf8")) as {
       verdict: string;
       evidence: {
-        screenshot: { verified: boolean } | null;
+        screenshot:
+          | {
+              status: "captured";
+              fileIntegrityVerified: boolean;
+              contentVerified: boolean;
+              captureScope: string;
+            }
+          | { status: "unavailable"; reason: string };
         trajectories: Array<{ id: string }>;
       };
     };
     expect(report.verdict).toBe("pass");
-    expect(report.evidence.screenshot?.verified).toBe(true);
+    expect(report.evidence.screenshot.status).toBe("captured");
+    if (report.evidence.screenshot.status !== "captured") {
+      throw new Error("expected captured screenshot evidence");
+    }
+    expect(report.evidence.screenshot.fileIntegrityVerified).toBe(true);
+    expect(report.evidence.screenshot.contentVerified).toBe(false);
+    expect(report.evidence.screenshot.captureScope).toBe("desktop-fullscreen");
     expect(report.evidence.trajectories[0]?.id).toBe("traj-1");
+  });
+
+  it("uses the real loopback screenshot fetch path when the API endpoint is available", async () => {
+    if (!originalFetch) {
+      throw new Error("expected fetch to exist in this runtime");
+    }
+    globalThis.fetch = originalFetch;
+
+    const server = await new Promise<Server>((resolve) => {
+      const nextServer = createServer((req, res) => {
+        if (req.url !== "/api/dev/cursor-screenshot") {
+          res.statusCode = 404;
+          res.end("not found");
+          return;
+        }
+        res.writeHead(200, { "Content-Type": "image/png" });
+        res.end(Buffer.from(PNG_BYTES));
+      });
+      nextServer.listen(0, "127.0.0.1", () => resolve(nextServer));
+    });
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("expected numeric loopback port");
+      }
+      process.env.MILADY_API_PORT = String(address.port);
+
+      const runtime = {
+        useModel: jest.fn().mockResolvedValue(
+          JSON.stringify({
+            verdict: "pass",
+            summary: "Validation completed with loopback screenshot capture.",
+          }),
+        ),
+        getService: jest.fn().mockReturnValue(null),
+      } as unknown as IAgentRuntime;
+
+      const result = await validateTaskCompletion(
+        {
+          runtime,
+          taskRegistry: {
+            getThread: jest.fn().mockResolvedValue(createThreadDetail()),
+          },
+        } as never,
+        {
+          sessionId: "session-loopback",
+          taskCtx: {
+            sessionId: "session-loopback",
+            threadId: "thread-1",
+            label: "loopback-agent",
+            originalTask: "Verify screenshot capture",
+            workdir: "/workspace/project",
+          } as never,
+          completionReasoning: "The endpoint should return a PNG.",
+          completionSummary: "Captured a screenshot through the loopback dev API.",
+          turnOutput: "Screenshot requested from /api/dev/cursor-screenshot.",
+        },
+      );
+
+      const screenshotArtifact = result.artifacts.find(
+        (artifact) => artifact.artifactType === "screenshot",
+      );
+      expect(screenshotArtifact?.path).toContain("screenshot-session-loopback-");
+      expect(screenshotArtifact?.metadata).toMatchObject({
+        captureScope: "desktop-fullscreen",
+        contentVerified: false,
+        fileIntegrityVerified: true,
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error) reject(error);
+          else resolve();
+        });
+      });
+    }
   });
 });

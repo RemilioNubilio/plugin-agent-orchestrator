@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import {
   type IAgentRuntime,
   ModelType,
@@ -118,6 +119,21 @@ function pngHeaderValid(buffer: Uint8Array): boolean {
   return signature.every((value, index) => buffer[index] === value);
 }
 
+type ValidationScreenshotCapture =
+  | {
+      status: "captured";
+      path: string;
+      sizeBytes: number;
+      fileIntegrityVerified: boolean;
+      sha256: string;
+      captureScope: "desktop-fullscreen";
+      contentVerified: false;
+    }
+  | {
+      status: "unavailable";
+      reason: string;
+    };
+
 function resolveLoopbackApiBase(): string {
   const port =
     process.env.MILADY_API_PORT?.trim() ||
@@ -137,39 +153,52 @@ function resolveAuthHeaders(): HeadersInit | undefined {
 async function captureValidationScreenshot(
   threadId: string,
   sessionId: string,
-): Promise<
-  | {
-      path: string;
-      sizeBytes: number;
-      verified: boolean;
+): Promise<ValidationScreenshotCapture> {
+  try {
+    const response = await fetch(
+      `${resolveLoopbackApiBase()}/api/dev/cursor-screenshot`,
+      {
+        headers: resolveAuthHeaders(),
+      },
+    );
+    if (!response.ok) {
+      return {
+        status: "unavailable",
+        reason: `HTTP ${response.status} from /api/dev/cursor-screenshot`,
+      };
     }
-  | null
-> {
-  const response = await fetch(`${resolveLoopbackApiBase()}/api/dev/cursor-screenshot`, {
-    headers: resolveAuthHeaders(),
-  });
-  if (!response.ok) {
-    return null;
+
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.length === 0) {
+      return {
+        status: "unavailable",
+        reason: "Screenshot endpoint returned an empty PNG payload",
+      };
+    }
+
+    const dir = path.join(getValidationRootDir(), threadId);
+    await mkdir(dir, { recursive: true });
+    const screenshotPath = path.join(
+      dir,
+      `screenshot-${sessionId}-${Date.now()}.png`,
+    );
+    await writeFile(screenshotPath, bytes);
+
+    return {
+      status: "captured",
+      path: screenshotPath,
+      sizeBytes: bytes.length,
+      fileIntegrityVerified: pngHeaderValid(bytes) && bytes.length > 1024,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      captureScope: "desktop-fullscreen",
+      contentVerified: false,
+    };
+  } catch (error) {
+    return {
+      status: "unavailable",
+      reason: error instanceof Error ? error.message : String(error),
+    };
   }
-
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  if (bytes.length === 0) {
-    return null;
-  }
-
-  const dir = path.join(getValidationRootDir(), threadId);
-  await mkdir(dir, { recursive: true });
-  const screenshotPath = path.join(
-    dir,
-    `screenshot-${sessionId}-${Date.now()}.png`,
-  );
-  await writeFile(screenshotPath, bytes);
-
-  return {
-    path: screenshotPath,
-    sizeBytes: bytes.length,
-    verified: pngHeaderValid(bytes) && bytes.length > 1024,
-  };
 }
 
 async function listRelevantTrajectories(
@@ -232,7 +261,7 @@ function buildValidationPrompt(
   completionSummary: string,
   turnOutput: string,
   trajectories: TrajectoryListItem[],
-  screenshot: Awaited<ReturnType<typeof captureValidationScreenshot>>,
+  screenshot: ValidationScreenshotCapture,
 ): string {
   const acceptanceCriteria =
     thread?.acceptanceCriteria?.length
@@ -284,15 +313,16 @@ function buildValidationPrompt(
     trajectoryBlock,
     "",
     "Screenshot evidence:",
-    screenshot
-      ? `- captured=${screenshot.verified} path=${screenshot.path} sizeBytes=${screenshot.sizeBytes}`
-      : "- unavailable",
+    screenshot.status === "captured"
+      ? `- status=captured scope=${screenshot.captureScope} fileIntegrityVerified=${screenshot.fileIntegrityVerified} contentVerified=${screenshot.contentVerified} sha256=${screenshot.sha256} path=${screenshot.path} sizeBytes=${screenshot.sizeBytes}`
+      : `- status=unavailable reason=${screenshot.reason}`,
     "",
     "Rules:",
     "- Pass only if the task appears complete and the available evidence supports that claim.",
     "- Revise if the agent should keep working. In that case, provide a direct follow-up prompt.",
     "- Escalate if the task cannot be validated from available evidence and needs human review.",
     "- Be skeptical. Missing tests or missing verification should usually mean revise or escalate, not pass.",
+    "- Treat screenshot capture as artifact evidence only. A desktop screenshot may prove the UI rendered, but it does not semantically prove the task without supporting transcript, test, or trajectory evidence.",
   ].join("\n");
 }
 
@@ -319,9 +349,7 @@ export async function validateTaskCompletion(
     input;
   const thread = await ctx.taskRegistry.getThread(taskCtx.threadId);
   const trajectories = await listRelevantTrajectories(ctx.runtime, taskCtx, thread);
-  const screenshot = await captureValidationScreenshot(taskCtx.threadId, sessionId).catch(
-    () => null,
-  );
+  const screenshot = await captureValidationScreenshot(taskCtx.threadId, sessionId);
 
   const prompt = buildValidationPrompt(
     taskCtx,
@@ -372,13 +400,7 @@ export async function validateTaskCompletion(
       decisionCount: thread?.decisions.length ?? 0,
       eventCount: thread?.events.length ?? 0,
       artifactCount: thread?.artifacts.length ?? 0,
-      screenshot: screenshot
-        ? {
-            path: screenshot.path,
-            sizeBytes: screenshot.sizeBytes,
-            verified: screenshot.verified,
-          }
-        : null,
+      screenshot,
       trajectories: trajectories.map((item) => ({
         id: item.id,
         status: item.status,
@@ -414,15 +436,18 @@ export async function validateTaskCompletion(
     })),
   ];
 
-  if (screenshot) {
+  if (screenshot.status === "captured") {
     artifacts.push({
       artifactType: "screenshot",
       title: `Validation screenshot for ${taskCtx.label}`,
       path: screenshot.path,
       mimeType: "image/png",
       metadata: {
-        verified: screenshot.verified,
+        fileIntegrityVerified: screenshot.fileIntegrityVerified,
         sizeBytes: screenshot.sizeBytes,
+        sha256: screenshot.sha256,
+        captureScope: screenshot.captureScope,
+        contentVerified: screenshot.contentVerified,
       },
     });
   }

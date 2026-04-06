@@ -29,9 +29,12 @@ import {
 	markTaskAgentFrameworkHealthy,
 	markTaskAgentFrameworkUnavailable,
 } from "./task-agent-frameworks.js";
+import { deriveTaskAcceptanceCriteria } from "./task-acceptance.js";
 import {
   type CreateTaskThreadInput,
+  type TaskDecisionRecord,
   type TaskPendingDecisionRecord,
+  type TaskSessionRecord,
   type TaskThreadDetail,
   type TaskThreadStatus,
   type TaskThreadSummary,
@@ -927,6 +930,77 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 		return this.tasks.get(sessionId);
 	}
 
+	private mapDecisionRecord(
+		record: TaskDecisionRecord,
+	): CoordinationDecision {
+		return {
+			timestamp: record.timestamp,
+			event: record.event,
+			promptText: record.promptText,
+			decision: record.decision as CoordinationDecision["decision"],
+			...(record.response ? { response: record.response } : {}),
+			reasoning: record.reasoning,
+		};
+	}
+
+	private buildTaskContextFromSession(
+		session: TaskSessionRecord,
+		decisions: TaskDecisionRecord[],
+	): TaskContext {
+		const status = (() => {
+			switch (session.status) {
+				case "blocked":
+				case "waiting_on_user":
+					return "blocked";
+				case "tool_running":
+					return "tool_running";
+				case "completed":
+					return "completed";
+				case "error":
+					return "error";
+				case "stopped":
+				case "interrupted":
+					return "stopped";
+				default:
+					return "active";
+			}
+		})();
+
+		return {
+			threadId: session.threadId,
+			sessionId: session.sessionId,
+			agentType: session.framework,
+			label: session.label,
+			originalTask: session.originalTask,
+			workdir: session.workdir,
+			...(session.repo ? { repo: session.repo } : {}),
+			status,
+			decisions: decisions.map((decision) => this.mapDecisionRecord(decision)),
+			autoResolvedCount: session.autoResolvedCount,
+			registeredAt: session.registeredAt,
+			lastActivityAt: session.lastActivityAt,
+			idleCheckCount: session.idleCheckCount,
+			taskDelivered: session.taskDelivered,
+			...(session.completionSummary
+				? { completionSummary: session.completionSummary }
+				: {}),
+			lastSeenDecisionIndex: session.lastSeenDecisionIndex,
+			...(session.lastInputSentAt !== null
+				? { lastInputSentAt: session.lastInputSentAt }
+				: {}),
+			...(session.stoppedAt !== null ? { stoppedAt: session.stoppedAt } : {}),
+		};
+	}
+
+	async getTaskContextSnapshot(sessionId: string): Promise<TaskContext | null> {
+		const live = this.tasks.get(sessionId);
+		if (live) return live;
+		const session = await this.taskRegistry.getSession(sessionId);
+		if (!session) return null;
+		const decisions = await this.taskRegistry.listDecisionsForSession(sessionId);
+		return this.buildTaskContextFromSession(session, decisions);
+	}
+
 	getAllTaskContexts(): TaskContext[] {
 		return Array.from(this.tasks.values());
 	}
@@ -934,7 +1008,15 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 	async createTaskThread(
 		input: CreateTaskThreadInput,
 	): Promise<TaskThreadSummary> {
-		const thread = await this.taskRegistry.createThread(input);
+		const acceptance = await deriveTaskAcceptanceCriteria(this.runtime, input);
+		const thread = await this.taskRegistry.createThread({
+			...input,
+			acceptanceCriteria: acceptance.criteria,
+			metadata: {
+				...(input.metadata ?? {}),
+				acceptanceCriteriaSource: acceptance.source,
+			},
+		});
 		const summary = await this.taskRegistry.getThreadSummary(thread.id);
 		if (!summary) {
 			throw new Error(`Failed to load task thread ${thread.id}`);

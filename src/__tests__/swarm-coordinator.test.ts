@@ -190,6 +190,66 @@ describe("SwarmCoordinator", () => {
 			const all = coordinator.getAllTaskContexts();
 			expect(all.length).toBe(2);
 		});
+
+		it("derives task-specific acceptance criteria when creating a thread", async () => {
+			mockRuntime.useModel.mockResolvedValue(
+				JSON.stringify([
+					"Persist all task state in the database.",
+					"Rehydrate restart-sensitive coordinator state.",
+					"Record validation evidence before completion.",
+				]),
+			);
+			mockTaskRegistry.getThreadSummary.mockResolvedValue({
+				id: "thread-acceptance",
+				title: "Durable task thread",
+				kind: "coding",
+				status: "open",
+				originalRequest: "Make task threads durable",
+				summary: "",
+				acceptanceCriteria: [
+					"Persist all task state in the database.",
+					"Rehydrate restart-sensitive coordinator state.",
+					"Record validation evidence before completion.",
+				],
+				currentPlan: {},
+				searchText: "",
+				createdAt: new Date().toISOString(),
+				updatedAt: new Date().toISOString(),
+				closedAt: null,
+				archivedAt: null,
+				lastUserTurnAt: null,
+				lastCoordinatorTurnAt: null,
+				metadata: { acceptanceCriteriaSource: "model" },
+				sessionCount: 0,
+				activeSessionCount: 0,
+				latestSessionId: null,
+				latestSessionLabel: null,
+				latestWorkdir: null,
+				latestRepo: null,
+				latestActivityAt: null,
+				decisionCount: 0,
+			});
+
+			await coordinator.createTaskThread({
+				id: "thread-acceptance",
+				title: "Durable task thread",
+				originalRequest: "Make task threads durable",
+				kind: "coding",
+			});
+
+			expect(mockTaskRegistry.createThread).toHaveBeenCalledWith(
+				expect.objectContaining({
+					acceptanceCriteria: [
+						"Persist all task state in the database.",
+						"Rehydrate restart-sensitive coordinator state.",
+						"Record validation evidence before completion.",
+					],
+					metadata: expect.objectContaining({
+						acceptanceCriteriaSource: "model",
+					}),
+				}),
+			);
+		});
 	});
 
 	// =========================================================================

@@ -215,7 +215,7 @@ export async function handleCoordinatorRoutes(
   const taskMatch = subPath.match(/^\/tasks\/([^/]+)$/);
   if (method === "GET" && taskMatch) {
     const sessionId = taskMatch[1];
-    const task = coordinator.getTaskContext(sessionId);
+    const task = await coordinator.getTaskContextSnapshot(sessionId);
     if (!task) {
       sendError(res, "Task context not found", 404);
       return true;
