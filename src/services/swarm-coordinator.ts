@@ -287,6 +287,14 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 	/** Callback fired when all swarm tasks complete — for synthesis. */
 	private swarmCompleteCb: SwarmCompleteCallback | null = null;
 
+	/**
+	 * Room ID of the original message that triggered this swarm.
+	 * Used by the synthesis bridge to route the final result back to
+	 * the user's platform (Discord, Telegram, etc.) via the runtime's
+	 * registered send handler.
+	 */
+	sourceRoomId: string | null = null;
+
 	/** Buffer for events arriving before task registration. */
 	private unregisteredBuffer: Map<
 		string,

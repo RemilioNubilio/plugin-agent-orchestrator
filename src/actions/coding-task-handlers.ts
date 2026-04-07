@@ -236,11 +236,8 @@ export async function handleMultiAgent(
     return { success: false, error: "WORKSPACE_SERVICE_UNAVAILABLE" };
   }
 
-  if (callback) {
-    await callback({
-      text: `Launching ${agentSpecs.length} agents${repo ? ` on ${repo}` : ""}...`,
-    });
-  }
+  // Skip the spawn callback — the LLM REPLY already says "on it" and the
+  // synthesis at the end delivers the result. One initial message is enough.
 
   // Planning phase: generate shared context brief for multi-agent coordination.
   // Strip agent-type prefixes from specs to get clean subtask descriptions.
@@ -383,7 +380,14 @@ export async function handleMultiAgent(
       const swarmMemory = agentSpecs.length > 1 && swarmContext
         ? buildSwarmMemoryInstructions(specLabel, specTask, cleanSubtasks, i)
         : undefined;
-      const agentMemory = [memoryContent, swarmMemory, pastExperienceBlock]
+      // When tasks involve serving on a port, instruct the agent to detach
+      // background processes from the PTY parent so the server outlives
+      // the agent session. Without this, `python3 -m http.server &` dies
+      // when the orchestrator stops the PTY.
+      const backgroundProcessInstructions = /port\s+\d+/i.test(specTask)
+        ? `BACKGROUND PROCESSES: When starting any server or daemon, you MUST fully detach it from the parent PTY so it survives after this session ends. Use \`setsid nohup <command> > /dev/null 2>&1 < /dev/null & disown\` instead of just \`<command> &\`. Verify the server is listening with \`curl -s -o /dev/null -w "%{http_code}" http://localhost:<port>/\` before completing the task.`
+        : undefined;
+      const agentMemory = [memoryContent, swarmMemory, pastExperienceBlock, backgroundProcessInstructions]
         .filter(Boolean)
         .join("\n\n") || undefined;
 
@@ -443,10 +447,10 @@ export async function handleMultiAgent(
         status: session.status,
       });
 
-      if (callback) {
-        await callback({
-          text: `[${i + 1}/${agentSpecs.length}] Spawned ${displayType} agent as "${specLabel}"`,
-        });
+      // Store the source room ID so synthesis can route the final result
+      // back to the user's platform via the runtime's send handler.
+      if (coordinator && message.roomId) {
+        coordinator.sourceRoomId = message.roomId;
       }
     } catch (error) {
       const errorMessage =
@@ -482,10 +486,6 @@ export async function handleMultiAgent(
       ? [`Failed: ${failed.map((r) => `"${r.label}": ${r.error}`).join(", ")}`]
       : []),
   ].join("\n");
-
-  if (callback) {
-    await callback({ text: summary });
-  }
 
   return {
     success: failed.length === 0,

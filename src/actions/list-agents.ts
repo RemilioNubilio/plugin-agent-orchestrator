@@ -98,6 +98,18 @@ export const listAgentsAction: Action = {
     _options?: HandlerOptions,
     callback?: HandlerCallback,
   ): Promise<ActionResult | undefined> => {
+    // Guard: only list agents when the user explicitly asked.
+    // The runtime can select this action during post-action loops
+    // even when the user never requested a status update.
+    // Only respond when the user directly asks via slash command.
+    // The LLM selects LIST_AGENTS during action loops and coordinator
+    // events even when the user never asked — always block those.
+    const userText = (_message?.content?.text ?? "").trim();
+    if (!userText.startsWith("/subagents") && !userText.startsWith("/sub") &&
+        !userText.startsWith("/agents") && !userText.startsWith("/sessions")) {
+      return { success: false, text: "" };
+    }
+
     const ptyService = runtime.getService("PTY_SERVICE") as unknown as
       | PTYService
       | undefined;

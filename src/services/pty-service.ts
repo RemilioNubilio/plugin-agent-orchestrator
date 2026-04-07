@@ -71,6 +71,14 @@ import {
   type TaskAgentFrameworkState,
 } from "./task-agent-frameworks.js";
 
+/**
+ * Grace period after `task_complete` before stopping a PTY session.
+ * Allows background processes spawned by the agent (servers, daemons)
+ * to fully detach from the PTY parent before it exits. Without this,
+ * any backgrounded server immediately dies with the PTY.
+ */
+const TASK_COMPLETE_STOP_DELAY_MS = 5000;
+
 export type {
   CodingAgentType,
   PTYServiceConfig,
@@ -826,9 +834,9 @@ export class PTYService {
         break;
       case "task_complete":
         this.emitEvent(sessionId, "task_complete", data);
-        // Stop the session after task completion so the coordinator can
-        // finalize the swarm and send the result back to the user.
-        this.stopSession(sessionId).catch(() => {});
+        setTimeout(() => {
+          this.stopSession(sessionId).catch(() => {});
+        }, TASK_COMPLETE_STOP_DELAY_MS);
         break;
       case "permission_approved":
         // Permission was auto-approved via PermissionRequest hook.
