@@ -411,6 +411,11 @@ export async function handleMultiAgent(
           workspaceId,
           label: specLabel,
           multiAgentIndex: i,
+          // Carry the originating message routing context so deployments can
+          // post async session updates back to the originating channel.
+          roomId: message.roomId,
+          worldId: message.worldId,
+          source: (message.content as { source?: string } | undefined)?.source,
         },
       });
 
