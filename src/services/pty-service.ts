@@ -79,6 +79,40 @@ import {
  */
 const TASK_COMPLETE_STOP_DELAY_MS = 5000;
 
+/**
+ * Baseline workspace contract injected into every spawned coding-agent's
+ * memory file. Locks the agent to its workspace dir so it never wanders into
+ * $HOME or /tmp, and codifies the conventions for static-site hosting that
+ * users expect (entry file = index.html, server bound from workspace).
+ */
+function buildSpawnedAgentBaseline(workdir: string): string {
+  return [
+    "# Workspace Contract",
+    "",
+    `Your workspace is: ${workdir}`,
+    "",
+    "## Hard rules — do not violate",
+    "",
+    `1. Your working directory is **${workdir}**. NEVER \`cd\` outside it. NEVER \`cd /tmp\`, \`cd ~\`, \`cd /\`. All file operations, all server starts, all builds happen inside the workspace.`,
+    "2. When you create files, create them under the workspace path. Use relative paths or paths under the workspace.",
+    "3. If you need scratch space, create a subdirectory inside the workspace, not in /tmp.",
+    "",
+    "## Static web app conventions",
+    "",
+    "When the user asks for a web page or static site:",
+    "1. Name the entry HTML file **`index.html`** (never `hello.html`, `page.html`, etc.) — `python3 -m http.server` serves `index.html` as the directory root, otherwise it shows a directory listing.",
+    `2. Start the server in the background **from the workspace directory**: \`cd ${workdir} && setsid nohup python3 -m http.server <port> --bind 0.0.0.0 > server.log 2>&1 < /dev/null & disown\`.`,
+    "3. Verify with `curl -sf http://127.0.0.1:<port>/` and confirm the response contains your page content (not a directory listing).",
+    "4. On success, print the final URL on its own line in this exact format:",
+    "   `URL: http://147.93.44.246:<port>/`",
+    "5. Never serve `/tmp`, `$HOME`, or any directory other than your workspace.",
+    "",
+    "## Reporting",
+    "",
+    "When done, end your response with a single line that begins with `URL: ` if you started a server. The parent agent will quote that line back to the user verbatim.",
+  ].join("\n");
+}
+
 export type {
   CodingAgentType,
   PTYServiceConfig,
@@ -331,13 +365,19 @@ export class PTYService {
     // Store workdir for later retrieval
     this.sessionWorkdirs.set(sessionId, workdir);
 
-    // Write memory content before spawning so the agent reads it on startup
-    if (options.memoryContent && resolvedAgentType !== "shell") {
+    // Write memory content before spawning so the agent reads it on startup.
+    // Always prepend a baseline workspace contract so the spawned agent never
+    // wanders into $HOME or /tmp regardless of what the parent passed in.
+    if (resolvedAgentType !== "shell") {
+      const baseline = buildSpawnedAgentBaseline(workdir);
+      const fullMemory = options.memoryContent
+        ? `${baseline}\n\n---\n\n${options.memoryContent}`
+        : baseline;
       try {
         const writtenPath = await this.writeMemoryFile(
           resolvedAgentType as AdapterType,
           workdir,
-          options.memoryContent,
+          fullMemory,
         );
         this.log(`Wrote memory file for ${resolvedAgentType}: ${writtenPath}`);
       } catch (err) {
