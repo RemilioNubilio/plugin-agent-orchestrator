@@ -40,6 +40,7 @@ const ENV_ALLOWLIST = [
   "XDG_RUNTIME_DIR",
   "NODE_OPTIONS",
   "BUN_INSTALL",
+  "ANTHROPIC_API_KEY",
 ];
 
 /**

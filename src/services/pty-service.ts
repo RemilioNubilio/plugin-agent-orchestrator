@@ -826,6 +826,9 @@ export class PTYService {
         break;
       case "task_complete":
         this.emitEvent(sessionId, "task_complete", data);
+        // Stop the session after task completion so the coordinator can
+        // finalize the swarm and send the result back to the user.
+        this.stopSession(sessionId).catch(() => {});
         break;
       case "permission_approved":
         // Permission was auto-approved via PermissionRequest hook.
