@@ -203,10 +203,13 @@ export const startCodingTaskAction: Action = {
       }
     }
 
+    // Only pass real API keys to the adapter, not OAuth tokens (sk-ant-oat*).
+    // Claude Code with OAuth reads ~/.claude/.credentials.json directly via HOME.
+    const rawAnthropicKey = runtime.getSetting("ANTHROPIC_API_KEY") as string | undefined;
+    const isOAuthToken = rawAnthropicKey?.startsWith("sk-ant-oat");
+
     const credentials: AgentCredentials = {
-      anthropicKey: runtime.getSetting("ANTHROPIC_API_KEY") as
-        | string
-        | undefined,
+      anthropicKey: isOAuthToken ? undefined : rawAnthropicKey,
       openaiKey: runtime.getSetting("OPENAI_API_KEY") as string | undefined,
       googleKey: runtime.getSetting("GOOGLE_GENERATIVE_AI_API_KEY") as
         | string
