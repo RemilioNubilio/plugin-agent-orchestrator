@@ -49,6 +49,59 @@ const createMockPTYService = () => ({
 	getSessionOutput: jest.fn().mockResolvedValue("recent output"),
 	stopSession: jest.fn().mockResolvedValue(undefined),
 	listSessions: jest.fn().mockResolvedValue([]),
+	spawnSession: jest.fn().mockResolvedValue({
+		id: "s-failover",
+		name: "failover-session",
+		agentType: "codex",
+		workdir: "/workspace",
+		status: "starting",
+		createdAt: new Date(),
+		lastActivityAt: new Date(),
+		metadata: {},
+	}),
+	getSession: jest.fn().mockReturnValue({
+		id: "s-1",
+		name: "primary-session",
+		agentType: "claude",
+		workdir: "/workspace",
+		status: "error",
+		createdAt: new Date(),
+		lastActivityAt: new Date(),
+		metadata: {
+			threadId: "thread-1",
+			requestedType: "claude",
+			label: "test-agent",
+		},
+	}),
+	getFrameworkState: jest.fn().mockResolvedValue({
+		preferred: {
+			id: "codex",
+			reason: "codex available",
+		},
+		frameworks: [
+			{
+				id: "claude",
+				label: "Claude Code",
+				installed: true,
+				authReady: true,
+				subscriptionReady: true,
+				temporarilyDisabled: true,
+				recommended: false,
+				reason: "temporarily disabled",
+			},
+			{
+				id: "codex",
+				label: "Codex",
+				installed: true,
+				authReady: true,
+				subscriptionReady: true,
+				temporarilyDisabled: false,
+				recommended: true,
+				reason: "preferred fallback",
+			},
+		],
+	}),
+	defaultApprovalPreset: "autonomous",
 });
 
 function createMockSseRes() {
@@ -372,6 +425,97 @@ describe("SwarmCoordinator", () => {
 
 			const ctx = coordinator.getTaskContext("s-1");
 			expect(ctx.status).toBe("error");
+		});
+
+		it("continues the same task on a fallback framework after quota exhaustion", async () => {
+			await coordinator.handleSessionEvent("s-1", "error", {
+				message: "insufficient credits",
+			});
+
+			const failedTask = coordinator.getTaskContext("s-1");
+			const replacementTask = coordinator.getTaskContext("s-failover");
+
+			expect(failedTask?.status).toBe("error");
+			expect(replacementTask).toBeDefined();
+			expect(replacementTask?.threadId).toBe("s-1");
+			expect(replacementTask?.agentType).toBe("codex");
+			expect(replacementTask?.label).toContain("codex failover");
+			expect(mockPty.spawnSession).toHaveBeenCalledWith(
+				expect.objectContaining({
+					agentType: "codex",
+					workdir: "/workspace",
+					skipAdapterAutoResponse: true,
+				}),
+			);
+			expect(mockTaskRegistry.registerSession).toHaveBeenCalledWith(
+				expect.objectContaining({
+					sessionId: "s-failover",
+					threadId: "s-1",
+					framework: "codex",
+					providerSource: "subscription",
+				}),
+			);
+			expect(mockTaskRegistry.appendEvent).toHaveBeenCalledWith(
+				expect.objectContaining({
+					threadId: "s-1",
+					sessionId: "s-failover",
+					eventType: "framework_failover_started",
+				}),
+			);
+		});
+
+		it("fails over when a blocked prompt reports provider usage exhaustion", async () => {
+			await coordinator.handleSessionEvent("s-1", "blocked", {
+				promptInfo: {
+					type: "unknown",
+					prompt:
+						"You've hit your usage limit. Visit settings/usage to purchase more credits or try again later.",
+				},
+				autoResponded: false,
+			});
+
+			const failedTask = coordinator.getTaskContext("s-1");
+			const replacementTask = coordinator.getTaskContext("s-failover");
+
+			expect(failedTask?.status).toBe("error");
+			expect(replacementTask?.agentType).toBe("codex");
+			expect(mockPty.stopSession).toHaveBeenCalledWith("s-1", true);
+			expect(mockTaskRegistry.appendEvent).toHaveBeenCalledWith(
+				expect.objectContaining({
+					threadId: "s-1",
+					sessionId: "s-1",
+					eventType: "framework_unavailable",
+				}),
+			);
+		});
+
+		it("keeps the task errored when no fallback framework is available", async () => {
+			mockPty.getFrameworkState.mockResolvedValue({
+				preferred: {
+					id: "claude",
+					reason: "claude unavailable",
+				},
+				frameworks: [
+					{
+						id: "claude",
+						label: "Claude Code",
+						installed: true,
+						authReady: true,
+						subscriptionReady: true,
+						temporarilyDisabled: true,
+						recommended: false,
+						reason: "disabled",
+					},
+				],
+			});
+
+			await coordinator.handleSessionEvent("s-1", "error", {
+				message: "quota exceeded",
+			});
+
+			expect(coordinator.getTaskContext("s-1")?.status).toBe("error");
+			expect(coordinator.getTaskContext("s-failover")).toBeUndefined();
+			expect(mockPty.spawnSession).not.toHaveBeenCalled();
 		});
 
 		it("handles stopped by updating status", async () => {

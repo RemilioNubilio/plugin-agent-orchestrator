@@ -438,6 +438,12 @@ export async function handleMultiAgent(
           originalTask: specTask,
           workdir,
           repo,
+          metadata:
+            session.metadata &&
+            typeof session.metadata === "object" &&
+            !Array.isArray(session.metadata)
+              ? (session.metadata as Record<string, unknown>)
+              : undefined,
         });
       }
 

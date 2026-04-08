@@ -83,7 +83,28 @@ const frameworkCooldowns = new Map<
   { until: number; reason: string }
 >();
 const TASK_AGENT_USAGE_EXHAUSTED_RE =
-  /\b(insufficient(?:[_\s]+(?:credits?|quota))|insufficient_quota|out of credits|credit balance|usage (?:has )?(?:reached|exceeded)|quota exceeded|payment required|status(?:code)?[:\s]*402)\b/i;
+  /\b(insufficient(?:[_\s]+(?:credits?|quota))|insufficient_quota|out of credits|credit balance|usage (?:has )?(?:reached|exceeded)|(?:you(?:'ve| have)? hit your usage limits?)|usage[-\s]?limits?|quota exceeded|payment required|status(?:code)?[:\s]*402)\b/i;
+
+function normalizePreflightAdapterId(
+  value: string | undefined,
+): SupportedTaskAgentAdapter | null {
+  const normalized = value?.trim().toLowerCase();
+  switch (normalized) {
+    case "claude":
+    case "claude code":
+      return "claude";
+    case "codex":
+    case "openai codex":
+      return "codex";
+    case "gemini":
+    case "gemini cli":
+      return "gemini";
+    case "aider":
+      return "aider";
+    default:
+      return null;
+  }
+}
 
 function safeGetSetting(
   runtime: IAgentRuntime | undefined,
@@ -250,13 +271,9 @@ async function computeTaskAgentFrameworkState(
     try {
       const results = await probe.checkAvailableAgents(STANDARD_FRAMEWORKS);
       for (const result of results) {
-        if (
-          result.adapter === "claude" ||
-          result.adapter === "codex" ||
-          result.adapter === "gemini" ||
-          result.adapter === "aider"
-        ) {
-          preflightByAdapter.set(result.adapter, result);
+        const adapterId = normalizePreflightAdapterId(result.adapter);
+        if (adapterId) {
+          preflightByAdapter.set(adapterId, result);
         }
       }
     } catch {

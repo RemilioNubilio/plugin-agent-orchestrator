@@ -115,6 +115,46 @@ describe("task-agent framework preferences", () => {
     ).toBe(true);
   });
 
+  it("normalizes human-readable preflight adapter labels from live CLI probes", async () => {
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        agents: { defaults: { subscriptionProvider: "anthropic-subscription" } },
+      }),
+    );
+    fs.mkdirSync(path.join(tempHome, ".claude"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tempHome, ".claude", ".credentials.json"),
+      JSON.stringify({ accessToken: "claude-token" }),
+    );
+    fs.mkdirSync(path.join(tempHome, ".codex"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tempHome, ".codex", "auth.json"),
+      JSON.stringify({ OPENAI_API_KEY: "codex-token" }),
+    );
+
+    const state = await getTaskAgentFrameworkState(
+      createRuntime() as never,
+      {
+        checkAvailableAgents: async () =>
+          [
+            { adapter: "Claude Code", installed: true },
+            { adapter: "OpenAI Codex", installed: true },
+          ] as never,
+      },
+    );
+
+    expect(
+      state.frameworks.find((framework) => framework.id === "claude")
+        ?.installed,
+    ).toBe(true);
+    expect(
+      state.frameworks.find((framework) => framework.id === "codex")
+        ?.installed,
+    ).toBe(true);
+    expect(state.preferred.id).toBe("claude");
+  });
+
   it("prefers Codex when the OpenAI subscription is configured and auth is present", async () => {
     fs.writeFileSync(
       configPath,
@@ -203,6 +243,16 @@ describe("task-agent framework preferences", () => {
     expect(isUsageExhaustedTaskAgentError("AI_APICallError: insufficient credits")).toBe(
       true,
     );
+    expect(
+      isUsageExhaustedTaskAgentError(
+        "You've hit your usage limit. Visit settings/usage to purchase more credits.",
+      ),
+    ).toBe(true);
+    expect(
+      isUsageExhaustedTaskAgentError(
+        "The codex agent session has stalled (usage-limit/spinner) and you hit usage limits.",
+      ),
+    ).toBe(true);
     expect(isUsageExhaustedTaskAgentError("status code: 402 payment required")).toBe(
       true,
     );

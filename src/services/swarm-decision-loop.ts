@@ -279,6 +279,17 @@ function inferRoutinePromptResponse(
   promptText: string,
   promptType?: string,
 ): { suggestedResponse: string; reasoning: string } | null {
+  if (
+    promptType === "project_select" &&
+    /project|workspace/i.test(promptText)
+  ) {
+    return {
+      suggestedResponse: "keys:enter",
+      reasoning:
+        "Accepted the current workspace so a routine project-selection prompt does not stall the task.",
+    };
+  }
+
   if (promptType && promptType !== "unknown") {
     return null;
   }
@@ -1187,6 +1198,14 @@ export async function handleTurnComplete(
       },
     });
 
+    if (ctx.pendingBlocked.has(sessionId)) {
+      ctx.log(
+        `Deferring turn assessment execution for "${taskCtx.label}" because a newer blocked prompt arrived during assessment`,
+      );
+      ctx.pendingTurnComplete.set(sessionId, data);
+      return;
+    }
+
     // Send chat message for small-LLM decisions only.
     // When Milaidy's pipeline handled it, she already spoke via WS broadcast.
     if (!decisionFromPipeline) {
@@ -1209,8 +1228,8 @@ export async function handleTurnComplete(
     await executeDecision(ctx, sessionId, decision);
   } finally {
     ctx.inFlightDecisions.delete(sessionId);
-    await drainPendingTurnComplete(ctx, sessionId);
     await drainPendingBlocked(ctx, sessionId);
+    await drainPendingTurnComplete(ctx, sessionId);
   }
 }
 
@@ -1393,8 +1412,8 @@ export async function handleAutonomousDecision(
     await executeDecision(ctx, sessionId, decision);
   } finally {
     ctx.inFlightDecisions.delete(sessionId);
-    await drainPendingTurnComplete(ctx, sessionId);
     await drainPendingBlocked(ctx, sessionId);
+    await drainPendingTurnComplete(ctx, sessionId);
   }
 }
 

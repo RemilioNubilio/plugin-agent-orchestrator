@@ -26,8 +26,11 @@ import { extractDevServerUrl } from "./ansi-utils.js";
 import { SwarmHistory } from "./swarm-history.js";
 import {
 	isUsageExhaustedTaskAgentError,
+	type TaskAgentFrameworkAvailability,
+	type TaskAgentFrameworkId,
 	markTaskAgentFrameworkHealthy,
 	markTaskAgentFrameworkUnavailable,
+	type SupportedTaskAgentAdapter,
 } from "./task-agent-frameworks.js";
 import { deriveTaskAcceptanceCriteria } from "./task-acceptance.js";
 import { inferTaskThreadKind } from "./task-kind.js";
@@ -240,6 +243,19 @@ const PAUSE_TIMEOUT_MS = 30_000;
 const MAX_PRE_BRIDGE_BUFFER = 100;
 /** Grace window where a late task_complete can recover a recently-stopped task. */
 const STOPPED_RECOVERY_WINDOW_MS = 90_000;
+const FAILOVER_OUTPUT_MAX_CHARS = 4_000;
+
+function inferProviderSource(
+	framework: TaskAgentFrameworkAvailability,
+): string | null {
+	if (framework.subscriptionReady) {
+		return "subscription";
+	}
+	if (framework.id === "pi") {
+		return framework.installed ? "local-cli" : null;
+	}
+	return framework.authReady ? "credentials" : null;
+}
 
 // ─── Service ───
 
@@ -741,12 +757,14 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 	async registerTask(
 		sessionId: string,
 		context: {
-			threadId: string;
+			threadId?: string;
 			agentType: CodingAgentType;
 			label: string;
 			originalTask: string;
 			workdir: string;
 			repo?: string;
+			providerSource?: string | null;
+			metadata?: Record<string, unknown>;
 		},
 	): Promise<void> {
 		const threadId = context.threadId?.trim() || sessionId;
@@ -827,6 +845,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 						threadId: taskCtx.threadId,
 						sessionId,
 						framework: context.agentType,
+						providerSource: context.providerSource,
 						label: context.label,
 						originalTask: context.originalTask,
 						workdir: context.workdir,
@@ -839,7 +858,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 						idleCheckCount: taskCtx.idleCheckCount,
 						taskDelivered: false,
 						lastSeenDecisionIndex: 0,
-						metadata: {},
+						metadata: context.metadata ?? {},
 					}),
 						this.taskRegistry.appendEvent({
 						threadId,
@@ -1078,6 +1097,240 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 			lastInputSentAt: taskCtx.lastInputSentAt,
 			stoppedAt: taskCtx.stoppedAt,
 		});
+	}
+
+	private isAutomaticFailoverFramework(
+		agentType: CodingAgentType,
+	): agentType is SupportedTaskAgentAdapter {
+		return (
+			agentType === "claude" ||
+			agentType === "codex" ||
+			agentType === "gemini" ||
+			agentType === "aider"
+		);
+	}
+
+	private getFailoverCandidates(
+		frameworks: TaskAgentFrameworkAvailability[],
+		failedFramework: SupportedTaskAgentAdapter,
+		preferredFrameworkId: TaskAgentFrameworkId,
+	): TaskAgentFrameworkAvailability[] {
+		const preferred = frameworks.find(
+			(framework) => framework.id === preferredFrameworkId,
+		);
+		const remainder = frameworks.filter(
+			(framework) => framework.id !== preferredFrameworkId,
+		);
+		return [preferred, ...remainder].filter(
+			(framework): framework is TaskAgentFrameworkAvailability =>
+				Boolean(
+					framework &&
+						framework.id !== failedFramework &&
+						framework.installed &&
+						framework.authReady &&
+						!framework.temporarilyDisabled,
+				),
+		);
+	}
+
+	private formatFailoverPrompt(
+		taskCtx: TaskContext,
+		failedFramework: SupportedTaskAgentAdapter,
+		reason: string,
+		recentOutput: string,
+	): string {
+		const trimmedOutput = recentOutput.trim();
+		const clippedOutput =
+			trimmedOutput.length > FAILOVER_OUTPUT_MAX_CHARS
+				? trimmedOutput.slice(-FAILOVER_OUTPUT_MAX_CHARS)
+				: trimmedOutput;
+		const recentDecisions = taskCtx.decisions
+			.slice(-5)
+			.map(
+				(decision, index) =>
+					`${index + 1}. ${decision.event}: ${decision.reasoning}${decision.response ? ` (response: ${decision.response})` : ""}`,
+			)
+			.join("\n");
+		return [
+			`Continue an in-progress task after the previous ${failedFramework} session became unavailable because of a quota or credit failure.`,
+			"",
+			"Original task:",
+			taskCtx.originalTask,
+			"",
+			`Failure reason: ${reason}`,
+			`Workspace: ${taskCtx.workdir}`,
+			"",
+			recentDecisions
+				? `Recent coordinator decisions:\n${recentDecisions}\n`
+				: "",
+			clippedOutput
+				? `Recent terminal output from the failed session:\n${clippedOutput}\n`
+				: "",
+			"Use the existing workspace state instead of starting from scratch. Inspect the files, continue the task, run the needed validation, and then report what changed and how you verified it.",
+		]
+			.filter(Boolean)
+			.join("\n");
+	}
+
+	private async handleFrameworkDepletion(
+		taskCtx: TaskContext,
+		sessionId: string,
+		reason: string,
+	): Promise<{
+		replacementSessionId: string;
+		replacementFramework: TaskAgentFrameworkId;
+		replacementLabel: string;
+	} | null> {
+		if (
+			!this.isAutomaticFailoverFramework(taskCtx.agentType) ||
+			!isUsageExhaustedTaskAgentError(reason)
+		) {
+			return null;
+		}
+
+		markTaskAgentFrameworkUnavailable(taskCtx.agentType, reason);
+		await this.taskRegistry.appendEvent({
+			threadId: taskCtx.threadId,
+			sessionId,
+			eventType: "framework_unavailable",
+			summary: `${taskCtx.agentType} temporarily disabled after provider depletion`,
+			data: {
+				framework: taskCtx.agentType,
+				reason,
+			},
+		});
+
+		let failoverResult:
+			| {
+					replacementSessionId: string;
+					replacementFramework: TaskAgentFrameworkId;
+					replacementLabel: string;
+			  }
+			| null = null;
+		try {
+			failoverResult = await this.attemptTaskFailover(taskCtx, reason);
+		} catch (failoverError) {
+			this.log(
+				`Automatic failover failed for "${taskCtx.label}": ${failoverError instanceof Error ? failoverError.message : String(failoverError)}`,
+			);
+		}
+
+		if (failoverResult) {
+			this.sendChatMessage(
+				`"${taskCtx.label}" ran into a ${taskCtx.agentType} quota/credit failure. Milady is continuing the same task on ${failoverResult.replacementFramework}.`,
+				"coding-agent",
+			);
+		} else {
+			this.sendChatMessage(
+				`"${taskCtx.label}" ran into a ${taskCtx.agentType} quota/credit failure. Milady will prefer another task-agent framework until ${taskCtx.agentType} is healthy again.`,
+				"coding-agent",
+			);
+		}
+
+		return failoverResult;
+	}
+
+	private async attemptTaskFailover(
+		taskCtx: TaskContext,
+		errorMsg: string,
+	): Promise<{
+		replacementSessionId: string;
+		replacementFramework: TaskAgentFrameworkId;
+		replacementLabel: string;
+	} | null> {
+		if (!this.ptyService || !this.isAutomaticFailoverFramework(taskCtx.agentType)) {
+			return null;
+		}
+
+		const frameworkState = await this.ptyService.getFrameworkState();
+		const candidates = this.getFailoverCandidates(
+			frameworkState.frameworks,
+			taskCtx.agentType,
+			frameworkState.preferred.id,
+		);
+		const nextFramework = candidates[0];
+		if (!nextFramework) {
+			return null;
+		}
+
+		const failedSession = this.ptyService.getSession(taskCtx.sessionId);
+		const priorMetadata =
+			failedSession?.metadata &&
+			typeof failedSession.metadata === "object" &&
+			!Array.isArray(failedSession.metadata)
+				? (failedSession.metadata as Record<string, unknown>)
+				: {};
+		const failoverOrdinal =
+			typeof priorMetadata.failoverOrdinal === "number"
+				? priorMetadata.failoverOrdinal + 1
+				: 1;
+		const priorOutput = await Promise.race([
+			this.ptyService.getSessionOutput(taskCtx.sessionId, 200),
+			new Promise<string>((resolve) => setTimeout(() => resolve(""), 5_000)),
+		]);
+		const replacementLabel = `${taskCtx.label} (${nextFramework.id} failover ${failoverOrdinal})`;
+		const replacementSession = await this.ptyService.spawnSession({
+			name:
+				failedSession?.name ??
+				`task-failover-${Date.now()}-${nextFramework.id}`,
+			agentType: nextFramework.id as CodingAgentType,
+			workdir: taskCtx.workdir,
+			initialTask: this.formatFailoverPrompt(
+				taskCtx,
+				taskCtx.agentType,
+				errorMsg,
+				priorOutput,
+			),
+			approvalPreset: this.ptyService.defaultApprovalPreset,
+			skipAdapterAutoResponse: true,
+			metadata: {
+				...priorMetadata,
+				threadId: taskCtx.threadId,
+				requestedType: nextFramework.id,
+				label: replacementLabel,
+				failoverOrdinal,
+				failoverFromFramework: taskCtx.agentType,
+				failoverFromSessionId: taskCtx.sessionId,
+				failoverReason: errorMsg,
+				failoverAt: Date.now(),
+			},
+		});
+
+		await this.registerTask(replacementSession.id, {
+			threadId: taskCtx.threadId,
+			agentType: nextFramework.id as CodingAgentType,
+			label: replacementLabel,
+			originalTask: taskCtx.originalTask,
+			workdir: taskCtx.workdir,
+			repo: taskCtx.repo,
+			providerSource: inferProviderSource(nextFramework),
+			metadata:
+				replacementSession.metadata &&
+				typeof replacementSession.metadata === "object" &&
+				!Array.isArray(replacementSession.metadata)
+					? (replacementSession.metadata as Record<string, unknown>)
+					: undefined,
+		});
+
+		await this.taskRegistry.appendEvent({
+			threadId: taskCtx.threadId,
+			sessionId: replacementSession.id,
+			eventType: "framework_failover_started",
+			summary: `Continuing "${taskCtx.label}" on ${nextFramework.label}`,
+			data: {
+				fromFramework: taskCtx.agentType,
+				fromSessionId: taskCtx.sessionId,
+				toFramework: nextFramework.id,
+				toSessionId: replacementSession.id,
+				reason: errorMsg,
+			},
+		});
+
+		return {
+			replacementSessionId: replacementSession.id,
+			replacementFramework: nextFramework.id,
+			replacementLabel,
+		};
 	}
 
 	async recordDecision(
@@ -1334,9 +1587,65 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 
 		// Route by event type
 		switch (event) {
-			case "blocked":
+			case "blocked": {
+				const blockedPrompt =
+					(data as {
+						promptInfo?: {
+							prompt?: string;
+							instructions?: string;
+						};
+					}).promptInfo?.prompt ??
+					(data as {
+						promptInfo?: {
+							prompt?: string;
+							instructions?: string;
+						};
+					}).promptInfo?.instructions ??
+					"";
+				if (
+					this.isAutomaticFailoverFramework(taskCtx.agentType) &&
+					isUsageExhaustedTaskAgentError(blockedPrompt)
+				) {
+					const failoverResult = await this.handleFrameworkDepletion(
+						taskCtx,
+						sessionId,
+						blockedPrompt,
+					);
+					taskCtx.status = "error";
+					taskCtx.stoppedAt = Date.now();
+					this.broadcast({
+						type: "error",
+						sessionId,
+						timestamp: Date.now(),
+						data: {
+							message: blockedPrompt,
+							source: "blocked_prompt",
+						},
+					});
+					await this.taskRegistry.appendEvent({
+						threadId: taskCtx.threadId,
+						sessionId,
+						eventType: "task_status_changed",
+						summary: `Task "${taskCtx.label}" errored`,
+						data: {
+							status: "error",
+							message: blockedPrompt,
+							source: "blocked_prompt",
+						},
+					});
+					this.ptyService?.stopSession(sessionId, true).catch((err) => {
+						this.log(
+							`Failed to stop exhausted session "${taskCtx.label}": ${err}`,
+						);
+					});
+					if (!failoverResult) {
+						checkAllTasksComplete(this);
+					}
+					break;
+				}
 				await handleBlocked(this, sessionId, taskCtx, data);
 				break;
+			}
 
 			case "task_complete": {
 				// Broadcast immediately for UI visibility, but coalesce the
@@ -1373,7 +1682,6 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 			}
 
 			case "error": {
-				taskCtx.status = "error";
 				this.broadcast({
 					type: "error",
 					sessionId,
@@ -1384,33 +1692,18 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 				// Send error message to chat UI
 				const errorMsg =
 					(data as { message?: string }).message ?? "unknown error";
-				if (
-					(taskCtx.agentType === "claude" ||
-						taskCtx.agentType === "codex" ||
-						taskCtx.agentType === "gemini" ||
-						taskCtx.agentType === "aider") &&
-					isUsageExhaustedTaskAgentError(errorMsg)
-				) {
-					markTaskAgentFrameworkUnavailable(taskCtx.agentType, errorMsg);
-					await this.taskRegistry.appendEvent({
-						threadId: taskCtx.threadId,
-						sessionId,
-						eventType: "framework_unavailable",
-						summary: `${taskCtx.agentType} temporarily disabled after provider depletion`,
-						data: {
-							framework: taskCtx.agentType,
-							reason: errorMsg,
-						},
-					});
+				const failoverResult = await this.handleFrameworkDepletion(
+					taskCtx,
+					sessionId,
+					errorMsg,
+				);
+				if (!failoverResult) {
 					this.sendChatMessage(
-						`"${taskCtx.label}" ran into a ${taskCtx.agentType} quota/credit failure. Milady will prefer another task-agent framework until ${taskCtx.agentType} is healthy again.`,
+						`"${taskCtx.label}" hit an error: ${errorMsg}`,
 						"coding-agent",
 					);
 				}
-				this.sendChatMessage(
-					`"${taskCtx.label}" hit an error: ${errorMsg}`,
-					"coding-agent",
-				);
+				taskCtx.status = "error";
 				await this.taskRegistry.appendEvent({
 					threadId: taskCtx.threadId,
 					sessionId,

@@ -222,6 +222,12 @@ export const sendToAgentAction: Action = {
               originalTask: trackedTask,
               workdir: session.workdir,
               ...(existingTask?.repo ? { repo: existingTask.repo } : {}),
+              metadata:
+                session.metadata &&
+                typeof session.metadata === "object" &&
+                !Array.isArray(session.metadata)
+                  ? (session.metadata as Record<string, unknown>)
+                  : undefined,
             });
           }
         }

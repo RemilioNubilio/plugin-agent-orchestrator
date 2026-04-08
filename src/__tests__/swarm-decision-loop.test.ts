@@ -7,7 +7,12 @@
 
 import { beforeEach, describe, expect, it, jest } from "bun:test";
 
-const { handleBlocked, handleTurnComplete, executeDecision } = await import(
+const {
+  POST_SEND_COOLDOWN_MS,
+  handleBlocked,
+  handleTurnComplete,
+  executeDecision,
+} = await import(
   "../services/swarm-decision-loop.js"
 );
 
@@ -248,6 +253,27 @@ describe("handleBlocked", () => {
     expect(taskCtx.decisions[0].decision).toBe("auto_resolved");
   });
 
+  it("accepts the current workspace for routine project selection prompts", async () => {
+    const ctx = createMockCtx();
+    const taskCtx = createTaskCtx({ agentType: "codex" });
+    ctx.tasks.set("s-1", taskCtx);
+
+    await handleBlocked(ctx as never, "s-1", taskCtx as never, {
+      promptInfo: {
+        prompt: "Project/workspace selection required",
+        type: "project_select",
+        canAutoRespond: false,
+      },
+      autoResponded: false,
+    });
+
+    expect(ctx.runtime.useModel).not.toHaveBeenCalled();
+    expect(ctx.ptyService.sendKeysToSession).toHaveBeenCalledWith("s-1", [
+      "enter",
+    ]);
+    expect(taskCtx.decisions[0].decision).toBe("auto_resolved");
+  });
+
   it("declines and redirects out-of-scope path access in autonomous mode", async () => {
     const ctx = createMockCtx();
     // LLM says "respond y" but path is out of scope
@@ -373,6 +399,54 @@ describe("handleBlocked", () => {
     expect(taskCtx.decisions.length).toBe(1);
     expect(taskCtx.decisions[0].decision).toBe("escalate");
     expect(ctx.runtime.useModel).not.toHaveBeenCalled();
+  });
+
+  it("replays buffered blocked prompts before buffered turn-complete events", async () => {
+    const ctx = createMockCtx();
+    const taskCtx = createTaskCtx({ agentType: "codex" });
+    ctx.tasks.set("s-1", taskCtx);
+
+    let seededBuffers = false;
+    ctx.runtime.useModel.mockImplementationOnce(async () => {
+      if (!seededBuffers) {
+        seededBuffers = true;
+        ctx.pendingBlocked.set("s-1", {
+          promptInfo: {
+            prompt:
+              "1. GPT-5 Mini ex. Cheaper, faster, but less capable. 2. Keep current model 3. Keep current model (never show again)",
+            type: "unknown",
+            canAutoRespond: false,
+          },
+          autoResponded: false,
+        });
+        ctx.pendingTurnComplete.set("s-1", {
+          response: "agent turn completed",
+        });
+      }
+      return '{"action":"respond","response":"continue task","reasoning":"Need more work"}';
+    });
+
+    await handleTurnComplete(ctx as never, "s-1", taskCtx as never, {
+      response: "initial turn output",
+    });
+
+    expect(ctx.ptyService.sendToSession.mock.calls[0]).toEqual(["s-1", "2"]);
+    expect(ctx.pendingTurnComplete.has("s-1")).toBe(true);
+
+    taskCtx.lastInputSentAt = Date.now() - POST_SEND_COOLDOWN_MS - 100;
+    const bufferedTurnComplete = ctx.pendingTurnComplete.get("s-1");
+    expect(bufferedTurnComplete).toBeDefined();
+    await handleTurnComplete(
+      ctx as never,
+      "s-1",
+      taskCtx as never,
+      bufferedTurnComplete,
+    );
+
+    expect(ctx.ptyService.sendToSession.mock.calls[1]).toEqual([
+      "s-1",
+      "y",
+    ]);
   });
 });
 
