@@ -291,6 +291,18 @@ export interface UpsertPendingDecisionInput {
 export interface ListTaskThreadsOptions {
   includeArchived?: boolean;
   status?: TaskThreadStatus;
+  statuses?: TaskThreadStatus[];
+  kind?: TaskThreadKind;
+  roomId?: string;
+  worldId?: string;
+  ownerUserId?: string;
+  createdAfter?: string;
+  createdBefore?: string;
+  updatedAfter?: string;
+  updatedBefore?: string;
+  latestActivityAfter?: number;
+  latestActivityBefore?: number;
+  hasActiveSession?: boolean;
   search?: string;
   limit?: number;
 }
@@ -390,6 +402,10 @@ function sqlBoolean(value: boolean): string {
 
 function sqlJson(value: unknown): string {
   return sqlQuote(JSON.stringify(value ?? null));
+}
+
+function sqlStringList(values: string[]): string {
+  return values.map((value) => sqlQuote(value)).join(", ");
 }
 
 function normalizeThreadStatus(value: unknown): TaskThreadStatus {
@@ -606,6 +622,76 @@ function buildSearchText(parts: Array<string | null | undefined>): string {
     .map((part) => (part ?? "").trim().toLowerCase())
     .filter(Boolean)
     .join(" ");
+}
+
+function buildThreadListWhereClauses(
+  options: ListTaskThreadsOptions,
+): string[] {
+  const clauses: string[] = [];
+  if (!options.includeArchived) {
+    clauses.push("thread.archived_at IS NULL");
+  }
+  if (options.status) {
+    clauses.push(`thread.status = ${sqlQuote(options.status)}`);
+  }
+  if (Array.isArray(options.statuses) && options.statuses.length > 0) {
+    const normalizedStatuses = options.statuses
+      .map((status) => normalizeThreadStatus(status))
+      .filter(Boolean);
+    if (normalizedStatuses.length > 0) {
+      clauses.push(`thread.status IN (${sqlStringList(normalizedStatuses)})`);
+    }
+  }
+  if (options.kind) {
+    clauses.push(`thread.kind = ${sqlQuote(options.kind)}`);
+  }
+  if (options.roomId) {
+    clauses.push(`thread.room_id = ${sqlQuote(options.roomId)}`);
+  }
+  if (options.worldId) {
+    clauses.push(`thread.world_id = ${sqlQuote(options.worldId)}`);
+  }
+  if (options.ownerUserId) {
+    clauses.push(`thread.owner_user_id = ${sqlQuote(options.ownerUserId)}`);
+  }
+  if (options.createdAfter) {
+    clauses.push(`thread.created_at >= ${sqlQuote(options.createdAfter)}`);
+  }
+  if (options.createdBefore) {
+    clauses.push(`thread.created_at <= ${sqlQuote(options.createdBefore)}`);
+  }
+  if (options.updatedAfter) {
+    clauses.push(`thread.updated_at >= ${sqlQuote(options.updatedAfter)}`);
+  }
+  if (options.updatedBefore) {
+    clauses.push(`thread.updated_at <= ${sqlQuote(options.updatedBefore)}`);
+  }
+  if (typeof options.latestActivityAfter === "number") {
+    clauses.push(
+      `COALESCE(latest.last_activity_at, 0) >= ${sqlInteger(options.latestActivityAfter)}`,
+    );
+  }
+  if (typeof options.latestActivityBefore === "number") {
+    clauses.push(
+      `COALESCE(latest.last_activity_at, 0) <= ${sqlInteger(options.latestActivityBefore)}`,
+    );
+  }
+  if (typeof options.hasActiveSession === "boolean") {
+    clauses.push(
+      options.hasActiveSession
+        ? "COALESCE(session_counts.active_session_count, 0) > 0"
+        : "COALESCE(session_counts.active_session_count, 0) = 0",
+    );
+  }
+  if (options.search?.trim()) {
+    const q = options.search
+      .trim()
+      .toLowerCase()
+      .replace(/[%_]/g, "\\$&");
+    clauses.push(`thread.search_text LIKE ${sqlQuote(`%${q}%`)}`);
+  }
+
+  return clauses;
 }
 
 export class TaskRegistry {
@@ -960,18 +1046,7 @@ export class TaskRegistry {
     options: ListTaskThreadsOptions = {},
   ): Promise<TaskThreadSummary[]> {
     await this.ensureSchema();
-    const clauses: string[] = [];
-    if (!options.includeArchived) {
-      clauses.push("thread.archived_at IS NULL");
-    }
-    if (options.status) {
-      clauses.push(`thread.status = ${sqlQuote(options.status)}`);
-    }
-    if (options.search?.trim()) {
-      const q = options.search.trim().toLowerCase();
-      clauses.push(`thread.search_text LIKE ${sqlQuote(`%${q}%`)}`);
-    }
-
+    const clauses = buildThreadListWhereClauses(options);
     const whereClause =
       clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
     const limitClause =
@@ -1030,6 +1105,48 @@ export class TaskRegistry {
     );
 
     return rows.map(parseThreadSummaryRow);
+  }
+
+  async countThreads(options: ListTaskThreadsOptions = {}): Promise<number> {
+    await this.ensureSchema();
+    const clauses = buildThreadListWhereClauses(options);
+    const whereClause =
+      clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+
+    const rows = await executeRawSql(
+      this.runtime,
+      `SELECT COUNT(*) AS total
+         FROM orchestrator_task_threads AS thread
+         LEFT JOIN (
+           SELECT
+             thread_id,
+             COUNT(*) AS session_count,
+             SUM(CASE WHEN status IN ('active', 'blocked', 'tool_running') THEN 1 ELSE 0 END) AS active_session_count
+           FROM orchestrator_task_sessions
+           GROUP BY thread_id
+         ) AS session_counts
+           ON session_counts.thread_id = thread.id
+         LEFT JOIN (
+           SELECT latest_session.thread_id,
+                  latest_session.session_id,
+                  latest_session.label,
+                  latest_session.workdir,
+                  latest_session.repo,
+                  latest_session.last_activity_at
+             FROM orchestrator_task_sessions AS latest_session
+             INNER JOIN (
+               SELECT thread_id, MAX(last_activity_at) AS max_last_activity_at
+                 FROM orchestrator_task_sessions
+                GROUP BY thread_id
+             ) AS grouped
+               ON grouped.thread_id = latest_session.thread_id
+              AND grouped.max_last_activity_at = latest_session.last_activity_at
+         ) AS latest
+           ON latest.thread_id = thread.id
+         ${whereClause}`,
+    );
+
+    return toNumber(rows[0]?.total, 0);
   }
 
   async getThreadSummary(threadId: string): Promise<TaskThreadSummary | null> {

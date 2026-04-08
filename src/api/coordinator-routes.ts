@@ -12,7 +12,10 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { SwarmCoordinator } from "../services/swarm-coordinator.js";
-import type { TaskThreadStatus } from "../services/task-registry.js";
+import type {
+  TaskThreadKind,
+  TaskThreadStatus,
+} from "../services/task-registry.js";
 import { getTaskAgentFrameworkState } from "../services/task-agent-frameworks.js";
 import type { RouteContext } from "./routes.js";
 import { parseBody, sendError, sendJson } from "./routes.js";
@@ -167,6 +170,39 @@ export async function handleCoordinatorRoutes(
     const url = new URL(req.url ?? pathname, "http://localhost");
     const includeArchived = url.searchParams.get("includeArchived") === "true";
     const status = url.searchParams.get("status") ?? undefined;
+    const statusesRaw = url.searchParams.get("statuses");
+    const statuses = statusesRaw
+      ?.split(",")
+      .map((value) => value.trim())
+      .filter(Boolean) as TaskThreadStatus[] | undefined;
+    const kind = (url.searchParams.get("kind") ?? undefined) as
+      | TaskThreadKind
+      | undefined;
+    const roomId = url.searchParams.get("roomId") ?? undefined;
+    const worldId = url.searchParams.get("worldId") ?? undefined;
+    const ownerUserId = url.searchParams.get("ownerUserId") ?? undefined;
+    const createdAfter = url.searchParams.get("createdAfter") ?? undefined;
+    const createdBefore = url.searchParams.get("createdBefore") ?? undefined;
+    const updatedAfter = url.searchParams.get("updatedAfter") ?? undefined;
+    const updatedBefore = url.searchParams.get("updatedBefore") ?? undefined;
+    const latestActivityAfterRaw =
+      url.searchParams.get("latestActivityAfter");
+    const latestActivityBeforeRaw =
+      url.searchParams.get("latestActivityBefore");
+    const latestActivityAfter =
+      latestActivityAfterRaw && Number.isFinite(Number(latestActivityAfterRaw))
+        ? Number(latestActivityAfterRaw)
+        : undefined;
+    const latestActivityBefore =
+      latestActivityBeforeRaw &&
+      Number.isFinite(Number(latestActivityBeforeRaw))
+        ? Number(latestActivityBeforeRaw)
+        : undefined;
+    const hasActiveSessionRaw = url.searchParams.get("hasActiveSession");
+    const hasActiveSession =
+      hasActiveSessionRaw === null
+        ? undefined
+        : hasActiveSessionRaw === "true";
     const search = url.searchParams.get("search") ?? undefined;
     const limitRaw = url.searchParams.get("limit");
     const limit =
@@ -175,6 +211,18 @@ export async function handleCoordinatorRoutes(
     const threads = await coordinator.listTaskThreads({
       includeArchived,
       status: (status as TaskThreadStatus | null) ?? undefined,
+      statuses,
+      kind,
+      roomId,
+      worldId,
+      ownerUserId,
+      createdAfter,
+      createdBefore,
+      updatedAfter,
+      updatedBefore,
+      latestActivityAfter,
+      latestActivityBefore,
+      hasActiveSession,
       search,
       limit,
     });

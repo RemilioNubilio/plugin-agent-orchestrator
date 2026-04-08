@@ -1055,6 +1055,18 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 	async listTaskThreads(options?: {
 		includeArchived?: boolean;
 		status?: TaskThreadStatus;
+		statuses?: TaskThreadStatus[];
+		kind?: import("./task-registry.js").TaskThreadKind;
+		roomId?: string;
+		worldId?: string;
+		ownerUserId?: string;
+		createdAfter?: string;
+		createdBefore?: string;
+		updatedAfter?: string;
+		updatedBefore?: string;
+		latestActivityAfter?: number;
+		latestActivityBefore?: number;
+		hasActiveSession?: boolean;
 		search?: string;
 		limit?: number;
 	}): Promise<TaskThreadSummary[]> {
