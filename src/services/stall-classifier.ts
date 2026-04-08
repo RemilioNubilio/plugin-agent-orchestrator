@@ -36,7 +36,93 @@ export interface StallClassifierContext {
   metricsTracker: AgentMetricsTracker;
   /** Write debug snapshots to ~/.milady/debug/ on stall (default: false) */
   debugSnapshots?: boolean;
+  /** Most recent text input sent into the session, used to ignore echoed prompts. */
+  lastSentInput?: string;
   log: (msg: string) => void;
+}
+
+const STATUS_NOISE_LINE =
+  /messages to be submitted after next tool call|working \(\d+s .*esc to interrupt\)|\b\d+% left\b|context left|use \/skills to list available skills/i;
+const STATUS_PATH_LINE = /(\/private\/|\/var\/folders\/|\/Users\/|\/tmp\/)/;
+const SPINNER_FRAGMENT_TOKEN =
+  /^(?:w|wo|wor|work|worki|workin|working|orking|rking|king|ing|ng|g|\d+|[•·])$/i;
+
+function normalizeForComparison(value: string): string {
+  return stripAnsi(value).replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function looksLikeSpinnerFragments(line: string): boolean {
+  const tokens = line
+    .replace(/[^\w/%@.:\-/ ]+/g, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+  if (tokens.length === 0) return false;
+  const fragmentTokens = tokens.filter((token) => SPINNER_FRAGMENT_TOKEN.test(token));
+  return fragmentTokens.length >= 4 && fragmentTokens.length >= Math.ceil(tokens.length * 0.6);
+}
+
+function isStatusNoiseLine(line: string): boolean {
+  const compact = line.replace(/\s+/g, " ").trim();
+  if (!compact) return true;
+  if (compact.startsWith("› ")) return true;
+  if (STATUS_NOISE_LINE.test(compact)) return true;
+  if (STATUS_PATH_LINE.test(compact) && /\b\d+% left\b/i.test(compact)) return true;
+  if (STATUS_PATH_LINE.test(compact) && looksLikeSpinnerFragments(compact)) return true;
+  return false;
+}
+
+function sanitizeOutputForClassification(
+  output: string,
+  lastSentInput?: string,
+): {
+  sanitized: string;
+  removedEchoLines: number;
+  removedStatusLines: number;
+} {
+  const normalizedInput = lastSentInput
+    ? normalizeForComparison(lastSentInput)
+    : "";
+  let removedEchoLines = 0;
+  let removedStatusLines = 0;
+  const sanitized = stripAnsi(output)
+    .split("\n")
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter((line) => {
+      if (!line) return false;
+      const normalizedLine = line.toLowerCase();
+      if (
+        normalizedInput &&
+        normalizedLine.length >= 12 &&
+        normalizedInput.includes(normalizedLine)
+      ) {
+        removedEchoLines += 1;
+        return false;
+      }
+      if (isStatusNoiseLine(line)) {
+        removedStatusLines += 1;
+        return false;
+      }
+      return true;
+    })
+    .join("\n")
+    .trim();
+  return { sanitized, removedEchoLines, removedStatusLines };
+}
+
+function promptLooksLikeFalseBlockedNoise(
+  prompt: string | undefined,
+  lastSentInput?: string,
+): boolean {
+  if (!prompt) return false;
+  const normalizedPrompt = normalizeForComparison(prompt);
+  if (!normalizedPrompt) return false;
+  if (lastSentInput) {
+    const normalizedInput = normalizeForComparison(lastSentInput);
+    if (normalizedPrompt.length >= 12 && normalizedInput.includes(normalizedPrompt)) {
+      return true;
+    }
+  }
+  return isStatusNoiseLine(prompt) || looksLikeSpinnerFragments(prompt);
 }
 
 /**
@@ -73,7 +159,9 @@ export function buildStallClassificationPrompt(
     `"computer_tool", "screenshot", "navigate", tool execution output. ` +
     `The agent is actively working but the terminal may be quiet.\n\n` +
     `IMPORTANT: If you see BOTH completed work output AND an idle prompt (❯), choose "task_complete". ` +
-    `Only choose "waiting_for_input" if the agent is clearly asking a question mid-task.\n\n` +
+    `Only choose "waiting_for_input" if the agent is clearly asking a question mid-task. ` +
+    `Ignore echoed user input, copied prior transcripts, spinner fragments, and status rows like ` +
+    `"Working (12s • esc to interrupt)" or "97% left" — those mean the agent is still working, not blocked.\n\n` +
     `If "waiting_for_input", also provide:\n` +
     `- "prompt": the text of what it's asking\n` +
     `- "suggestedResponse": what to type/send. Use "keys:enter" for TUI menu confirmation, ` +
@@ -179,10 +267,27 @@ export async function classifyStallOutput(
     }
   }
 
+  const {
+    sanitized: sanitizedOutput,
+    removedEchoLines,
+    removedStatusLines,
+  } = sanitizeOutputForClassification(effectiveOutput, ctx.lastSentInput);
+  if (removedEchoLines > 0 || removedStatusLines > 0) {
+    log(
+      `Sanitized stall output for ${sessionId}: removed ${removedEchoLines} echoed lines and ${removedStatusLines} status lines`,
+    );
+  }
+  if (!sanitizedOutput && removedEchoLines + removedStatusLines > 0) {
+    log(
+      `Stall classification short-circuit for ${sessionId}: only echoed input / status noise remained`,
+    );
+    return { state: "still_working" };
+  }
+
   const systemPrompt = buildStallClassificationPrompt(
     agentType,
     sessionId,
-    effectiveOutput,
+    sanitizedOutput || effectiveOutput,
   );
 
   // Dump debug snapshot for offline analysis (opt-in via PTYServiceConfig.debug)
@@ -236,6 +341,15 @@ export async function classifyStallOutput(
       prompt: parsed.prompt,
       suggestedResponse: parsed.suggestedResponse,
     };
+    if (
+      classification.state === "waiting_for_input" &&
+      promptLooksLikeFalseBlockedNoise(classification.prompt, ctx.lastSentInput)
+    ) {
+      log(
+        `Stall classification override for ${sessionId}: prompt looked like echoed input / status noise`,
+      );
+      return { state: "still_working" };
+    }
     log(
       `Stall classification for ${sessionId}: ${classification.state}${classification.suggestedResponse ? ` → "${classification.suggestedResponse}"` : ""}`,
     );
@@ -365,10 +479,27 @@ export async function classifyAndDecideForCoordinator(
     }
   }
 
+  const {
+    sanitized: sanitizedOutput,
+    removedEchoLines,
+    removedStatusLines,
+  } = sanitizeOutputForClassification(effectiveOutput, ctx.lastSentInput);
+  if (removedEchoLines > 0 || removedStatusLines > 0) {
+    log(
+      `Sanitized combined stall output for ${sessionId}: removed ${removedEchoLines} echoed lines and ${removedStatusLines} status lines`,
+    );
+  }
+  if (!sanitizedOutput && removedEchoLines + removedStatusLines > 0) {
+    log(
+      `Combined classify+decide short-circuit for ${sessionId}: only echoed input / status noise remained`,
+    );
+    return { state: "still_working" };
+  }
+
   const systemPrompt = buildCombinedClassifyDecidePrompt(
     agentType,
     sessionId,
-    effectiveOutput,
+    sanitizedOutput || effectiveOutput,
     taskContext,
     decisionHistory,
   );
@@ -444,6 +575,15 @@ export async function classifyAndDecideForCoordinator(
       prompt: parsed.prompt,
       suggestedResponse: parsed.suggestedResponse,
     };
+    if (
+      classification.state === "waiting_for_input" &&
+      promptLooksLikeFalseBlockedNoise(classification.prompt, ctx.lastSentInput)
+    ) {
+      log(
+        `Combined classify+decide override for ${sessionId}: prompt looked like echoed input / status noise`,
+      );
+      return { state: "still_working" };
+    }
     log(
       `Combined classify+decide for ${sessionId}: ${classification.state}${classification.suggestedResponse ? ` → "${classification.suggestedResponse}"` : ""}`,
     );
