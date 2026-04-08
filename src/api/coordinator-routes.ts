@@ -12,6 +12,7 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { SwarmCoordinator } from "../services/swarm-coordinator.js";
+import { discoverTaskShareOptions } from "../services/task-share.js";
 import type {
   TaskThreadKind,
   TaskThreadStatus,
@@ -141,6 +142,8 @@ export async function handleCoordinatorRoutes(
         title: thread.title,
         kind: thread.kind,
         status: thread.status,
+        scenarioId: thread.scenarioId,
+        batchId: thread.batchId,
         originalRequest: thread.originalRequest,
         summary: thread.summary,
         sessionCount: thread.sessionCount,
@@ -234,6 +237,70 @@ export async function handleCoordinatorRoutes(
     return true;
   }
 
+  if (method === "GET" && subPath === "/threads/count") {
+    const url = new URL(req.url ?? pathname, "http://localhost");
+    const includeArchived = url.searchParams.get("includeArchived") === "true";
+    const status = url.searchParams.get("status") ?? undefined;
+    const statusesRaw = url.searchParams.get("statuses");
+    const statuses = statusesRaw
+      ?.split(",")
+      .map((value) => value.trim())
+      .filter(Boolean) as TaskThreadStatus[] | undefined;
+    const kind = (url.searchParams.get("kind") ?? undefined) as
+      | TaskThreadKind
+      | undefined;
+    const roomId = url.searchParams.get("roomId") ?? undefined;
+    const worldId = url.searchParams.get("worldId") ?? undefined;
+    const ownerUserId = url.searchParams.get("ownerUserId") ?? undefined;
+    const scenarioId = url.searchParams.get("scenarioId") ?? undefined;
+    const batchId = url.searchParams.get("batchId") ?? undefined;
+    const createdAfter = url.searchParams.get("createdAfter") ?? undefined;
+    const createdBefore = url.searchParams.get("createdBefore") ?? undefined;
+    const updatedAfter = url.searchParams.get("updatedAfter") ?? undefined;
+    const updatedBefore = url.searchParams.get("updatedBefore") ?? undefined;
+    const latestActivityAfterRaw =
+      url.searchParams.get("latestActivityAfter");
+    const latestActivityBeforeRaw =
+      url.searchParams.get("latestActivityBefore");
+    const latestActivityAfter =
+      latestActivityAfterRaw && Number.isFinite(Number(latestActivityAfterRaw))
+        ? Number(latestActivityAfterRaw)
+        : undefined;
+    const latestActivityBefore =
+      latestActivityBeforeRaw &&
+      Number.isFinite(Number(latestActivityBeforeRaw))
+        ? Number(latestActivityBeforeRaw)
+        : undefined;
+    const hasActiveSessionRaw = url.searchParams.get("hasActiveSession");
+    const hasActiveSession =
+      hasActiveSessionRaw === null
+        ? undefined
+        : hasActiveSessionRaw === "true";
+    const search = url.searchParams.get("search") ?? undefined;
+
+    const total = await coordinator.countTaskThreads({
+      includeArchived,
+      status: (status as TaskThreadStatus | null) ?? undefined,
+      statuses,
+      kind,
+      roomId,
+      worldId,
+      ownerUserId,
+      scenarioId,
+      batchId,
+      createdAfter,
+      createdBefore,
+      updatedAfter,
+      updatedBefore,
+      latestActivityAfter,
+      latestActivityBefore,
+      hasActiveSession,
+      search,
+    });
+    sendJson(res, { total });
+    return true;
+  }
+
   // GET /api/coding-agents/coordinator/threads/:threadId
   const threadMatch = subPath.match(/^\/threads\/([^/]+)$/);
   if (method === "GET" && threadMatch) {
@@ -243,6 +310,17 @@ export async function handleCoordinatorRoutes(
       return true;
     }
     sendJson(res, thread as unknown as JsonValue);
+    return true;
+  }
+
+  const shareMatch = subPath.match(/^\/threads\/([^/]+)\/share$/);
+  if (method === "GET" && shareMatch) {
+    const share = await discoverTaskShareOptions(coordinator, shareMatch[1]);
+    if (!share) {
+      sendError(res, "Task thread not found", 404);
+      return true;
+    }
+    sendJson(res, share as unknown as JsonValue);
     return true;
   }
 
@@ -259,6 +337,61 @@ export async function handleCoordinatorRoutes(
   if (method === "POST" && reopenMatch) {
     await coordinator.reopenTaskThread(reopenMatch[1]);
     sendJson(res, { success: true, threadId: reopenMatch[1], status: "open" });
+    return true;
+  }
+
+  const controlMatch = subPath.match(/^\/threads\/([^/]+)\/control$/);
+  if (method === "POST" && controlMatch) {
+    try {
+      const body = await parseBody(req);
+      const action = typeof body.action === "string" ? body.action.trim() : "";
+      const note = typeof body.note === "string" ? body.note : undefined;
+      const instruction =
+        typeof body.instruction === "string" ? body.instruction : undefined;
+      const agentType =
+        typeof body.agentType === "string" ? body.agentType : undefined;
+
+      if (action === "pause") {
+        const result = await coordinator.pauseTaskThread(controlMatch[1], note);
+        sendJson(res, { success: true, action, ...result });
+        return true;
+      }
+      if (action === "stop") {
+        const result = await coordinator.stopTaskThread(controlMatch[1], note);
+        sendJson(res, { success: true, action, ...result });
+        return true;
+      }
+      if (action === "resume") {
+        const result = await coordinator.resumeTaskThread(
+          controlMatch[1],
+          instruction,
+          agentType,
+        );
+        sendJson(res, { success: true, action, ...result });
+        return true;
+      }
+      if (action === "continue") {
+        const result = await coordinator.continueTaskThread(
+          controlMatch[1],
+          instruction ?? `Continue task thread ${controlMatch[1]}.`,
+          agentType,
+        );
+        sendJson(res, { success: true, action, ...result });
+        return true;
+      }
+
+      sendError(
+        res,
+        'Invalid control action. Must be "pause", "stop", "resume", or "continue".',
+        400,
+      );
+    } catch (error) {
+      sendError(
+        res,
+        error instanceof Error ? error.message : "Failed to control task thread",
+        500,
+      );
+    }
     return true;
   }
 
