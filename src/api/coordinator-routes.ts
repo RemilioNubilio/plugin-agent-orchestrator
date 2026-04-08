@@ -181,6 +181,8 @@ export async function handleCoordinatorRoutes(
     const roomId = url.searchParams.get("roomId") ?? undefined;
     const worldId = url.searchParams.get("worldId") ?? undefined;
     const ownerUserId = url.searchParams.get("ownerUserId") ?? undefined;
+    const scenarioId = url.searchParams.get("scenarioId") ?? undefined;
+    const batchId = url.searchParams.get("batchId") ?? undefined;
     const createdAfter = url.searchParams.get("createdAfter") ?? undefined;
     const createdBefore = url.searchParams.get("createdBefore") ?? undefined;
     const updatedAfter = url.searchParams.get("updatedAfter") ?? undefined;
@@ -216,6 +218,8 @@ export async function handleCoordinatorRoutes(
       roomId,
       worldId,
       ownerUserId,
+      scenarioId,
+      batchId,
       createdAfter,
       createdBefore,
       updatedAfter,

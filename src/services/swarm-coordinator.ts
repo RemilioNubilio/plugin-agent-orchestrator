@@ -1060,6 +1060,8 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 		roomId?: string;
 		worldId?: string;
 		ownerUserId?: string;
+		scenarioId?: string;
+		batchId?: string;
 		createdAfter?: string;
 		createdBefore?: string;
 		updatedAfter?: string;

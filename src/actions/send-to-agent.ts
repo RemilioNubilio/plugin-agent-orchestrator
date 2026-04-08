@@ -19,6 +19,7 @@ import type {
 import { getCoordinator, type PTYService } from "../services/pty-service.js";
 import { requireTaskAgentAccess } from "../services/task-policy.js";
 import { normalizeAgentType } from "../services/pty-types.js";
+import { mergeTaskThreadEvalMetadata } from "./eval-metadata.js";
 
 export const sendToAgentAction: Action = {
   name: "SEND_TO_AGENT",
@@ -185,6 +186,11 @@ export const sendToAgentAction: Action = {
         if (trackedTask) {
           const coordinator = getCoordinator(runtime);
           const existingTask = coordinator?.getTaskContext(sessionId);
+          const evalMetadata = mergeTaskThreadEvalMetadata(message, {
+            source: "send-to-agent-action",
+            messageId: message.id,
+            sessionId,
+          });
           const taskThread =
             coordinator && !existingTask
               ? await coordinator.createTaskThread({
@@ -202,11 +208,9 @@ export const sendToAgentAction: Action = {
                     typeof (message as unknown as Record<string, unknown>).userId === "string"
                       ? ((message as unknown as Record<string, unknown>).userId as string)
                       : null,
-                  metadata: {
-                    source: "send-to-agent-action",
-                    messageId: message.id,
-                    sessionId,
-                  },
+                  scenarioId: evalMetadata.scenarioId,
+                  batchId: evalMetadata.batchId,
+                  metadata: evalMetadata.metadata,
                 })
               : null;
           if (coordinator) {

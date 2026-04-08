@@ -23,6 +23,7 @@ import {
   toPiCommand,
 } from "../services/pty-types.js";
 import { getTaskAgentFrameworkState } from "../services/task-agent-frameworks.js";
+import { extractEvalRunMetadata } from "../actions/eval-metadata.js";
 import type { RouteContext } from "./routes.js";
 import { parseBody, sendError, sendJson } from "./routes.js";
 
@@ -621,6 +622,9 @@ export async function handleAgentRoutes(
         typeof (metadata as Record<string, unknown>)?.threadId === "string"
           ? ((metadata as Record<string, unknown>).threadId as string)
           : null;
+      const evalRunMetadata = extractEvalRunMetadata(
+        metadata as Record<string, unknown>,
+      );
       const taskThread =
         coordinator && task && !requestedThreadId
           ? await coordinator.createTaskThread({
@@ -628,9 +632,17 @@ export async function handleAgentRoutes(
                 ((metadata as Record<string, unknown>)?.label as string | undefined) ??
                 `Task ${Date.now()}`,
               originalRequest: task as string,
+              scenarioId: evalRunMetadata.scenarioId,
+              batchId: evalRunMetadata.batchId,
               metadata: {
                 workdir: workdir ?? null,
                 source: "api-spawn",
+                ...(evalRunMetadata.scenarioId
+                  ? { scenarioId: evalRunMetadata.scenarioId }
+                  : {}),
+                ...(evalRunMetadata.batchId
+                  ? { batchId: evalRunMetadata.batchId }
+                  : {}),
               },
             })
           : requestedThreadId

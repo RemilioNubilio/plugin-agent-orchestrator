@@ -181,14 +181,20 @@ describe("sendToAgentAction", () => {
         "session-123",
         "Research the benchmark harness and write a summary",
       );
-      expect(mockRegisterTask).toHaveBeenCalledWith("session-123", {
-        threadId: "session-123",
-        agentType: "claude",
-        label: "existing-agent",
-        originalTask: "Research the benchmark harness and write a summary",
-        workdir: "/tmp/session-123",
-        repo: "https://github.com/example/repo",
-      });
+      expect(mockRegisterTask).toHaveBeenCalledWith(
+        "session-123",
+        expect.objectContaining({
+          threadId: "session-123",
+          agentType: "claude",
+          label: "existing-agent",
+          originalTask: "Research the benchmark harness and write a summary",
+          workdir: "/tmp/session-123",
+          repo: "https://github.com/example/repo",
+          metadata: expect.objectContaining({
+            label: "research-agent",
+          }),
+        }),
+      );
     });
 
     it("uses session from state if not specified", async () => {

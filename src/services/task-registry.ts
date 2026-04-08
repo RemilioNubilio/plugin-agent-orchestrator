@@ -62,6 +62,8 @@ export interface TaskThreadRecord {
   roomId: string | null;
   worldId: string | null;
   ownerUserId: string | null;
+  scenarioId: string | null;
+  batchId: string | null;
   title: string;
   kind: TaskThreadKind;
   status: TaskThreadStatus;
@@ -193,6 +195,8 @@ export interface CreateTaskThreadInput {
   roomId?: string | null;
   worldId?: string | null;
   ownerUserId?: string | null;
+  scenarioId?: string | null;
+  batchId?: string | null;
   summary?: string;
   acceptanceCriteria?: string[];
   currentPlan?: Record<string, unknown>;
@@ -296,6 +300,8 @@ export interface ListTaskThreadsOptions {
   roomId?: string;
   worldId?: string;
   ownerUserId?: string;
+  scenarioId?: string;
+  batchId?: string;
   createdAfter?: string;
   createdBefore?: string;
   updatedAfter?: string;
@@ -487,6 +493,8 @@ function parseThreadRow(row: Row): TaskThreadRecord {
     roomId: toNullableText(row.room_id),
     worldId: toNullableText(row.world_id),
     ownerUserId: toNullableText(row.owner_user_id),
+    scenarioId: toNullableText(row.scenario_id),
+    batchId: toNullableText(row.batch_id),
     title: toText(row.title),
     kind: (toText(row.kind, "coding") as TaskThreadKind),
     status: normalizeThreadStatus(row.status),
@@ -654,6 +662,12 @@ function buildThreadListWhereClauses(
   if (options.ownerUserId) {
     clauses.push(`thread.owner_user_id = ${sqlQuote(options.ownerUserId)}`);
   }
+  if (options.scenarioId) {
+    clauses.push(`thread.scenario_id = ${sqlQuote(options.scenarioId)}`);
+  }
+  if (options.batchId) {
+    clauses.push(`thread.batch_id = ${sqlQuote(options.batchId)}`);
+  }
   if (options.createdAfter) {
     clauses.push(`thread.created_at >= ${sqlQuote(options.createdAfter)}`);
   }
@@ -721,6 +735,8 @@ export class TaskRegistry {
         room_id TEXT,
         world_id TEXT,
         owner_user_id TEXT,
+        scenario_id TEXT,
+        batch_id TEXT,
         title TEXT NOT NULL,
         kind TEXT NOT NULL DEFAULT 'coding',
         status TEXT NOT NULL DEFAULT 'open',
@@ -846,8 +862,26 @@ export class TaskRegistry {
 
     await executeRawSql(
       this.runtime,
+      `ALTER TABLE orchestrator_task_threads ADD COLUMN scenario_id TEXT`,
+    ).catch(() => undefined);
+    await executeRawSql(
+      this.runtime,
+      `ALTER TABLE orchestrator_task_threads ADD COLUMN batch_id TEXT`,
+    ).catch(() => undefined);
+    await executeRawSql(
+      this.runtime,
       `CREATE INDEX IF NOT EXISTS idx_orchestrator_task_threads_status
          ON orchestrator_task_threads(status)`,
+    );
+    await executeRawSql(
+      this.runtime,
+      `CREATE INDEX IF NOT EXISTS idx_orchestrator_task_threads_scenario_id
+         ON orchestrator_task_threads(scenario_id)`,
+    );
+    await executeRawSql(
+      this.runtime,
+      `CREATE INDEX IF NOT EXISTS idx_orchestrator_task_threads_batch_id
+         ON orchestrator_task_threads(batch_id)`,
     );
     await executeRawSql(
       this.runtime,
@@ -947,17 +981,33 @@ export class TaskRegistry {
     const acceptanceCriteria = input.acceptanceCriteria ?? [];
     const currentPlan = input.currentPlan ?? {};
     const summary = input.summary?.trim() ?? "";
+    const scenarioId =
+      input.scenarioId ??
+      (typeof input.metadata?.scenarioId === "string"
+        ? input.metadata.scenarioId
+        : typeof input.metadata?.scenario_id === "string"
+          ? input.metadata.scenario_id
+          : null);
+    const batchId =
+      input.batchId ??
+      (typeof input.metadata?.batchId === "string"
+        ? input.metadata.batchId
+        : typeof input.metadata?.batch_id === "string"
+          ? input.metadata.batch_id
+          : null);
     const searchText = buildSearchText([
       input.title,
       input.originalRequest,
       summary,
+      scenarioId,
+      batchId,
       input.metadata ? JSON.stringify(input.metadata) : "",
     ]);
 
     await executeRawSql(
       this.runtime,
       `INSERT INTO orchestrator_task_threads (
-        id, agent_id, room_id, world_id, owner_user_id, title, kind, status,
+        id, agent_id, room_id, world_id, owner_user_id, scenario_id, batch_id, title, kind, status,
         original_request, summary, acceptance_criteria_json, current_plan_json,
         search_text, created_at, updated_at, closed_at, archived_at,
         last_user_turn_at, last_coordinator_turn_at, metadata_json
@@ -967,6 +1017,8 @@ export class TaskRegistry {
         ${sqlText(input.roomId ?? null)},
         ${sqlText(input.worldId ?? null)},
         ${sqlText(input.ownerUserId ?? null)},
+        ${sqlText(scenarioId ?? null)},
+        ${sqlText(batchId ?? null)},
         ${sqlQuote(input.title.trim())},
         ${sqlQuote(input.kind ?? "coding")},
         'open',

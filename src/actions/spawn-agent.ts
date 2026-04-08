@@ -32,6 +32,7 @@ import {
 import { readConfigEnvKey } from "../services/config-env.js";
 import type { CodingWorkspaceService } from "../services/workspace-service.js";
 import { buildAgentCredentials } from "./coding-task-helpers.js";
+import { mergeTaskThreadEvalMetadata } from "./eval-metadata.js";
 
 export const spawnAgentAction: Action = {
   name: "SPAWN_AGENT",
@@ -234,6 +235,11 @@ export const spawnAgentAction: Action = {
 
       // Check if coordinator is active — route blocking prompts through it
       const coordinator = getCoordinator(runtime);
+      const evalMetadata = mergeTaskThreadEvalMetadata(message, {
+        source: "spawn-agent-action",
+        messageId: message.id,
+        requestedType: rawAgentType,
+      });
       const taskThread =
         coordinator && task
           ? await coordinator.createTaskThread({
@@ -247,11 +253,9 @@ export const spawnAgentAction: Action = {
                 typeof (message as unknown as Record<string, unknown>).userId === "string"
                   ? ((message as unknown as Record<string, unknown>).userId as string)
                   : null,
-              metadata: {
-                source: "spawn-agent-action",
-                messageId: message.id,
-                requestedType: rawAgentType,
-              },
+              scenarioId: evalMetadata.scenarioId,
+              batchId: evalMetadata.batchId,
+              metadata: evalMetadata.metadata,
             })
           : null;
 

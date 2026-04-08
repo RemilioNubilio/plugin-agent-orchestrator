@@ -39,6 +39,7 @@ import {
   generateLabel,
   registerSessionEvents,
 } from "./coding-task-helpers.js";
+import { mergeTaskThreadEvalMetadata } from "./eval-metadata.js";
 
 /** Maximum number of agents that can be spawned in a single multi-agent call */
 const MAX_CONCURRENT_AGENTS = 8;
@@ -286,6 +287,11 @@ export async function handleMultiAgent(
 
   const coordinator = getCoordinator(runtime);
   const threadTitle = explicitLabel || generateLabel(repo, userRequest);
+  const evalMetadata = mergeTaskThreadEvalMetadata(message, {
+    repo: repo ?? null,
+    messageId: message.id,
+    requestedAgents: agentSpecs.length,
+  });
   const taskThread = coordinator
     ? await coordinator.createTaskThread({
         title: threadTitle,
@@ -296,6 +302,8 @@ export async function handleMultiAgent(
           ((message as unknown as Record<string, unknown>).userId as
             | string
             | undefined) ?? message.entityId,
+        scenarioId: evalMetadata.scenarioId,
+        batchId: evalMetadata.batchId,
         currentPlan:
           swarmContext && cleanSubtasks.length > 1
             ? {
@@ -303,11 +311,7 @@ export async function handleMultiAgent(
                 subtasks: cleanSubtasks,
               }
             : { subtasks: cleanSubtasks },
-        metadata: {
-          repo: repo ?? null,
-          messageId: message.id,
-          requestedAgents: agentSpecs.length,
-        },
+        metadata: evalMetadata.metadata,
       })
     : null;
 
