@@ -132,6 +132,20 @@ describe("PTYService", () => {
 
       expect(customService.defaultApprovalPreset).toBe("standard");
     });
+
+    it("pins the explicit default agent type in fixed mode", async () => {
+      const runtime = createMockRuntime({
+        PARALLAX_AGENT_SELECTION_STRATEGY: "fixed",
+        PARALLAX_DEFAULT_AGENT_TYPE: "gemini",
+      });
+      const customService = await PTYService.start(
+        runtime as unknown as IAgentRuntime,
+      );
+
+      expect(await customService.resolveAgentType({ task: "Fix the bug" })).toBe(
+        "gemini",
+      );
+    });
   });
 
   describe("session management", () => {

@@ -108,6 +108,7 @@ function createMockCtx(overrides: Record<string, unknown> = {}) {
         id: "verify-1",
       }),
       updateTaskVerifierJob: jest.fn().mockResolvedValue(undefined),
+      updateTaskNode: jest.fn().mockResolvedValue(undefined),
       recordTaskEvidence: jest.fn().mockResolvedValue(undefined),
       updateThreadSummary: jest.fn().mockResolvedValue(undefined),
     },
@@ -866,6 +867,194 @@ describe("checkAllTasksComplete", () => {
       mailbox: [],
       verifierJobs: [
         {
+          id: "verify-task-completion",
+          threadId: "thread-1",
+          nodeId: "node-1",
+          status: "passed",
+          verifierType: "task_completion",
+          title: "Validate task completion",
+          instructions: "Validate task completion",
+          config: {},
+          metadata: {},
+          createdAt: new Date().toISOString(),
+          startedAt: new Date().toISOString(),
+          completedAt: new Date().toISOString(),
+        },
+        {
+          id: "verify-acceptance",
+          threadId: "thread-1",
+          nodeId: "node-goal",
+          status: "pending",
+          verifierType: "acceptance_criteria",
+          title: "Verify acceptance",
+          instructions: "Check acceptance",
+          config: {},
+          metadata: {},
+          createdAt: new Date().toISOString(),
+          startedAt: null,
+          completedAt: null,
+        },
+      ],
+      evidence: [
+        {
+          id: "evidence-1",
+          threadId: "thread-1",
+          nodeId: "node-1",
+          sessionId: "s-1",
+          verifierJobId: "verify-task-completion",
+          evidenceType: "validation_summary",
+          title: "Validation passed",
+          summary: "Validation confirmed the task is complete.",
+          path: null,
+          uri: null,
+          content: {},
+          metadata: {},
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    };
+    ctx.taskRegistry.getThread.mockImplementation(async () => thread);
+    ctx.taskRegistry.updateTaskVerifierJob.mockImplementation(
+      async (jobId: string, patch: Record<string, unknown>) => {
+        const job = thread.verifierJobs.find((entry) => entry.id === jobId);
+        if (job) Object.assign(job, patch);
+      },
+    );
+    ctx.taskRegistry.updateTaskNode = jest.fn().mockResolvedValue(undefined);
+
+    checkAllTasksComplete(ctx as never);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    expect(ctx.taskRegistry.updateTaskVerifierJob).toHaveBeenCalledWith(
+      "verify-acceptance",
+      expect.objectContaining({ status: "running" }),
+    );
+    expect(ctx.taskRegistry.updateTaskVerifierJob).toHaveBeenCalledWith(
+      "verify-acceptance",
+      expect.objectContaining({ status: "passed" }),
+    );
+    expect(ctx.broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "swarm_complete" }),
+    );
+  });
+
+  it("raises attention instead of swarm_complete when acceptance evidence is missing", async () => {
+    const ctx = createMockCtx();
+    ctx.tasks.set(
+      "s-1",
+      createTaskCtx({ status: "completed", completionSummary: "Done" }),
+    );
+    const thread = {
+      id: "thread-1",
+      title: "test-agent",
+      kind: "coding",
+      status: "active",
+      originalRequest: "Fix bug",
+      summary: "",
+      sessionCount: 1,
+      activeSessionCount: 0,
+      latestSessionId: "s-1",
+      latestSessionLabel: "test-agent",
+      latestWorkdir: "/workspace/project",
+      latestRepo: null,
+      latestActivityAt: Date.now(),
+      decisionCount: 0,
+      nodeCount: 2,
+      readyNodeCount: 0,
+      completedNodeCount: 2,
+      verifierJobCount: 1,
+      evidenceCount: 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      acceptanceCriteria: ["Fix bug", "Run validation"],
+      sessions: [
+        {
+          threadId: "thread-1",
+          sessionId: "s-1",
+          framework: "claude",
+          providerSource: "credentials",
+          label: "test-agent",
+          originalTask: "Fix bug",
+          workdir: "/workspace/project",
+          repo: null,
+          status: "completed",
+          decisionCount: 0,
+          autoResolvedCount: 0,
+          registeredAt: Date.now(),
+          lastActivityAt: Date.now(),
+          idleCheckCount: 0,
+          taskDelivered: true,
+          completionSummary: "Done",
+          lastSeenDecisionIndex: 0,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          metadata: {},
+        },
+      ],
+      decisions: [],
+      events: [],
+      artifacts: [],
+      transcripts: [],
+      pendingDecisions: [],
+      nodes: [
+        {
+          id: "node-goal",
+          threadId: "thread-1",
+          parentNodeId: null,
+          kind: "goal",
+          status: "completed",
+          title: "Ship task",
+          instructions: "Ship task",
+          acceptanceCriteria: ["Fix bug", "Run validation"],
+          requiredCapabilities: [],
+          expectedArtifacts: [],
+          assignedSessionId: null,
+          assignedLabel: null,
+          agentType: null,
+          workdir: null,
+          repo: null,
+          priority: 0,
+          depth: 0,
+          sequence: 0,
+          createdFrom: null,
+          metadata: {},
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          startedAt: null,
+          completedAt: new Date().toISOString(),
+        },
+        {
+          id: "node-1",
+          threadId: "thread-1",
+          parentNodeId: "node-goal",
+          kind: "execution",
+          status: "completed",
+          title: "Implement",
+          instructions: "Fix bug",
+          acceptanceCriteria: [],
+          requiredCapabilities: ["claude"],
+          expectedArtifacts: [],
+          assignedSessionId: "s-1",
+          assignedLabel: "test-agent",
+          agentType: "claude",
+          workdir: "/workspace/project",
+          repo: null,
+          priority: 1,
+          depth: 1,
+          sequence: 1,
+          createdFrom: null,
+          metadata: {},
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          startedAt: null,
+          completedAt: new Date().toISOString(),
+        },
+      ],
+      dependencies: [],
+      claims: [],
+      mailbox: [],
+      verifierJobs: [
+        {
           id: "verify-acceptance",
           threadId: "thread-1",
           nodeId: "node-goal",
@@ -889,20 +1078,24 @@ describe("checkAllTasksComplete", () => {
         if (job) Object.assign(job, patch);
       },
     );
-    ctx.taskRegistry.updateTaskNode = jest.fn().mockResolvedValue(undefined);
+    ctx.taskRegistry.updateTaskNode.mockImplementation(
+      async (nodeId: string, patch: Record<string, unknown>) => {
+        const node = thread.nodes.find((entry) => entry.id === nodeId);
+        if (node) Object.assign(node, patch);
+      },
+    );
 
     checkAllTasksComplete(ctx as never);
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 25));
 
     expect(ctx.taskRegistry.updateTaskVerifierJob).toHaveBeenCalledWith(
       "verify-acceptance",
-      expect.objectContaining({ status: "running" }),
-    );
-    expect(ctx.taskRegistry.updateTaskVerifierJob).toHaveBeenCalledWith(
-      "verify-acceptance",
-      expect.objectContaining({ status: "passed" }),
+      expect.objectContaining({ status: "failed" }),
     );
     expect(ctx.broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "swarm_attention_required" }),
+    );
+    expect(ctx.broadcast).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: "swarm_complete" }),
     );
   });

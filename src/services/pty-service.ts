@@ -649,6 +649,10 @@ export class PTYService {
    * > runtime/env setting > "claude" fallback.
    */
   get defaultAgentType(): AdapterType {
+    return this.explicitDefaultAgentType ?? "claude";
+  }
+
+  private get explicitDefaultAgentType(): AdapterType | null {
     const fromConfig = readConfigEnvKey("PARALLAX_DEFAULT_AGENT_TYPE");
     const fromRuntimeOrEnv =
       fromConfig ||
@@ -663,17 +667,21 @@ export class PTYService {
     ) {
       return fromRuntimeOrEnv.toLowerCase() as AdapterType;
     }
-    return "claude";
+    return null;
   }
 
   /**
    * Resolve which agent type to use when the caller didn't specify one.
    *
-   * - **fixed**: returns `defaultAgentType` immediately
-   * - **ranked**: fetches preflight data, scores installed agents via
-   *   metrics, and returns the highest scorer
+   * When the caller explicitly configured a fixed default agent type, fixed
+   * mode returns that pinned framework. Otherwise the resolver scores the
+   * available frameworks from task shape, auth/install state, and recent
+   * metrics so dynamic routing still works on unconfigured installs.
    */
   async resolveAgentType(selection?: TaskAgentTaskProfileInput): Promise<string> {
+    if (this.agentSelectionStrategy === "fixed" && this.explicitDefaultAgentType) {
+      return this.explicitDefaultAgentType;
+    }
     const frameworkState = await this.getFrameworkState(selection);
     return frameworkState.preferred.id;
   }

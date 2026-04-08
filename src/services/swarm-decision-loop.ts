@@ -402,22 +402,38 @@ async function checkAllTasksCompleteAsync(
   }
 
   const threadIds = [...new Set(tasks.map((task) => task.threadId))];
+  const failingThreads: Array<{
+    threadId: string;
+    failedGoals: string[];
+    failedVerifiers: string[];
+  }> = [];
   for (const threadId of threadIds) {
     await runReadyTaskVerifiers(ctx.runtime, ctx.taskRegistry, threadId);
     const thread = await ctx.taskRegistry.getThread(threadId);
     if (!thread || thread.nodes.length === 0) {
       continue;
     }
-    const terminalNodeStates = new Set([
-      "completed",
-      "failed",
-      "canceled",
-      "interrupted",
-    ]);
     const goalNodes = thread.nodes.filter((node) => node.kind === "goal");
-    if (goalNodes.some((node) => !terminalNodeStates.has(node.status))) {
+    const failedGoals = goalNodes
+      .filter(
+        (node) =>
+          node.status === "failed" ||
+          node.status === "canceled" ||
+          node.status === "interrupted",
+      )
+      .map((node) => `${node.title}=${node.status}`);
+    const incompleteGoals = goalNodes
+      .filter(
+        (node) =>
+          node.status !== "completed" &&
+          node.status !== "failed" &&
+          node.status !== "canceled" &&
+          node.status !== "interrupted",
+      )
+      .map((node) => `${node.title}=${node.status}`);
+    if (incompleteGoals.length > 0) {
       const pendingGoals = goalNodes
-        .filter((node) => !terminalNodeStates.has(node.status))
+        .filter((node) => node.status !== "completed")
         .map((node) => `${node.title}=${node.status}`)
         .join(", ");
       ctx.log(
@@ -443,6 +459,56 @@ async function checkAllTasksCompleteAsync(
       );
       return;
     }
+    const failedVerifiers = thread.verifierJobs
+      .filter((job) => job.status === "failed")
+      .map((job) => `${job.title}=failed`);
+    if (failedGoals.length > 0 || failedVerifiers.length > 0) {
+      failingThreads.push({
+        threadId,
+        failedGoals,
+        failedVerifiers,
+      });
+    }
+  }
+
+  if (failingThreads.length > 0) {
+    if (ctx.swarmCompleteNotified) {
+      ctx.log("checkAllTasksComplete: failure notification already sent — skipping");
+      return;
+    }
+    ctx.swarmCompleteNotified = true;
+    const summary = failingThreads
+      .map((thread) =>
+        [
+          `thread ${thread.threadId}`,
+          thread.failedGoals.length > 0
+            ? `failed goals: ${thread.failedGoals.join(", ")}`
+            : "",
+          thread.failedVerifiers.length > 0
+            ? `failed verifiers: ${thread.failedVerifiers.join(", ")}`
+            : "",
+        ]
+          .filter(Boolean)
+          .join(" | "),
+      )
+      .join("; ");
+    ctx.log(
+      `checkAllTasksComplete: sessions are terminal but acceptance failed — ${summary}`,
+    );
+    ctx.broadcast({
+      type: "swarm_attention_required",
+      sessionId: "",
+      timestamp: Date.now(),
+      data: {
+        summary,
+        threads: failingThreads,
+      },
+    });
+    ctx.sendChatMessage(
+      `Task agents finished running, but the coordinator could not prove completion. ${summary}`,
+      "task-agent",
+    );
+    return;
   }
 
   // Guard: only fire once per swarm (reset by coordinator on stop/new swarm)

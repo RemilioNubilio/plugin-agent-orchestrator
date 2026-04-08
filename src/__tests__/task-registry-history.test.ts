@@ -1,7 +1,11 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, jest } from "bun:test";
 import { PGlite } from "@electric-sql/pglite";
 import type { IAgentRuntime } from "@elizaos/core";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { TaskRegistry } from "../services/task-registry.js";
+import { runReadyTaskVerifiers } from "../services/task-verifier-runner.js";
 
 type SqlQuery = {
   queryChunks?: Array<{ value?: unknown }>;
@@ -43,11 +47,18 @@ function createRegistryHarness(db: PGlite): TaskRegistry {
 
 describe("TaskRegistry history filters", () => {
   const databases: PGlite[] = [];
+  const tempDirs: string[] = [];
 
   afterEach(async () => {
     while (databases.length > 0) {
       const db = databases.pop();
       await db?.close();
+    }
+    while (tempDirs.length > 0) {
+      const dir = tempDirs.pop();
+      if (dir) {
+        await rm(dir, { recursive: true, force: true });
+      }
     }
   });
 
@@ -326,5 +337,273 @@ describe("TaskRegistry history filters", () => {
     expect(detail?.mailbox[0]?.recipient).toBe("worker-1");
     expect(detail?.verifierJobs[0]?.status).toBe("passed");
     expect(detail?.evidence[0]?.summary).toBe("All tests passed");
+  });
+
+  it("runs acceptance verifier jobs against the real registry and writes a report", async () => {
+    const db = new PGlite();
+    databases.push(db);
+    const stateDir = await mkdtemp(path.join(tmpdir(), "acceptance-verifier-"));
+    tempDirs.push(stateDir);
+    const originalStateDir = process.env.MILADY_STATE_DIR;
+    process.env.MILADY_STATE_DIR = stateDir;
+
+    try {
+      const runtime = {
+        agentId: "task-registry-history-agent",
+        adapter: {
+          db: {
+            execute: async (query: SqlQuery) => {
+              const result = await db.query<Record<string, unknown>>(
+                extractSqlText(query),
+              );
+              return {
+                rows: result.rows,
+                fields: (result.fields ?? []).map((field) => ({
+                  name: field.name,
+                })),
+              };
+            },
+          },
+        },
+        useModel: async () =>
+          JSON.stringify({
+            verdict: "pass",
+            summary: "Acceptance criteria are satisfied by the recorded evidence.",
+            checklist: [
+              {
+                criterion: "All worker nodes complete",
+                status: "pass",
+                evidence: "The worker node completed successfully.",
+              },
+              {
+                criterion: "Validation evidence exists",
+                status: "pass",
+                evidence: "Validation summary evidence was recorded for the worker node.",
+              },
+            ],
+          }),
+      } as unknown as IAgentRuntime;
+      const registry = new TaskRegistry(runtime);
+      await registry.ensureSchema();
+
+      await registry.createThread({
+        id: "thread-acceptance",
+        title: "Acceptance verification",
+        originalRequest: "Implement and verify the worker task",
+        kind: "coding",
+        acceptanceCriteria: [
+          "All worker nodes complete",
+          "Validation evidence exists",
+        ],
+      });
+      await registry.registerSession({
+        threadId: "thread-acceptance",
+        sessionId: "session-acceptance",
+        framework: "codex",
+        label: "acceptance-worker",
+        originalTask: "Implement and validate",
+        workdir: "/tmp/acceptance-worker",
+        status: "completed",
+        registeredAt: Date.now(),
+        lastActivityAt: Date.now(),
+        completionSummary: "Implemented and validated",
+      });
+      await registry.createTaskNode({
+        id: "node-goal",
+        threadId: "thread-acceptance",
+        kind: "goal",
+        status: "completed",
+        title: "Deliver the work",
+        instructions: "Deliver the work",
+        acceptanceCriteria: [
+          "All worker nodes complete",
+          "Validation evidence exists",
+        ],
+      });
+      await registry.createTaskNode({
+        id: "node-worker",
+        threadId: "thread-acceptance",
+        parentNodeId: "node-goal",
+        kind: "execution",
+        status: "completed",
+        title: "Implement the worker task",
+        instructions: "Implement the worker task",
+        requiredCapabilities: ["codex"],
+        assignedSessionId: "session-acceptance",
+        assignedLabel: "acceptance-worker",
+        agentType: "codex",
+        workdir: "/tmp/acceptance-worker",
+      });
+      await registry.createTaskVerifierJob({
+        id: "verify-worker",
+        threadId: "thread-acceptance",
+        nodeId: "node-worker",
+        status: "passed",
+        verifierType: "task_completion",
+        title: "Validate worker task",
+        instructions: "Validate worker task",
+      });
+      await registry.recordTaskEvidence({
+        threadId: "thread-acceptance",
+        nodeId: "node-worker",
+        sessionId: "session-acceptance",
+        verifierJobId: "verify-worker",
+        evidenceType: "validation_summary",
+        title: "Validation passed",
+        summary: "Validation confirmed the worker task completed.",
+        content: { passed: true },
+      });
+      await registry.createTaskVerifierJob({
+        id: "verify-acceptance",
+        threadId: "thread-acceptance",
+        nodeId: "node-goal",
+        status: "pending",
+        verifierType: "acceptance_criteria",
+        title: "Verify acceptance",
+        instructions: "Check acceptance criteria",
+      });
+
+      await runReadyTaskVerifiers(runtime, registry, "thread-acceptance");
+
+      const detail = await registry.getThread("thread-acceptance");
+      const acceptanceJob = detail?.verifierJobs.find(
+        (job) => job.id === "verify-acceptance",
+      );
+      expect(acceptanceJob?.status).toBe("passed");
+      const acceptanceArtifact = detail?.artifacts.find(
+        (artifact) => artifact.artifactType === "acceptance_report",
+      );
+      expect(acceptanceArtifact?.path).toBeDefined();
+      const reportPath = acceptanceArtifact?.path;
+      if (!reportPath) {
+        throw new Error("expected acceptance report path");
+      }
+      const report = JSON.parse(await readFile(reportPath, "utf8")) as {
+        evaluation: { verdict: string };
+      };
+      expect(report.evaluation.verdict).toBe("pass");
+    } finally {
+      if (originalStateDir === undefined) {
+        delete process.env.MILADY_STATE_DIR;
+      } else {
+        process.env.MILADY_STATE_DIR = originalStateDir;
+      }
+    }
+  });
+
+  it("fails acceptance verifier jobs deterministically when completion evidence is missing", async () => {
+    const db = new PGlite();
+    databases.push(db);
+    const stateDir = await mkdtemp(path.join(tmpdir(), "acceptance-verifier-"));
+    tempDirs.push(stateDir);
+    const originalStateDir = process.env.MILADY_STATE_DIR;
+    process.env.MILADY_STATE_DIR = stateDir;
+
+    try {
+      const useModel = jest.fn().mockResolvedValue(
+        JSON.stringify({
+          verdict: "pass",
+          summary: "this should not be used",
+          checklist: [],
+        }),
+      );
+      const runtime = {
+        agentId: "task-registry-history-agent",
+        adapter: {
+          db: {
+            execute: async (query: SqlQuery) => {
+              const result = await db.query<Record<string, unknown>>(
+                extractSqlText(query),
+              );
+              return {
+                rows: result.rows,
+                fields: (result.fields ?? []).map((field) => ({
+                  name: field.name,
+                })),
+              };
+            },
+          },
+        },
+        useModel,
+      } as unknown as IAgentRuntime;
+      const registry = new TaskRegistry(runtime);
+      await registry.ensureSchema();
+
+      await registry.createThread({
+        id: "thread-acceptance-fail",
+        title: "Acceptance verification failure",
+        originalRequest: "Implement and verify the worker task",
+        kind: "coding",
+        acceptanceCriteria: [
+          "All worker nodes complete",
+          "Validation evidence exists",
+        ],
+      });
+      await registry.registerSession({
+        threadId: "thread-acceptance-fail",
+        sessionId: "session-acceptance-fail",
+        framework: "codex",
+        label: "acceptance-worker",
+        originalTask: "Implement and validate",
+        workdir: "/tmp/acceptance-worker",
+        status: "completed",
+        registeredAt: Date.now(),
+        lastActivityAt: Date.now(),
+        completionSummary: "Implemented but no verifier evidence recorded",
+      });
+      await registry.createTaskNode({
+        id: "node-goal-fail",
+        threadId: "thread-acceptance-fail",
+        kind: "goal",
+        status: "completed",
+        title: "Deliver the work",
+        instructions: "Deliver the work",
+        acceptanceCriteria: [
+          "All worker nodes complete",
+          "Validation evidence exists",
+        ],
+      });
+      await registry.createTaskNode({
+        id: "node-worker-fail",
+        threadId: "thread-acceptance-fail",
+        parentNodeId: "node-goal-fail",
+        kind: "execution",
+        status: "completed",
+        title: "Implement the worker task",
+        instructions: "Implement the worker task",
+        requiredCapabilities: ["codex"],
+        assignedSessionId: "session-acceptance-fail",
+        assignedLabel: "acceptance-worker",
+        agentType: "codex",
+        workdir: "/tmp/acceptance-worker",
+      });
+      await registry.createTaskVerifierJob({
+        id: "verify-acceptance-fail",
+        threadId: "thread-acceptance-fail",
+        nodeId: "node-goal-fail",
+        status: "pending",
+        verifierType: "acceptance_criteria",
+        title: "Verify acceptance",
+        instructions: "Check acceptance criteria",
+      });
+
+      await runReadyTaskVerifiers(runtime, registry, "thread-acceptance-fail");
+
+      const detail = await registry.getThread("thread-acceptance-fail");
+      const acceptanceJob = detail?.verifierJobs.find(
+        (job) => job.id === "verify-acceptance-fail",
+      );
+      expect(acceptanceJob?.status).toBe("failed");
+      expect(useModel).not.toHaveBeenCalled();
+      expect(
+        detail?.nodes.find((node) => node.id === "node-goal-fail")?.status,
+      ).toBe("failed");
+    } finally {
+      if (originalStateDir === undefined) {
+        delete process.env.MILADY_STATE_DIR;
+      } else {
+        process.env.MILADY_STATE_DIR = originalStateDir;
+      }
+    }
   });
 });

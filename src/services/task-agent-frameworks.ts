@@ -361,8 +361,12 @@ function hasGeminiCredential(runtime?: IAgentRuntime): boolean {
 }
 
 function hasPiBinary(): boolean {
+  return hasBinaryOnPath("pi");
+}
+
+function hasBinaryOnPath(binaryName: string): boolean {
   const command = process.platform === "win32" ? "where" : "which";
-  const args = process.platform === "win32" ? ["pi.exe"] : ["pi"];
+  const args = [binaryName];
   try {
     execFileSync(command, args, {
       encoding: "utf8",
@@ -372,6 +376,19 @@ function hasPiBinary(): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+function hasFrameworkBinary(id: SupportedTaskAgentAdapter): boolean {
+  switch (id) {
+    case "claude":
+      return hasBinaryOnPath("claude");
+    case "codex":
+      return hasBinaryOnPath("codex");
+    case "gemini":
+      return hasBinaryOnPath("gemini");
+    case "aider":
+      return hasBinaryOnPath("aider");
   }
 }
 
@@ -426,7 +443,7 @@ async function computeTaskAgentFrameworkState(
     (id) => {
       const preflight = preflightByAdapter.get(id);
       const cooldown = getFrameworkCooldown(id);
-      const installed = preflight?.installed === true;
+      const installed = preflight?.installed === true || hasFrameworkBinary(id);
       const subscriptionReady =
         id === "claude"
           ? claudeSubscriptionReady

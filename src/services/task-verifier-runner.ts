@@ -115,6 +115,76 @@ function isVerifierReady(
   return node ? terminalNodeStates.has(node.status) : false;
 }
 
+function collectAcceptancePrerequisiteFailures(thread: TaskThreadDetail): {
+  failedExecutionNodes: TaskNodeRecord[];
+  completedWithoutEvidence: TaskNodeRecord[];
+} {
+  const executionNodes = thread.nodes.filter((node) => node.kind === "execution");
+  const passedCompletionVerifierNodeIds = new Set(
+    thread.verifierJobs
+      .filter(
+        (job) =>
+          job.verifierType === "task_completion" &&
+          job.status === "passed" &&
+          typeof job.nodeId === "string",
+      )
+      .map((job) => job.nodeId as string),
+  );
+  const evidenceBackedNodeIds = new Set(
+    thread.evidence
+      .filter(
+        (entry) =>
+          typeof entry.nodeId === "string" &&
+          (entry.evidenceType === "validation_summary" ||
+            entry.evidenceType === "acceptance_report"),
+      )
+      .map((entry) => entry.nodeId as string),
+  );
+  return {
+    failedExecutionNodes: executionNodes.filter(
+      (node) =>
+        node.status === "failed" ||
+        node.status === "canceled" ||
+        node.status === "interrupted",
+    ),
+    completedWithoutEvidence: executionNodes.filter(
+      (node) =>
+        node.status === "completed" &&
+        !passedCompletionVerifierNodeIds.has(node.id) &&
+        !evidenceBackedNodeIds.has(node.id),
+    ),
+  };
+}
+
+function buildDeterministicFailureEvaluation(
+  thread: TaskThreadDetail,
+  failures: ReturnType<typeof collectAcceptancePrerequisiteFailures>,
+): AcceptanceEvaluation | null {
+  if (failures.failedExecutionNodes.length > 0) {
+    return {
+      verdict: "fail",
+      summary: `Acceptance cannot pass because execution nodes failed: ${failures.failedExecutionNodes.map((node) => node.title).join(", ")}.`,
+      checklist: thread.acceptanceCriteria.map((criterion) => ({
+        criterion,
+        status: "fail",
+        evidence: `Execution nodes failed before acceptance verification completed: ${failures.failedExecutionNodes.map((node) => `${node.title}=${node.status}`).join(", ")}.`,
+      })),
+    };
+  }
+  if (failures.completedWithoutEvidence.length > 0) {
+    return {
+      verdict: "fail",
+      summary: `Acceptance cannot pass because completed execution nodes lack verification evidence: ${failures.completedWithoutEvidence.map((node) => node.title).join(", ")}.`,
+      checklist: thread.acceptanceCriteria.map((criterion) => ({
+        criterion,
+        status: "partial",
+        evidence: `Missing task-completion evidence for: ${failures.completedWithoutEvidence.map((node) => node.title).join(", ")}.`,
+      })),
+    };
+  }
+  return null;
+}
+
 function summarizeThreadEvidence(thread: TaskThreadDetail): string {
   const sessionSummaries = thread.sessions
     .map((session) =>
@@ -359,7 +429,13 @@ export async function runReadyTaskVerifiers(
         },
       });
       thread = (await taskRegistry.getThread(threadId)) ?? thread;
-      const evaluation = await evaluateAcceptanceCriteria(runtime, thread, job);
+      const deterministicFailure = buildDeterministicFailureEvaluation(
+        thread,
+        collectAcceptancePrerequisiteFailures(thread),
+      );
+      const evaluation =
+        deterministicFailure ??
+        (await evaluateAcceptanceCriteria(runtime, thread, job));
       const report = await writeAcceptanceReport(thread, job, evaluation);
       await finalizeAcceptanceJob(
         taskRegistry,

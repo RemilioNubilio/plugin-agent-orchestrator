@@ -310,6 +310,28 @@ describe("task-agent framework preferences", () => {
     expect(state.preferred.reason).toContain("best");
   });
 
+  it("falls back to direct CLI detection when preflight is unavailable", async () => {
+    process.env.OPENAI_API_KEY = "codex-key";
+    mockExecFileSync.mockImplementation((command: string, args: string[]) => {
+      if ((command === "which" || command === "where") && args[0] === "codex") {
+        return "/usr/local/bin/codex";
+      }
+      throw new Error("not found");
+    });
+
+    const state = await getTaskAgentFrameworkState(createRuntime() as never, {
+      checkAvailableAgents: async () => {
+        throw new Error("preflight unavailable");
+      },
+    });
+
+    expect(
+      state.frameworks.find((framework) => framework.id === "codex")
+        ?.installed,
+    ).toBe(true);
+    expect(state.preferred.id).toBe("codex");
+  });
+
   it("detects quota and credit depletion errors", () => {
     expect(isUsageExhaustedTaskAgentError("AI_APICallError: insufficient credits")).toBe(
       true,

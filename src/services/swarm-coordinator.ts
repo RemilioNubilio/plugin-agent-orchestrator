@@ -23,7 +23,7 @@ import type { ServerResponse } from "node:http";
 import type { IAgentRuntime } from "@elizaos/core";
 import { logger } from "@elizaos/core";
 import { buildAgentCredentials } from "./agent-credentials.js";
-import { extractDevServerUrl } from "./ansi-utils.js";
+import { cleanForChat, extractDevServerUrl } from "./ansi-utils.js";
 import type { PTYService } from "./pty-service.js";
 import type { CodingAgentType } from "./pty-types.js";
 import { normalizeAgentType } from "./pty-types.js";
@@ -851,7 +851,9 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
         workdir: context.workdir,
         originalTask: context.originalTask,
       })
-      .catch(() => {});
+      .catch((err) => {
+        this.log(`Failed to append task registration history for ${sessionId}: ${err}`);
+      });
 
     const taskCtx = this.tasks.get(sessionId);
     const persistPromise = taskCtx
@@ -1860,7 +1862,8 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
     reason: string,
     recentOutput: string,
   ): string {
-    const trimmedOutput = recentOutput.trim();
+    const cleanedOutput = cleanForChat(recentOutput);
+    const trimmedOutput = cleanedOutput.trim();
     const clippedOutput =
       trimmedOutput.length > FAILOVER_OUTPUT_MAX_CHARS
         ? trimmedOutput.slice(-FAILOVER_OUTPUT_MAX_CHARS)
@@ -2103,7 +2106,11 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
         // Task was registered — flush
         this.unregisteredBuffer.delete(sessionId);
         for (const entry of stillBuffered) {
-          this.handleNormalizedSessionEvent(entry.normalized).catch(() => {});
+          this.handleNormalizedSessionEvent(entry.normalized).catch((err) => {
+            this.log(
+              `Failed to replay buffered event for ${sessionId}: ${err}`,
+            );
+          });
         }
         return;
       }
