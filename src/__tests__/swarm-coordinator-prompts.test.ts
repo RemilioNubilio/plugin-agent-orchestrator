@@ -12,9 +12,11 @@ type DecisionHistoryEntry =
 type TaskContextSummary =
   import("../services/swarm-coordinator-prompts.js").TaskContextSummary;
 
-const { buildCoordinationPrompt, parseCoordinationResponse } = await import(
-  "../services/swarm-coordinator-prompts.js"
-);
+const {
+  buildCoordinationPrompt,
+  buildIdleCheckPrompt,
+  parseCoordinationResponse,
+} = await import("../services/swarm-coordinator-prompts.js");
 
 const makeTaskCtx = (
   overrides: Partial<TaskContextSummary> = {},
@@ -165,6 +167,75 @@ describe("swarm-coordinator-prompts", () => {
       );
       // The prompt should contain at most 3000 chars of output
       expect(prompt.length).toBeLessThan(longOutput.length + 2000);
+    });
+  });
+
+  // ==========================================================================
+  // buildIdleCheckPrompt — response field formatting constraints
+  // ==========================================================================
+  //
+  // Regression guard for a real bug: the idle watchdog used to fire an
+  // LLM check that could return `action: "respond", response: "The
+  // agent is still setting up..."` — a third-person status report —
+  // which the coordinator then piped VERBATIM into the agent's stdin
+  // as if the user had typed it. The agent would then see a user
+  // message describing itself in the third person and get confused.
+  //
+  // The prompt now carries a CRITICAL constraint explaining that the
+  // `response` field is sent verbatim and MUST be a second-person
+  // imperative. These tests lock that constraint in place.
+  describe("buildIdleCheckPrompt response format rules", () => {
+    const makeCtx = () => makeTaskCtx({ agentType: "codex" });
+
+    it("explains that `response` is sent verbatim to the agent's stdin", () => {
+      const prompt = buildIdleCheckPrompt(
+        makeCtx(),
+        "Working on it...",
+        5,
+        1,
+        4,
+        [],
+      );
+      expect(prompt).toContain("VERBATIM");
+      expect(prompt.toLowerCase()).toContain("agent's terminal");
+    });
+
+    it("requires the response to be a second-person imperative", () => {
+      const prompt = buildIdleCheckPrompt(
+        makeCtx(),
+        "Working on it...",
+        5,
+        1,
+        4,
+        [],
+      );
+      expect(prompt).toMatch(/second-person imperative/i);
+    });
+
+    it("explicitly forbids third-person status reports in the response", () => {
+      const prompt = buildIdleCheckPrompt(
+        makeCtx(),
+        "Working on it...",
+        5,
+        1,
+        4,
+        [],
+      );
+      expect(prompt).toMatch(/NEVER write a third-person/i);
+      // The exact buggy phrasing from the real-world bug should be
+      // mentioned as an anti-example so the LLM sees it directly.
+      expect(prompt).toMatch(/The agent is still setting up/);
+    });
+
+    it("gives short 2nd-person examples the LLM can pattern-match on", () => {
+      const prompt = buildIdleCheckPrompt(makeCtx(), "", 5, 1, 4, []);
+      expect(prompt).toMatch(/"continue"/);
+      expect(prompt).toMatch(/"please create the pull request"/);
+    });
+
+    it("steers reasoning-style explanation into the `reasoning` field, not `response`", () => {
+      const prompt = buildIdleCheckPrompt(makeCtx(), "", 5, 1, 4, []);
+      expect(prompt).toMatch(/put it in the "reasoning" field/);
     });
   });
 

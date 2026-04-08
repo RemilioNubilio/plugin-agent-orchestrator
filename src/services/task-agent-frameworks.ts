@@ -14,12 +14,9 @@ import os from "node:os";
 import path from "node:path";
 import type { IAgentRuntime } from "@elizaos/core";
 import type { PreflightResult } from "coding-agent-adapters";
+import { readConfigCloudKey, readConfigEnvKey } from "./config-env.js";
 
-export type SupportedTaskAgentAdapter =
-  | "claude"
-  | "codex"
-  | "gemini"
-  | "aider";
+export type SupportedTaskAgentAdapter = "claude" | "codex" | "gemini" | "aider";
 export type TaskAgentFrameworkId = SupportedTaskAgentAdapter | "pi";
 
 export interface TaskAgentFrameworkAvailability {
@@ -110,6 +107,14 @@ function safeGetSetting(
   runtime: IAgentRuntime | undefined,
   key: string,
 ): string | undefined {
+  // Check the config file first (UI writes here, takes effect without restart),
+  // then fall back to runtime/character settings.
+  try {
+    const fromConfig = readConfigEnvKey(key);
+    if (fromConfig?.trim()) return fromConfig.trim();
+  } catch {
+    // ignore — fall through to runtime
+  }
   if (!runtime) return undefined;
   try {
     const value = runtime.getSetting(key);
@@ -121,9 +126,7 @@ function safeGetSetting(
 
 function getUserHomeDir(): string {
   return (
-    process.env.HOME?.trim() ||
-    process.env.USERPROFILE?.trim() ||
-    os.homedir()
+    process.env.HOME?.trim() || process.env.USERPROFILE?.trim() || os.homedir()
   );
 }
 
@@ -233,6 +236,15 @@ function hasGeminiCredential(runtime?: IAgentRuntime): boolean {
   );
 }
 
+/**
+ * Check whether milady has a paired Eliza Cloud API key. Used to mark
+ * Anthropic/OpenAI-backed task agents as auth-ready when LLM provider is
+ * "cloud" — they'll route through the cloud proxy at spawn time.
+ */
+function hasElizaCloudApiKey(): boolean {
+  return Boolean(readConfigCloudKey("apiKey"));
+}
+
 function hasPiBinary(): boolean {
   const command = process.platform === "win32" ? "where" : "which";
   const args = process.platform === "win32" ? ["pi.exe"] : ["pi"];
@@ -265,11 +277,17 @@ async function computeTaskAgentFrameworkState(
   probe?: TaskAgentFrameworkProbe,
 ): Promise<TaskAgentFrameworkState> {
   const configuredSubscriptionProvider = readConfiguredSubscriptionProvider();
-  const preflightByAdapter = new Map<SupportedTaskAgentAdapter, PreflightResult>();
+  const preflightByAdapter = new Map<
+    SupportedTaskAgentAdapter,
+    PreflightResult
+  >();
 
   if (probe?.checkAvailableAgents) {
     try {
       const results = await probe.checkAvailableAgents(STANDARD_FRAMEWORKS);
+      // checkAdapters returns `adapter` as the human-readable display name
+      // (e.g. "Claude Code", "OpenAI Codex"), not the lowercase ID. Map back
+      // to the canonical framework ID via case-insensitive substring match.
       for (const result of results) {
         const adapterId = normalizePreflightAdapterId(result.adapter);
         if (adapterId) {
@@ -281,10 +299,20 @@ async function computeTaskAgentFrameworkState(
     }
   }
 
+  // When the user has selected Eliza Cloud as the LLM provider and has a
+  // paired cloud.apiKey, treat Claude/Codex/Aider as fully auth-ready —
+  // they'll route through the cloud proxy at spawn time.
+  const llmProvider =
+    readConfigEnvKey("PARALLAX_LLM_PROVIDER") || "subscription";
+  const cloudReady = llmProvider === "cloud" && hasElizaCloudApiKey();
+
   const claudeSubscriptionReady = hasClaudeSubscriptionAuth();
-  const claudeAuthReady = claudeSubscriptionReady || hasClaudeApiKey(runtime);
+  const claudeAuthReady =
+    cloudReady || claudeSubscriptionReady || hasClaudeApiKey(runtime);
   const codexSubscriptionReady = hasCodexSubscriptionAuth();
-  const codexAuthReady = codexSubscriptionReady || hasCodexApiKey(runtime);
+  const codexAuthReady =
+    cloudReady || codexSubscriptionReady || hasCodexApiKey(runtime);
+  // Eliza Cloud doesn't proxy Gemini, so cloud mode does NOT make Gemini auth-ready
   const geminiAuthReady = hasGeminiCredential(runtime);
   const piReady = hasPiBinary();
 
@@ -353,7 +381,9 @@ async function computeTaskAgentFrameworkState(
     reason: piReady ? "CLI detected" : "CLI not detected",
   });
 
-  const byId = new Map(frameworks.map((framework) => [framework.id, framework]));
+  const byId = new Map(
+    frameworks.map((framework) => [framework.id, framework]),
+  );
   const isSelectable = (id: TaskAgentFrameworkId): boolean =>
     !byId.get(id)?.temporarilyDisabled;
   const explicitDefault = safeGetSetting(runtime, "PARALLAX_DEFAULT_AGENT_TYPE")
