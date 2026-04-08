@@ -68,9 +68,15 @@ import {
   isDebugCaptureEnabled,
 } from "./debug-capture.js";
 import {
+  buildTaskAgentTaskProfile,
   getTaskAgentFrameworkState,
+  type TaskAgentTaskProfileInput,
   type TaskAgentFrameworkState,
 } from "./task-agent-frameworks.js";
+import {
+  normalizeCoordinatorEvent,
+  type CoordinatorNormalizedEvent,
+} from "./coordinator-event-normalizer.js";
 
 export type {
   CodingAgentType,
@@ -108,6 +114,9 @@ export class PTYService {
   private sessionMetadata: Map<string, Record<string, unknown>> = new Map();
   private sessionWorkdirs: Map<string, string> = new Map();
   private eventCallbacks: SessionEventCallback[] = [];
+  private normalizedEventCallbacks: Array<
+    (event: CoordinatorNormalizedEvent) => void
+  > = [];
   private outputUnsubscribers: Map<string, () => void> = new Map();
   private transcriptUnsubscribers: Map<string, () => void> = new Map();
   private sessionOutputBuffers: Map<string, string[]> = new Map();
@@ -664,13 +673,32 @@ export class PTYService {
    * - **ranked**: fetches preflight data, scores installed agents via
    *   metrics, and returns the highest scorer
    */
-  async resolveAgentType(): Promise<string> {
-    const frameworkState = await this.getFrameworkState();
+  async resolveAgentType(selection?: TaskAgentTaskProfileInput): Promise<string> {
+    const frameworkState = await this.getFrameworkState(selection);
     return frameworkState.preferred.id;
   }
 
-  async getFrameworkState(): Promise<TaskAgentFrameworkState> {
-    return getTaskAgentFrameworkState(this.runtime, this);
+  async getFrameworkState(
+    selection?: TaskAgentTaskProfileInput,
+  ): Promise<TaskAgentFrameworkState> {
+    const profile = selection ? buildTaskAgentTaskProfile(selection) : undefined;
+    return getTaskAgentFrameworkState(
+      this.runtime,
+      {
+        checkAvailableAgents: (types) => this.checkAvailableAgents(types),
+        getAgentMetrics: () => this.metricsTracker.getAll(),
+      },
+      profile
+        ? {
+            task: selection?.task,
+            repo: selection?.repo,
+            workdir: selection?.workdir,
+            threadKind: profile.kind,
+            subtaskCount: profile.subtaskCount,
+            acceptanceCriteria: selection?.acceptanceCriteria,
+          }
+        : selection,
+    );
   }
 
   getSession(sessionId: string): SessionInfo | undefined {
@@ -832,22 +860,26 @@ export class PTYService {
 
     switch (event) {
       case "tool_running":
-        this.emitEvent(sessionId, "tool_running", data);
+        this.emitEvent(sessionId, "tool_running", { ...data, source: "hook" });
         break;
       case "task_complete":
-        this.emitEvent(sessionId, "task_complete", data);
+        this.emitEvent(sessionId, "task_complete", { ...data, source: "hook" });
         break;
       case "permission_approved":
         // Permission was auto-approved via PermissionRequest hook.
         // No PTY event needed — the hook response already allowed it.
         break;
       case "notification":
-        this.emitEvent(sessionId, "message", data);
+        this.emitEvent(sessionId, "message", { ...data, source: "hook" });
         break;
       case "session_end":
         // CLI session is ending — treat as a stopped event so the coordinator
         // and frontend see the session transition to terminal state.
-        this.emitEvent(sessionId, "stopped", { ...data, reason: "session_end" });
+        this.emitEvent(sessionId, "stopped", {
+          ...data,
+          reason: "session_end",
+          source: "hook",
+        });
         break;
       default:
         break;
@@ -1082,6 +1114,16 @@ export class PTYService {
     };
   }
 
+  onNormalizedSessionEvent(
+    callback: (event: CoordinatorNormalizedEvent) => void,
+  ): () => void {
+    this.normalizedEventCallbacks.push(callback);
+    return () => {
+      const idx = this.normalizedEventCallbacks.indexOf(callback);
+      if (idx !== -1) this.normalizedEventCallbacks.splice(idx, 1);
+    };
+  }
+
   registerAdapter(adapter: unknown): void {
     if (!this.manager) {
       throw new Error("PTYService not initialized");
@@ -1188,6 +1230,15 @@ export class PTYService {
         this.log(`Event callback error: ${err}`);
       }
     }
+    const normalized = normalizeCoordinatorEvent(sessionId, event, data);
+    if (!normalized) return;
+    for (const callback of this.normalizedEventCallbacks) {
+      try {
+        callback(normalized);
+      } catch (err) {
+        this.log(`Normalized event callback error: ${err}`);
+      }
+    }
   }
 
   // ─── Metrics ───
@@ -1227,6 +1278,7 @@ export class PTYService {
       this.emitEvent(sessionId, "error", {
         message: reason,
         workerExit: info,
+        source: "pty_manager",
       });
     }
   }

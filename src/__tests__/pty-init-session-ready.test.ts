@@ -37,7 +37,7 @@ interface MockCtx {
  * This is the exact logic we're testing.
  */
 function handleSessionReady(ctx: MockCtx, session: MockSession): void {
-  ctx.emitEvent(session.id, "ready", { session });
+  ctx.emitEvent(session.id, "ready", { session, source: "pty_manager" });
 
   if (ctx.hasActiveTask(session.id) && ctx.hasTaskActivity(session.id)) {
     const response = ctx.taskResponseMarkers.has(session.id)
@@ -50,7 +50,11 @@ function handleSessionReady(ctx: MockCtx, session: MockSession): void {
     ctx.log(
       `session_ready for active task ${session.id} — forwarding as task_complete (stall classifier path, response: ${response.length} chars)`,
     );
-    ctx.emitEvent(session.id, "task_complete", { session, response });
+    ctx.emitEvent(session.id, "task_complete", {
+      session,
+      response,
+      source: "session_ready_forward",
+    });
   }
 }
 
@@ -103,7 +107,10 @@ describe("session_ready → task_complete forwarding", () => {
     handleSessionReady(ctx, session);
 
     // Should emit "ready" but NOT "task_complete"
-    expect(ctx.emitEvent).toHaveBeenCalledWith("s-1", "ready", { session });
+    expect(ctx.emitEvent).toHaveBeenCalledWith("s-1", "ready", {
+      session,
+      source: "pty_manager",
+    });
     expect(ctx.emitEvent).not.toHaveBeenCalledWith(
       "s-1",
       "task_complete",
@@ -119,7 +126,10 @@ describe("session_ready → task_complete forwarding", () => {
 
     handleSessionReady(ctx, session);
 
-    expect(ctx.emitEvent).toHaveBeenCalledWith("s-1", "ready", { session });
+    expect(ctx.emitEvent).toHaveBeenCalledWith("s-1", "ready", {
+      session,
+      source: "pty_manager",
+    });
     expect(ctx.emitEvent).not.toHaveBeenCalledWith(
       "s-1",
       "task_complete",
@@ -137,10 +147,14 @@ describe("session_ready → task_complete forwarding", () => {
     handleSessionReady(ctx, session);
 
     // Should emit BOTH "ready" and "task_complete"
-    expect(ctx.emitEvent).toHaveBeenCalledWith("s-1", "ready", { session });
+    expect(ctx.emitEvent).toHaveBeenCalledWith("s-1", "ready", {
+      session,
+      source: "pty_manager",
+    });
     expect(ctx.emitEvent).toHaveBeenCalledWith("s-1", "task_complete", {
       session,
       response: "", // empty because no marker
+      source: "session_ready_forward",
     });
   });
 
@@ -160,6 +174,7 @@ describe("session_ready → task_complete forwarding", () => {
     expect(ctx.emitEvent).toHaveBeenCalledWith("s-1", "task_complete", {
       session,
       response: "response line",
+      source: "session_ready_forward",
     });
     // Marker should be consumed
     expect(markers.has("s-1")).toBe(false);
@@ -184,6 +199,7 @@ describe("session_ready → task_complete forwarding", () => {
     expect(ctx.emitEvent).toHaveBeenCalledWith("s-1", "task_complete", {
       session,
       response: "",
+      source: "session_ready_forward",
     });
   });
 });

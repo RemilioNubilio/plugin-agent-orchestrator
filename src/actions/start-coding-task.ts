@@ -147,9 +147,6 @@ export const startCodingTaskAction: BackgroundAction = {
 
     const explicitRawType =
       (params?.agentType as string) ?? (content.agentType as string);
-    const rawAgentType =
-      explicitRawType ?? (await ptyService.resolveAgentType());
-    const defaultAgentType = normalizeAgentType(rawAgentType);
     const memoryContent =
       (params?.memoryContent as string) ?? (content.memoryContent as string);
     const approvalPreset =
@@ -197,6 +194,25 @@ export const startCodingTaskAction: BackgroundAction = {
       }
     }
 
+    const selectionTask =
+      (params?.task as string) ??
+      (content.task as string) ??
+      (content.text as string);
+    const rawAgentType =
+      explicitRawType ??
+      (await ptyService.resolveAgentType({
+        task: selectionTask,
+        repo,
+        subtaskCount: typeof (params?.agents as string) === "string" ||
+          typeof (content.agents as string) === "string"
+          ? (((params?.agents as string) ?? (content.agents as string))
+              .split("|")
+              .map((value) => value.trim())
+              .filter(Boolean).length || 1)
+          : 1,
+      }));
+    const defaultAgentType = normalizeAgentType(rawAgentType);
+
     // Build credentials (shared across all agents)
     const customCredentialKeys = runtime.getSetting("CUSTOM_CREDENTIAL_KEYS") as
       | string
@@ -239,6 +255,7 @@ export const startCodingTaskAction: BackgroundAction = {
       repo,
       defaultAgentType,
       rawAgentType,
+      agentTypeExplicit: Boolean(explicitRawType),
       agentSelectionStrategy: ptyService.agentSelectionStrategy,
       memoryContent,
       approvalPreset,

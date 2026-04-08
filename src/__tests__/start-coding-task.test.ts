@@ -223,6 +223,29 @@ describe("startCodingTaskAction", () => {
           }),
         }),
       );
+      expect(ptyService.resolveAgentType).not.toHaveBeenCalled();
+    });
+
+    it("passes task context into framework resolution when no explicit agent type is provided", async () => {
+      const ptyService = createMockPTYService();
+      const runtime = createMockRuntime(ptyService);
+      const message = createMockMessage({
+        text: "Research the failing integration tests and propose a fix",
+      });
+
+      await startCodingTaskAction.handler(
+        runtime as unknown as IAgentRuntime,
+        message as unknown as Memory,
+        undefined,
+        { parameters: { task: "Research the failing integration tests and propose a fix" } },
+        jest.fn(),
+      );
+
+      expect(ptyService.resolveAgentType).toHaveBeenCalledWith({
+        task: "Research the failing integration tests and propose a fix",
+        repo: undefined,
+        subtaskCount: 1,
+      });
     });
 
     it("should map pi agent type to shell and wrap the task as a pi command", async () => {

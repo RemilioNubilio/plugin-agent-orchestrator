@@ -92,7 +92,11 @@ function forwardReadyAsTaskComplete(
   ctx.log(
     `session_ready for active task ${session.id} — forwarding as task_complete (stall classifier path, response: ${response.length} chars)`,
   );
-  ctx.emitEvent(session.id, "task_complete", { session, response });
+  ctx.emitEvent(session.id, "task_complete", {
+    session,
+    response,
+    source: "session_ready_forward",
+  });
 }
 
 /** Value returned by {@link initializePTYManager}. */
@@ -140,7 +144,7 @@ export async function initializePTYManager(
       ctx.log(
         `session_ready event received for ${session.id} (type: ${session.type}, status: ${session.status})`,
       );
-      ctx.emitEvent(session.id, "ready", { session });
+      ctx.emitEvent(session.id, "ready", { session, source: "pty_manager" });
       forwardReadyAsTaskComplete(ctx, session);
       // Mark task as delivered AFTER the forward check so the first ready
       // event (startup) is not treated as completion. Subsequent ready events
@@ -149,11 +153,14 @@ export async function initializePTYManager(
     });
 
     bunManager.on("session_exit", (id: string, code: number) => {
-      ctx.emitEvent(id, "stopped", { reason: `exit code ${code}` });
+      ctx.emitEvent(id, "stopped", {
+        reason: `exit code ${code}`,
+        source: "pty_manager",
+      });
     });
 
     bunManager.on("session_error", (id: string, error: string) => {
-      ctx.emitEvent(id, "error", { message: error });
+      ctx.emitEvent(id, "error", { message: error, source: "pty_manager" });
     });
 
     bunManager.on(
@@ -169,7 +176,11 @@ export async function initializePTYManager(
         ctx.log(
           `blocking_prompt for ${session.id}: type=${info?.type}, autoResponded=${autoResponded}, prompt="${(info?.prompt ?? "").slice(0, 80)}"`,
         );
-        ctx.emitEvent(session.id, "blocked", { promptInfo, autoResponded });
+        ctx.emitEvent(session.id, "blocked", {
+          promptInfo,
+          autoResponded,
+          source: "pty_manager",
+        });
       },
     );
 
@@ -180,7 +191,11 @@ export async function initializePTYManager(
         if (session.type === "gemini") {
           ctx.handleGeminiAuth(session.id);
         }
-        ctx.emitEvent(session.id, "login_required", { instructions, url });
+        ctx.emitEvent(session.id, "login_required", {
+          instructions,
+          url,
+          source: "pty_manager",
+        });
       },
     );
 
@@ -201,7 +216,11 @@ export async function initializePTYManager(
       ctx.log(
         `Task complete for ${session.id} (adapter fast-path), response: ${response.length} chars`,
       );
-      ctx.emitEvent(session.id, "task_complete", { session, response });
+      ctx.emitEvent(session.id, "task_complete", {
+        session,
+        response,
+        source: "adapter_fast_path",
+      });
     });
 
     bunManager.on(
@@ -210,12 +229,19 @@ export async function initializePTYManager(
         ctx.log(
           `tool_running for ${session.id}: ${info.toolName}${info.description ? ` — ${info.description}` : ""}`,
         );
-        ctx.emitEvent(session.id, "tool_running", { session, ...info });
+        ctx.emitEvent(session.id, "tool_running", {
+          session,
+          ...info,
+          source: "pty_manager",
+        });
       },
     );
 
     bunManager.on("message", (message: SessionMessage) => {
-      ctx.emitEvent(message.sessionId, "message", message);
+      ctx.emitEvent(message.sessionId, "message", {
+        ...message,
+        source: "pty_manager",
+      });
     });
 
     // Log worker-level stderr (pino logs from pty-manager worker process).
@@ -302,7 +328,7 @@ export async function initializePTYManager(
 
   // Set up event forwarding (same stall-classifier workaround as Bun path)
   nodeManager.on("session_ready", (session: SessionHandle) => {
-    ctx.emitEvent(session.id, "ready", { session });
+    ctx.emitEvent(session.id, "ready", { session, source: "pty_manager" });
     forwardReadyAsTaskComplete(ctx, session);
     ctx.markTaskDelivered?.(session.id);
   });
@@ -310,7 +336,11 @@ export async function initializePTYManager(
   nodeManager.on(
     "blocking_prompt",
     (session: SessionHandle, promptInfo: unknown, autoResponded: boolean) => {
-      ctx.emitEvent(session.id, "blocked", { promptInfo, autoResponded });
+      ctx.emitEvent(session.id, "blocked", {
+        promptInfo,
+        autoResponded,
+        source: "pty_manager",
+      });
     },
   );
 
@@ -320,7 +350,11 @@ export async function initializePTYManager(
       if (session.type === "gemini") {
         ctx.handleGeminiAuth(session.id);
       }
-      ctx.emitEvent(session.id, "login_required", { instructions, url });
+      ctx.emitEvent(session.id, "login_required", {
+        instructions,
+        url,
+        source: "pty_manager",
+      });
     },
   );
 
@@ -337,7 +371,11 @@ export async function initializePTYManager(
     ctx.log(
       `Task complete for ${session.id} (adapter fast-path), response: ${response.length} chars`,
     );
-    ctx.emitEvent(session.id, "task_complete", { session, response });
+    ctx.emitEvent(session.id, "task_complete", {
+      session,
+      response,
+      source: "adapter_fast_path",
+    });
   });
 
   nodeManager.on(
@@ -346,23 +384,33 @@ export async function initializePTYManager(
       ctx.log(
         `tool_running for ${session.id}: ${info.toolName}${info.description ? ` — ${info.description}` : ""}`,
       );
-      ctx.emitEvent(session.id, "tool_running", { session, ...info });
+      ctx.emitEvent(session.id, "tool_running", {
+        session,
+        ...info,
+        source: "pty_manager",
+      });
     },
   );
 
   nodeManager.on(
     "session_stopped",
     (session: SessionHandle, reason: string) => {
-      ctx.emitEvent(session.id, "stopped", { reason });
+      ctx.emitEvent(session.id, "stopped", { reason, source: "pty_manager" });
     },
   );
 
   nodeManager.on("session_error", (session: SessionHandle, error: string) => {
-    ctx.emitEvent(session.id, "error", { message: error });
+    ctx.emitEvent(session.id, "error", {
+      message: error,
+      source: "pty_manager",
+    });
   });
 
   nodeManager.on("message", (message: SessionMessage) => {
-    ctx.emitEvent(message.sessionId, "message", message);
+    ctx.emitEvent(message.sessionId, "message", {
+      ...message,
+      source: "pty_manager",
+    });
   });
 
   return { manager: nodeManager, usingBunWorker: false };

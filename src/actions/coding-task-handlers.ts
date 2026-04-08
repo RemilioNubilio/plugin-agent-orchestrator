@@ -184,6 +184,7 @@ export interface CodingTaskContext {
   repo: string | undefined;
   defaultAgentType: CodingAgentType;
   rawAgentType: string;
+  agentTypeExplicit: boolean;
   agentSelectionStrategy: AgentSelectionStrategy;
   memoryContent: string | undefined;
   approvalPreset: string | undefined;
@@ -212,6 +213,7 @@ export async function handleMultiAgent(
     repo,
     defaultAgentType,
     rawAgentType,
+    agentTypeExplicit,
     memoryContent,
     approvalPreset,
     explicitLabel,
@@ -326,11 +328,12 @@ export async function handleMultiAgent(
         metadata: evalMetadata.metadata,
       })
     : null;
-  const plannedAgents = agentSpecs.map((spec, i) => {
+  const plannedAgents = await Promise.all(agentSpecs.map(async (spec, i) => {
     let specAgentType = defaultAgentType;
     let specPiRequested = isPiAgentType(rawAgentType);
     let specRequestedType = rawAgentType;
     let specTask = spec;
+    let hasExplicitPrefix = false;
     const colonIdx = spec.indexOf(":");
     if (
       ctx.agentSelectionStrategy !== "fixed" &&
@@ -339,6 +342,7 @@ export async function handleMultiAgent(
     ) {
       const prefix = spec.slice(0, colonIdx).trim().toLowerCase();
       if ((KNOWN_AGENT_PREFIXES as readonly string[]).includes(prefix)) {
+        hasExplicitPrefix = true;
         specRequestedType = prefix;
         specPiRequested = isPiAgentType(prefix);
         specAgentType = normalizeAgentType(prefix);
@@ -356,6 +360,16 @@ export async function handleMultiAgent(
       ? `${explicitLabel}-${i + 1}`
       : generateLabel(repo, specTask);
 
+    if (!agentTypeExplicit && !hasExplicitPrefix) {
+      specRequestedType = await ptyService.resolveAgentType({
+        task: specTask,
+        repo,
+        subtaskCount: agentSpecs.length,
+      });
+      specPiRequested = isPiAgentType(specRequestedType);
+      specAgentType = normalizeAgentType(specRequestedType);
+    }
+
     return {
       specAgentType,
       specPiRequested,
@@ -363,7 +377,7 @@ export async function handleMultiAgent(
       specTask,
       specLabel,
     };
-  });
+  }));
 
   const graphPlan =
     coordinator && taskThread

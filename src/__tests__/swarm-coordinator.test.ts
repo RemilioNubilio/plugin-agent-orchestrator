@@ -82,6 +82,7 @@ const createMockTaskRegistry = () => ({
 
 const createMockPTYService = () => ({
   onSessionEvent: jest.fn().mockReturnValue(() => {}),
+  onNormalizedSessionEvent: jest.fn().mockReturnValue(() => {}),
   sendToSession: jest.fn().mockResolvedValue(undefined),
   sendKeysToSession: jest.fn().mockResolvedValue(undefined),
   getSessionOutput: jest.fn().mockResolvedValue("recent output"),
@@ -179,7 +180,7 @@ describe("SwarmCoordinator", () => {
   // =========================================================================
   describe("lifecycle", () => {
     it("subscribes to PTY events on start", () => {
-      expect(mockPty.onSessionEvent).toHaveBeenCalledTimes(1);
+      expect(mockPty.onNormalizedSessionEvent).toHaveBeenCalledTimes(1);
     });
 
     it("rehydrates persisted pending confirmations on start", async () => {
@@ -229,7 +230,7 @@ describe("SwarmCoordinator", () => {
 
     it("unsubscribes on stop", async () => {
       const unsub = jest.fn();
-      mockPty.onSessionEvent.mockReturnValue(unsub);
+      mockPty.onNormalizedSessionEvent.mockReturnValue(unsub);
       const coord = new SwarmCoordinator(mockRuntime);
       coord.taskRegistry = createMockTaskRegistry();
       await coord.start(mockPty);

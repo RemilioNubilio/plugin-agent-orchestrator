@@ -239,6 +239,77 @@ describe("task-agent framework preferences", () => {
     ).toBe(true);
   });
 
+  it("prefers Codex for implementation-heavy work with verification requirements", async () => {
+    process.env.OPENAI_API_KEY = "codex-key";
+    process.env.GOOGLE_API_KEY = "gemini-key";
+
+    const state = await getTaskAgentFrameworkState(
+      createRuntime() as never,
+      {
+        checkAvailableAgents: async () =>
+          [
+            { adapter: "codex", installed: true },
+            { adapter: "gemini", installed: true },
+          ] as never,
+      },
+      {
+        task: "Implement the fix, update the tests, and verify the regression is gone.",
+        repo: "https://github.com/example/project",
+        acceptanceCriteria: ["tests must pass"],
+      },
+    );
+
+    expect(state.preferred.id).toBe("codex");
+    expect(
+      state.frameworks.find((framework) => framework.id === "codex")
+        ?.selectionScore,
+    ).toBeGreaterThan(
+      state.frameworks.find((framework) => framework.id === "gemini")
+        ?.selectionScore ?? 0,
+    );
+  });
+
+  it("uses metrics to break ties between otherwise-available frameworks", async () => {
+    process.env.ANTHROPIC_API_KEY = "claude-key";
+    process.env.OPENAI_API_KEY = "codex-key";
+
+    const state = await getTaskAgentFrameworkState(
+      createRuntime() as never,
+      {
+        checkAvailableAgents: async () =>
+          [
+            { adapter: "claude", installed: true },
+            { adapter: "codex", installed: true },
+          ] as never,
+        getAgentMetrics: () => ({
+          codex: {
+            spawned: 10,
+            completed: 9,
+            completedViaFastPath: 4,
+            completedViaClassifier: 5,
+            stallCount: 1,
+            avgCompletionMs: 20_000,
+          },
+          claude: {
+            spawned: 10,
+            completed: 5,
+            completedViaFastPath: 2,
+            completedViaClassifier: 3,
+            stallCount: 4,
+            avgCompletionMs: 80_000,
+          },
+        }),
+      },
+      {
+        task: "Fix the regression and run the tests.",
+        repo: "https://github.com/example/project",
+      },
+    );
+
+    expect(state.preferred.id).toBe("codex");
+    expect(state.preferred.reason).toContain("best");
+  });
+
   it("detects quota and credit depletion errors", () => {
     expect(isUsageExhaustedTaskAgentError("AI_APICallError: insufficient credits")).toBe(
       true,

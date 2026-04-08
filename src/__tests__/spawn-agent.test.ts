@@ -141,7 +141,10 @@ describe("spawnAgentAction", () => {
 
     it("should use the preferred agent type if not specified", async () => {
       const runtime = createMockRuntime(createMockPTYService());
-      const message = createMockMessage({ workdir: validWorkdir });
+      const message = createMockMessage({
+        workdir: validWorkdir,
+        task: "Investigate the failing tests in this repo",
+      });
 
       await spawnAgentAction.handler(
         runtime as unknown as IAgentRuntime,
@@ -151,7 +154,10 @@ describe("spawnAgentAction", () => {
         jest.fn(),
       );
 
-      expect(mockResolveAgentType).toHaveBeenCalled();
+      expect(mockResolveAgentType).toHaveBeenCalledWith({
+        task: "Investigate the failing tests in this repo",
+        workdir: validWorkdir,
+      });
       expect(mockSpawnSession).toHaveBeenCalledWith(
         expect.objectContaining({
           agentType: "claude",

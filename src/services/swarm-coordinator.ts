@@ -27,6 +27,11 @@ import { extractDevServerUrl } from "./ansi-utils.js";
 import type { PTYService } from "./pty-service.js";
 import type { CodingAgentType } from "./pty-types.js";
 import { normalizeAgentType } from "./pty-types.js";
+import {
+  normalizeCoordinatorEvent,
+  type CoordinatorBlockedEvent,
+  type CoordinatorNormalizedEvent,
+} from "./coordinator-event-normalizer.js";
 import type {
   CoordinationLLMResponse,
   SharedDecision,
@@ -311,7 +316,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
   /** Buffer for events arriving before task registration. */
   private unregisteredBuffer: Map<
     string,
-    Array<{ event: string; data: unknown; receivedAt: number }>
+    Array<{ normalized: CoordinatorNormalizedEvent; receivedAt: number }>
   > = new Map();
 
   /** Idle watchdog timer handle. */
@@ -336,11 +341,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
   swarmCompleteNotified = false;
 
   /** Buffered events during pause — replayed on resume. */
-  private pauseBuffer: Array<{
-    sessionId: string;
-    event: string;
-    data: unknown;
-  }> = [];
+  private pauseBuffer: CoordinatorNormalizedEvent[] = [];
 
   /** Buffered broadcasts waiting for wsBroadcast to be wired. */
   private preBridgeBroadcastBuffer: SwarmEvent[] = [];
@@ -496,9 +497,9 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
     await this.taskRegistry.recoverInterruptedTasks();
     await this.rehydratePendingDecisions();
     this.ptyService = ptyService;
-    this.unsubscribeEvents = ptyService.onSessionEvent(
-      (sessionId, event, data) => {
-        this.handleSessionEvent(sessionId, event, data).catch((err) => {
+    this.unsubscribeEvents = ptyService.onNormalizedSessionEvent(
+      (normalized) => {
+        this.handleNormalizedSessionEvent(normalized).catch((err) => {
           this.log(`Error handling event: ${err}`);
         });
       },
@@ -767,11 +768,9 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
     const buffered = [...this.pauseBuffer];
     this.pauseBuffer = [];
     for (const entry of buffered) {
-      this.handleSessionEvent(entry.sessionId, entry.event, entry.data).catch(
-        (err) => {
-          this.log(`Error replaying buffered event: ${err}`);
-        },
-      );
+      this.handleNormalizedSessionEvent(entry).catch((err) => {
+        this.log(`Error replaying buffered event: ${err}`);
+      });
     }
   }
 
@@ -984,11 +983,9 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
     if (buffered) {
       this.unregisteredBuffer.delete(sessionId);
       for (const entry of buffered) {
-        this.handleSessionEvent(sessionId, entry.event, entry.data).catch(
-          (err) => {
-            this.log(`Error replaying buffered event: ${err}`);
-          },
-        );
+        this.handleNormalizedSessionEvent(entry.normalized).catch((err) => {
+          this.log(`Error replaying buffered event: ${err}`);
+        });
       }
     }
     await persistPromise;
@@ -2106,9 +2103,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
         // Task was registered — flush
         this.unregisteredBuffer.delete(sessionId);
         for (const entry of stillBuffered) {
-          this.handleSessionEvent(sessionId, entry.event, entry.data).catch(
-            () => {},
-          );
+          this.handleNormalizedSessionEvent(entry.normalized).catch(() => {});
         }
         return;
       }
@@ -2201,6 +2196,25 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
     event: string,
     data: unknown,
   ): Promise<void> {
+    const normalized = normalizeCoordinatorEvent(sessionId, event, data);
+    if (!normalized) {
+      this.broadcast({
+        type: event,
+        sessionId,
+        timestamp: Date.now(),
+        data,
+      });
+      return;
+    }
+    await this.handleNormalizedSessionEvent(normalized);
+  }
+
+  private async handleNormalizedSessionEvent(
+    normalized: CoordinatorNormalizedEvent,
+  ): Promise<void> {
+    const sessionId = normalized.sessionId;
+    const event = normalized.name;
+    const data = normalized.rawData;
     // Lazy-wire scratch decision callback if not yet connected
     if (!this.scratchDecisionWired) {
       this.wireScratchDecisionCallback();
@@ -2233,7 +2247,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
           buffer = [];
           this.unregisteredBuffer.set(sessionId, buffer);
         }
-        buffer.push({ event, data, receivedAt: Date.now() });
+        buffer.push({ normalized, receivedAt: Date.now() });
 
         // Only schedule retry if not already retrying for this session
         if (!this.unregisteredRetryTimers.has(sessionId)) {
@@ -2287,8 +2301,10 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
     // Auto-responses still flow through handleBlocked — only LLM decisions are deferred.
     if (this._paused && (event === "blocked" || event === "task_complete")) {
       // Auto-responded blocked events don't need LLM — let them through
-      const eventData = data as { autoResponded?: boolean };
-      if (!(event === "blocked" && eventData.autoResponded)) {
+      const blockedAutoResponded =
+        event === "blocked" &&
+        (normalized as CoordinatorBlockedEvent).autoResponded === true;
+      if (!blockedAutoResponded) {
         // Broadcast buffered state for dashboard visibility
         this.broadcast({
           type:
@@ -2297,7 +2313,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
           timestamp: Date.now(),
           data,
         });
-        this.pauseBuffer.push({ sessionId, event, data });
+        this.pauseBuffer.push(normalized);
         this.log(
           `Buffered "${event}" for ${taskCtx.label} (coordinator paused)`,
         );
@@ -2309,24 +2325,8 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
     // Route by event type
     switch (event) {
       case "blocked": {
-        const blockedPrompt =
-          (
-            data as {
-              promptInfo?: {
-                prompt?: string;
-                instructions?: string;
-              };
-            }
-          ).promptInfo?.prompt ??
-          (
-            data as {
-              promptInfo?: {
-                prompt?: string;
-                instructions?: string;
-              };
-            }
-          ).promptInfo?.instructions ??
-          "";
+        const blockedEvent = normalized as CoordinatorBlockedEvent;
+        const blockedPrompt = blockedEvent.promptText;
         if (
           this.isAutomaticFailoverFramework(taskCtx.agentType) &&
           isUsageExhaustedTaskAgentError(blockedPrompt)

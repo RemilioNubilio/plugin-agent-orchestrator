@@ -125,10 +125,15 @@ export const spawnAgentAction: Action = {
 
     const explicitRawType =
       (params?.agentType as string) ?? (content.agentType as string);
-    const rawAgentType =
-      explicitRawType ?? (await ptyService.resolveAgentType());
-    const agentType = normalizeAgentType(rawAgentType);
     const task = (params?.task as string) ?? (content.task as string);
+    const rawAgentType =
+      explicitRawType ??
+      (await ptyService.resolveAgentType({
+        task,
+        workdir:
+          ((params?.workdir as string) ?? (content.workdir as string)) || undefined,
+      }));
+    const agentType = normalizeAgentType(rawAgentType);
     const piRequested = isPiAgentType(rawAgentType);
     const initialTask = piRequested ? toPiCommand(task) : task;
 

@@ -14,6 +14,7 @@ import os from "node:os";
 import path from "node:path";
 import type { IAgentRuntime } from "@elizaos/core";
 import type { PreflightResult } from "coding-agent-adapters";
+import type { AgentMetrics } from "./agent-metrics.js";
 
 export type SupportedTaskAgentAdapter =
   | "claude"
@@ -35,6 +36,8 @@ export interface TaskAgentFrameworkAvailability {
   reason: string;
   installCommand?: string;
   docsUrl?: string;
+  selectionScore?: number;
+  selectionSignals?: Record<string, number>;
 }
 
 export interface PreferredTaskAgent {
@@ -52,7 +55,128 @@ export interface TaskAgentFrameworkProbe {
   checkAvailableAgents?: (
     types?: SupportedTaskAgentAdapter[],
   ) => Promise<PreflightResult[]>;
+  getAgentMetrics?: () => Record<
+    string,
+    Omit<AgentMetrics, "totalCompletionMs">
+  >;
 }
+
+export type TaskAgentTaskKind =
+  | "coding"
+  | "research"
+  | "planning"
+  | "ops"
+  | "mixed";
+
+export interface TaskAgentTaskProfileInput {
+  task?: string;
+  repo?: string;
+  workdir?: string;
+  threadKind?: TaskAgentTaskKind;
+  subtaskCount?: number;
+  acceptanceCriteria?: string[];
+}
+
+export interface TaskAgentTaskProfile {
+  text: string;
+  kind: TaskAgentTaskKind;
+  subtaskCount: number;
+  repoPresent: boolean;
+  signals: {
+    implementation: number;
+    research: number;
+    planning: number;
+    ops: number;
+    verification: number;
+    coordination: number;
+    repoWork: number;
+    fastIteration: number;
+  };
+}
+
+interface FrameworkCapabilityProfile {
+  implementation: number;
+  research: number;
+  planning: number;
+  ops: number;
+  verification: number;
+  coordination: number;
+  repoWork: number;
+  fastIteration: number;
+}
+
+const RESEARCH_SIGNAL_RE =
+  /\b(research|investigate|analy[sz]e|analysis|compare|evaluate|review|study|summari[sz]e|deep research|look into|explore)\b/i;
+const PLANNING_SIGNAL_RE =
+  /\b(plan|planning|roadmap|strategy|spec|architecture|design|scope|milestone|sequence|timeline)\b/i;
+const OPS_SIGNAL_RE =
+  /\b(deploy|release|ship|rollback|monitor|incident|infra|infrastructure|configure|setup|docker|kubernetes|ci|cd|runbook)\b/i;
+const IMPLEMENTATION_SIGNAL_RE =
+  /\b(code|coding|implement|fix|debug|refactor|write|build|patch|feature|server|api|component|function|typescrip?t|javascript|react)\b/i;
+const VERIFICATION_SIGNAL_RE =
+  /\b(test|tests|verify|validation|prove|acceptance|check|regression|benchmark|lint|typecheck|qa)\b/i;
+const COORDINATION_SIGNAL_RE =
+  /\b(parallel|delegate|subagent|sub-agent|swarm|coordinate|coordination|handoff|mailbox|scheduler|orchestrate)\b/i;
+const REPO_SIGNAL_RE =
+  /\b(repo|repository|branch|commit|pull request|pr|diff|workspace|file|directory|codebase)\b/i;
+const FAST_ITERATION_SIGNAL_RE =
+  /\b(fix|debug|patch|flaky|quick|fast|iterate|loop|unblock|repair)\b/i;
+
+const FRAMEWORK_CAPABILITY_PROFILES: Record<
+  TaskAgentFrameworkId,
+  FrameworkCapabilityProfile
+> = {
+  claude: {
+    implementation: 0.95,
+    research: 0.95,
+    planning: 1,
+    ops: 0.8,
+    verification: 0.85,
+    coordination: 1,
+    repoWork: 0.9,
+    fastIteration: 0.75,
+  },
+  codex: {
+    implementation: 1,
+    research: 0.8,
+    planning: 0.75,
+    ops: 0.85,
+    verification: 1,
+    coordination: 0.9,
+    repoWork: 1,
+    fastIteration: 0.95,
+  },
+  gemini: {
+    implementation: 0.7,
+    research: 1,
+    planning: 0.95,
+    ops: 0.7,
+    verification: 0.6,
+    coordination: 0.7,
+    repoWork: 0.65,
+    fastIteration: 0.7,
+  },
+  aider: {
+    implementation: 0.9,
+    research: 0.45,
+    planning: 0.45,
+    ops: 0.75,
+    verification: 0.85,
+    coordination: 0.35,
+    repoWork: 0.95,
+    fastIteration: 1,
+  },
+  pi: {
+    implementation: 0.55,
+    research: 0.5,
+    planning: 0.55,
+    ops: 0.5,
+    verification: 0.5,
+    coordination: 0.35,
+    repoWork: 0.5,
+    fastIteration: 0.5,
+  },
+};
 
 const FRAMEWORK_LABELS: Record<TaskAgentFrameworkId, string> = {
   claude: "Claude Code",
@@ -75,7 +199,10 @@ const TASK_AGENT_COMPLEXITY_RE =
 let frameworkStateCache:
   | {
       expiresAt: number;
-      value: TaskAgentFrameworkState;
+      value: {
+        configuredSubscriptionProvider?: string;
+        frameworks: TaskAgentFrameworkAvailability[];
+      };
     }
   | undefined;
 const frameworkCooldowns = new Map<
@@ -263,6 +390,7 @@ function getFrameworkCooldown(
 async function computeTaskAgentFrameworkState(
   runtime: IAgentRuntime,
   probe?: TaskAgentFrameworkProbe,
+  profileInput?: TaskAgentTaskProfileInput,
 ): Promise<TaskAgentFrameworkState> {
   const configuredSubscriptionProvider = readConfiguredSubscriptionProvider();
   const preflightByAdapter = new Map<SupportedTaskAgentAdapter, PreflightResult>();
@@ -294,7 +422,7 @@ async function computeTaskAgentFrameworkState(
     configuredSubscriptionProvider === "openai-codex" ||
     configuredSubscriptionProvider === "openai-subscription";
 
-  const frameworks: TaskAgentFrameworkAvailability[] = STANDARD_FRAMEWORKS.map(
+  const inventory: TaskAgentFrameworkAvailability[] = STANDARD_FRAMEWORKS.map(
     (id) => {
       const preflight = preflightByAdapter.get(id);
       const cooldown = getFrameworkCooldown(id);
@@ -342,7 +470,7 @@ async function computeTaskAgentFrameworkState(
     },
   );
 
-  frameworks.push({
+  inventory.push({
     id: "pi",
     label: FRAMEWORK_LABELS.pi,
     installed: piReady,
@@ -353,110 +481,95 @@ async function computeTaskAgentFrameworkState(
     reason: piReady ? "CLI detected" : "CLI not detected",
   });
 
-  const byId = new Map(frameworks.map((framework) => [framework.id, framework]));
-  const isSelectable = (id: TaskAgentFrameworkId): boolean =>
-    !byId.get(id)?.temporarilyDisabled;
+  const frameworks = inventory.map((framework) => ({
+    ...framework,
+    recommended: false,
+  }));
+  const metrics = probe?.getAgentMetrics?.() ?? {};
+  const profile = buildTaskAgentTaskProfile(profileInput);
   const explicitDefault = safeGetSetting(runtime, "PARALLAX_DEFAULT_AGENT_TYPE")
     ?.toLowerCase()
     .trim();
-  let preferred: PreferredTaskAgent;
+  const selectable = frameworks.filter(
+    (framework) => framework.installed && !framework.temporarilyDisabled,
+  );
+  const candidates = selectable.length > 0
+    ? selectable
+    : frameworks.filter((framework) => framework.installed);
 
-  if (
-    explicitDefault &&
-    (explicitDefault === "claude" ||
-      explicitDefault === "codex" ||
-      explicitDefault === "gemini" ||
-      explicitDefault === "aider" ||
-      explicitDefault === "pi") &&
-    byId.get(explicitDefault)?.installed &&
-    isSelectable(explicitDefault)
-  ) {
-    preferred = {
-      id: explicitDefault,
-      reason: "explicit PARALLAX_DEFAULT_AGENT_TYPE override",
+  const scoredCandidates = candidates.map((framework) => {
+    const explicitOverride =
+      explicitDefault === framework.id
+        ? framework.installed && !framework.temporarilyDisabled
+          ? 40
+          : 0
+        : 0;
+    const providerPreference =
+      providerPrefersClaude && framework.id === "claude"
+        ? framework.subscriptionReady
+          ? 18
+          : 6
+        : providerPrefersCodex && framework.id === "codex"
+          ? framework.subscriptionReady
+            ? 18
+            : 6
+          : 0;
+    const availabilityScore =
+      (framework.installed ? 40 : -100) +
+      (framework.authReady ? 18 : -25) +
+      (framework.subscriptionReady ? 8 : 0) +
+      (framework.temporarilyDisabled ? -80 : 0);
+    const profileScore = computeProfileFitScore(framework.id, profile);
+    const metricsScore = computeMetricsScore(
+      metrics[framework.id],
+      profile.signals.fastIteration,
+    );
+    const selectionSignals = {
+      availability: availabilityScore,
+      profile: profileScore,
+      provider: providerPreference,
+      metrics: metricsScore,
+      explicitOverride,
     };
-  } else if (
-    providerPrefersClaude &&
-    byId.get("claude")?.installed &&
-    claudeSubscriptionReady &&
-    isSelectable("claude")
-  ) {
-    preferred = {
-      id: "claude",
-      reason: "configured Claude subscription should drive Claude Code first",
+    return {
+      framework,
+      score: Object.values(selectionSignals).reduce((sum, value) => sum + value, 0),
+      selectionSignals,
     };
-  } else if (
-    providerPrefersCodex &&
-    byId.get("codex")?.installed &&
-    codexSubscriptionReady &&
-    isSelectable("codex")
-  ) {
-    preferred = {
-      id: "codex",
-      reason: "configured OpenAI subscription should drive Codex first",
-    };
-  } else if (
-    byId.get("claude")?.installed &&
-    claudeSubscriptionReady &&
-    isSelectable("claude")
-  ) {
-    preferred = {
-      id: "claude",
-      reason: "Claude Code is installed and the user is logged in",
-    };
-  } else if (
-    byId.get("codex")?.installed &&
-    codexSubscriptionReady &&
-    isSelectable("codex")
-  ) {
-    preferred = {
-      id: "codex",
-      reason: "Codex is installed and the user is logged in",
-    };
-  } else if (
-    byId.get("claude")?.installed &&
-    claudeAuthReady &&
-    isSelectable("claude")
-  ) {
-    preferred = {
-      id: "claude",
-      reason: "Claude Code is installed and credentials are available",
-    };
-  } else if (
-    byId.get("codex")?.installed &&
-    codexAuthReady &&
-    isSelectable("codex")
-  ) {
-    preferred = {
-      id: "codex",
-      reason: "Codex is installed and credentials are available",
-    };
-  } else if (
-    byId.get("gemini")?.installed &&
-    geminiAuthReady &&
-    isSelectable("gemini")
-  ) {
-    preferred = {
-      id: "gemini",
-      reason: "Gemini CLI is installed and credentials are available",
-    };
-  } else {
-    const fallback =
-      frameworks.find(
-        (framework) => framework.installed && !framework.temporarilyDisabled,
-      ) ??
-      frameworks.find((framework) => framework.installed) ??
-      frameworks[0];
-    preferred = {
-      id: fallback.id,
-      reason: fallback.installed
-        ? "best available installed task-agent framework"
-        : "default fallback while no task-agent CLI is installed",
-    };
-  }
+  });
+
+  const fallback =
+    candidates[0] ??
+    frameworks.find((framework) => framework.installed) ??
+    frameworks[0];
+  const preferredCandidate =
+    scoredCandidates.sort((left, right) => {
+      if (right.score !== left.score) {
+        return right.score - left.score;
+      }
+      return left.framework.id.localeCompare(right.framework.id);
+    })[0]?.framework ?? fallback;
+  const preferredSignals =
+    scoredCandidates.find((entry) => entry.framework.id === preferredCandidate.id)
+      ?.selectionSignals ?? {};
+  const preferred: PreferredTaskAgent = {
+    id: preferredCandidate.id,
+    reason: buildPreferredReason(
+      preferredCandidate,
+      profile,
+      preferredSignals,
+      explicitDefault,
+      configuredSubscriptionProvider,
+    ),
+  };
 
   for (const framework of frameworks) {
     framework.recommended = framework.id === preferred.id;
+    const scored = scoredCandidates.find((entry) => entry.framework.id === framework.id);
+    if (scored) {
+      framework.selectionScore = scored.score;
+      framework.selectionSignals = scored.selectionSignals;
+    }
   }
 
   return {
@@ -469,16 +582,330 @@ async function computeTaskAgentFrameworkState(
 export async function getTaskAgentFrameworkState(
   runtime: IAgentRuntime,
   probe?: TaskAgentFrameworkProbe,
+  profileInput?: TaskAgentTaskProfileInput,
 ): Promise<TaskAgentFrameworkState> {
   if (frameworkStateCache && frameworkStateCache.expiresAt > Date.now()) {
-    return frameworkStateCache.value;
+    return computeTaskAgentFrameworkStateFromInventory(
+      runtime,
+      frameworkStateCache.value,
+      probe,
+      profileInput,
+    );
   }
-  const value = await computeTaskAgentFrameworkState(runtime, probe);
+  const value = await computeTaskAgentFrameworkState(runtime, probe, profileInput);
+  if (!profileInput) {
+    frameworkStateCache = {
+      expiresAt: Date.now() + 15_000,
+      value: {
+        configuredSubscriptionProvider: value.configuredSubscriptionProvider,
+        frameworks: value.frameworks.map((framework) => ({
+          ...framework,
+          recommended: false,
+          selectionScore: undefined,
+          selectionSignals: undefined,
+        })),
+      },
+    };
+  }
+  return value;
+}
+
+function computeTaskAgentFrameworkStateFromInventory(
+  runtime: IAgentRuntime,
+  inventory: {
+    configuredSubscriptionProvider?: string;
+    frameworks: TaskAgentFrameworkAvailability[];
+  },
+  probe?: TaskAgentFrameworkProbe,
+  profileInput?: TaskAgentTaskProfileInput,
+): TaskAgentFrameworkState {
+  const clonedProbe = {
+    ...probe,
+    checkAvailableAgents: undefined,
+  };
   frameworkStateCache = {
     expiresAt: Date.now() + 15_000,
-    value,
+    value: inventory,
   };
-  return value;
+  return {
+    ...computeTaskAgentFrameworkStateFromCachedInventory(
+      runtime,
+      inventory,
+      clonedProbe,
+      profileInput,
+    ),
+  };
+}
+
+function computeTaskAgentFrameworkStateFromCachedInventory(
+  runtime: IAgentRuntime,
+  inventory: {
+    configuredSubscriptionProvider?: string;
+    frameworks: TaskAgentFrameworkAvailability[];
+  },
+  probe?: TaskAgentFrameworkProbe,
+  profileInput?: TaskAgentTaskProfileInput,
+): TaskAgentFrameworkState {
+  const metrics = probe?.getAgentMetrics?.() ?? {};
+  const frameworks = inventory.frameworks.map((framework) => ({
+    ...framework,
+    recommended: false,
+  }));
+  const profile = buildTaskAgentTaskProfile(profileInput);
+  const configuredSubscriptionProvider = inventory.configuredSubscriptionProvider;
+  const providerPrefersClaude =
+    configuredSubscriptionProvider === "anthropic-subscription";
+  const providerPrefersCodex =
+    configuredSubscriptionProvider === "openai-codex" ||
+    configuredSubscriptionProvider === "openai-subscription";
+  const explicitDefault = safeGetSetting(runtime, "PARALLAX_DEFAULT_AGENT_TYPE")
+    ?.toLowerCase()
+    .trim();
+  const candidates =
+    frameworks.filter(
+      (framework) => framework.installed && !framework.temporarilyDisabled,
+    ).length > 0
+      ? frameworks.filter(
+          (framework) => framework.installed && !framework.temporarilyDisabled,
+        )
+      : frameworks.filter((framework) => framework.installed);
+  const scoredCandidates = candidates.map((framework) => {
+    const explicitOverride =
+      explicitDefault === framework.id
+        ? framework.installed && !framework.temporarilyDisabled
+          ? 40
+          : 0
+        : 0;
+    const providerPreference =
+      providerPrefersClaude && framework.id === "claude"
+        ? framework.subscriptionReady
+          ? 18
+          : 6
+        : providerPrefersCodex && framework.id === "codex"
+          ? framework.subscriptionReady
+            ? 18
+            : 6
+          : 0;
+    const availabilityScore =
+      (framework.installed ? 40 : -100) +
+      (framework.authReady ? 18 : -25) +
+      (framework.subscriptionReady ? 8 : 0) +
+      (framework.temporarilyDisabled ? -80 : 0);
+    const profileScore = computeProfileFitScore(framework.id, profile);
+    const metricsScore = computeMetricsScore(
+      metrics[framework.id],
+      profile.signals.fastIteration,
+    );
+    const selectionSignals = {
+      availability: availabilityScore,
+      profile: profileScore,
+      provider: providerPreference,
+      metrics: metricsScore,
+      explicitOverride,
+    };
+    return {
+      framework,
+      score: Object.values(selectionSignals).reduce((sum, value) => sum + value, 0),
+      selectionSignals,
+    };
+  });
+  const fallback =
+    candidates[0] ??
+    frameworks.find((framework) => framework.installed) ??
+    frameworks[0];
+  const preferredCandidate =
+    scoredCandidates.sort((left, right) => {
+      if (right.score !== left.score) {
+        return right.score - left.score;
+      }
+      return left.framework.id.localeCompare(right.framework.id);
+    })[0]?.framework ?? fallback;
+  const preferredSignals =
+    scoredCandidates.find((entry) => entry.framework.id === preferredCandidate.id)
+      ?.selectionSignals ?? {};
+  const preferred = {
+    id: preferredCandidate.id,
+    reason: buildPreferredReason(
+      preferredCandidate,
+      profile,
+      preferredSignals,
+      explicitDefault,
+      configuredSubscriptionProvider,
+    ),
+  };
+  for (const framework of frameworks) {
+    framework.recommended = framework.id === preferred.id;
+    const scored = scoredCandidates.find((entry) => entry.framework.id === framework.id);
+    if (scored) {
+      framework.selectionScore = scored.score;
+      framework.selectionSignals = scored.selectionSignals;
+    }
+  }
+  frameworkStateCache = {
+    expiresAt: Date.now() + 15_000,
+    value: inventory,
+  };
+  return {
+    configuredSubscriptionProvider,
+    frameworks,
+    preferred,
+  };
+}
+
+function clampSignal(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+function kindBoost(kind: TaskAgentTaskKind, target: TaskAgentTaskKind): number {
+  if (kind === "mixed") return 0.25;
+  return kind === target ? 0.4 : 0;
+}
+
+export function buildTaskAgentTaskProfile(
+  input?: TaskAgentTaskProfileInput,
+): TaskAgentTaskProfile {
+  const text = [
+    input?.task?.trim(),
+    input?.repo?.trim(),
+    ...(input?.acceptanceCriteria ?? []).map((value) => value.trim()),
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join("\n");
+  const inferredKind: TaskAgentTaskKind =
+    input?.threadKind ??
+    (OPS_SIGNAL_RE.test(text)
+      ? "ops"
+      : PLANNING_SIGNAL_RE.test(text)
+        ? "planning"
+        : RESEARCH_SIGNAL_RE.test(text) && !IMPLEMENTATION_SIGNAL_RE.test(text)
+          ? "research"
+          : IMPLEMENTATION_SIGNAL_RE.test(text)
+            ? "coding"
+            : RESEARCH_SIGNAL_RE.test(text)
+              ? "mixed"
+              : "coding");
+  const repoPresent = Boolean(input?.repo?.trim() || input?.workdir?.trim());
+  const subtaskCount = Math.max(1, input?.subtaskCount ?? 1);
+  const signals = {
+    implementation: clampSignal(
+      (IMPLEMENTATION_SIGNAL_RE.test(text) ? 0.7 : 0.2) +
+        (repoPresent ? 0.15 : 0) +
+        kindBoost(inferredKind, "coding"),
+    ),
+    research: clampSignal(
+      (RESEARCH_SIGNAL_RE.test(text) ? 0.7 : 0.1) +
+        kindBoost(inferredKind, "research"),
+    ),
+    planning: clampSignal(
+      (PLANNING_SIGNAL_RE.test(text) ? 0.75 : 0.1) +
+        kindBoost(inferredKind, "planning"),
+    ),
+    ops: clampSignal(
+      (OPS_SIGNAL_RE.test(text) ? 0.75 : 0.05) + kindBoost(inferredKind, "ops"),
+    ),
+    verification: clampSignal(
+      (VERIFICATION_SIGNAL_RE.test(text) ? 0.8 : 0.15) +
+        ((input?.acceptanceCriteria?.length ?? 0) > 0 ? 0.15 : 0),
+    ),
+    coordination: clampSignal(
+      (COORDINATION_SIGNAL_RE.test(text) ? 0.7 : 0.05) +
+        (subtaskCount > 1 ? 0.25 : 0),
+    ),
+    repoWork: clampSignal(
+      (REPO_SIGNAL_RE.test(text) ? 0.7 : 0.1) + (repoPresent ? 0.25 : 0),
+    ),
+    fastIteration: clampSignal(
+      (FAST_ITERATION_SIGNAL_RE.test(text) ? 0.75 : 0.15) +
+        (inferredKind === "coding" ? 0.1 : 0),
+    ),
+  };
+  return {
+    text,
+    kind: inferredKind,
+    subtaskCount,
+    repoPresent,
+    signals,
+  };
+}
+
+function computeProfileFitScore(
+  frameworkId: TaskAgentFrameworkId,
+  profile: TaskAgentTaskProfile,
+): number {
+  const capability = FRAMEWORK_CAPABILITY_PROFILES[frameworkId];
+  const weightedSum =
+    profile.signals.implementation * capability.implementation * 18 +
+    profile.signals.research * capability.research * 16 +
+    profile.signals.planning * capability.planning * 14 +
+    profile.signals.ops * capability.ops * 12 +
+    profile.signals.verification * capability.verification * 14 +
+    profile.signals.coordination * capability.coordination * 14 +
+    profile.signals.repoWork * capability.repoWork * 10 +
+    profile.signals.fastIteration * capability.fastIteration * 10;
+  return Math.round(weightedSum);
+}
+
+function computeMetricsScore(
+  metrics: Omit<AgentMetrics, "totalCompletionMs"> | undefined,
+  fastIterationSignal: number,
+): number {
+  if (!metrics || metrics.spawned === 0) {
+    return 0;
+  }
+  const successRate =
+    metrics.spawned > 0 ? metrics.completed / metrics.spawned : 0;
+  const stallRate =
+    metrics.spawned > 0 ? metrics.stallCount / metrics.spawned : 0;
+  const durationBonus =
+    metrics.completed > 0
+      ? Math.max(
+          -8,
+          Math.min(
+            8,
+            ((120_000 - metrics.avgCompletionMs) / 120_000) *
+              (4 + fastIterationSignal * 4),
+          ),
+        )
+      : 0;
+  return Math.round(successRate * 14 - stallRate * 12 + durationBonus);
+}
+
+function buildPreferredReason(
+  framework: TaskAgentFrameworkAvailability,
+  profile: TaskAgentTaskProfile,
+  selectionSignals: Record<string, number>,
+  explicitDefault: string | undefined,
+  configuredSubscriptionProvider: string | undefined,
+): string {
+  const dominantSignals = Object.entries(profile.signals)
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, 2)
+    .map(([key]) => key);
+  if (explicitDefault === framework.id && selectionSignals.explicitOverride > 0) {
+    return `explicit PARALLAX_DEFAULT_AGENT_TYPE override, with ${FRAMEWORK_LABELS[framework.id]} still scoring well for ${dominantSignals.join(" + ")} work`;
+  }
+  if (
+    configuredSubscriptionProvider === "anthropic-subscription" &&
+    framework.id === "claude" &&
+    framework.subscriptionReady
+  ) {
+    return `best fit for ${dominantSignals.join(" + ")} work while honoring the configured Claude subscription`;
+  }
+  if (
+    (configuredSubscriptionProvider === "openai-codex" ||
+      configuredSubscriptionProvider === "openai-subscription") &&
+    framework.id === "codex" &&
+    framework.subscriptionReady
+  ) {
+    return `best fit for ${dominantSignals.join(" + ")} work while honoring the configured OpenAI subscription`;
+  }
+  if (framework.subscriptionReady) {
+    return `best overall score for ${dominantSignals.join(" + ")} work with subscription-backed auth already available`;
+  }
+  if (framework.authReady) {
+    return `best overall score for ${dominantSignals.join(" + ")} work with credentials already available`;
+  }
+  return `selected as the highest-scoring installed framework for ${dominantSignals.join(" + ")} work`;
 }
 
 export function clearTaskAgentFrameworkStateCache(): void {

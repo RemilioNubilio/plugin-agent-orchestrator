@@ -34,6 +34,7 @@ mock.module("pty-manager", () => ({
       Object.assign(this, mockManager);
     }
   },
+  BaseCLIAdapter: class {},
   ShellAdapter: class {},
   BunCompatiblePTYManager: class {
     constructor() {
@@ -351,6 +352,50 @@ describe("PTYService", () => {
 
       // Callback should be registered (not called yet)
       expect(callback).not.toHaveBeenCalled();
+    });
+
+    it("emits normalized coordinator events with source-aware payloads", async () => {
+      const callback = jest.fn();
+      service.onNormalizedSessionEvent(callback);
+
+      (
+        service as unknown as {
+          emitEvent: (sessionId: string, event: string, data: unknown) => void;
+        }
+      ).emitEvent("session-1", "blocked", {
+        promptInfo: { prompt: "Approve file edit?", type: "permission" },
+        autoResponded: false,
+        source: "pty_manager",
+      });
+
+      expect(callback).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: "session-1",
+          name: "blocked",
+          source: "pty_manager",
+          promptText: "Approve file edit?",
+          promptType: "permission",
+          autoResponded: false,
+        }),
+      );
+    });
+
+    it("marks hook events with the hook source in the normalized stream", () => {
+      const callback = jest.fn();
+      service.onNormalizedSessionEvent(callback);
+
+      service.handleHookEvent("session-1", "task_complete", {
+        response: "done",
+      });
+
+      expect(callback).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: "session-1",
+          name: "task_complete",
+          source: "hook",
+          response: "done",
+        }),
+      );
     });
   });
 
