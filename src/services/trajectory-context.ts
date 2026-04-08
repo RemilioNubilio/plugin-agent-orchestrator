@@ -31,7 +31,8 @@ export type OrchestratorDecisionType =
   | "stall-classify-decide"
   | "swarm-context-generation"
   | "event-triage"
-  | "task-validation";
+  | "task-validation"
+  | "acceptance-verifier";
 
 export interface OrchestratorTrajectoryContext {
   /** Source identifier — always "orchestrator" */
@@ -40,6 +41,10 @@ export interface OrchestratorTrajectoryContext {
   decisionType: OrchestratorDecisionType;
   /** PTY session ID of the agent being evaluated */
   sessionId?: string;
+  /** Durable task thread identifier */
+  threadId?: string;
+  /** Acceptance verifier job identifier */
+  verifierJobId?: string;
   /** Human-readable task label */
   taskLabel?: string;
   /** Repository URL or identifier (for trajectory feedback filtering) */

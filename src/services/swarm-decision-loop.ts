@@ -28,6 +28,7 @@ import {
 } from "./swarm-coordinator-prompts.js";
 import { classifyEventTier, type TriageContext } from "./swarm-event-triage.js";
 import { validateTaskCompletion } from "./task-validation.js";
+import { runReadyTaskVerifiers } from "./task-verifier-runner.js";
 import { withTrajectoryContext } from "./trajectory-context.js";
 
 // ─── Constants ───
@@ -402,6 +403,7 @@ async function checkAllTasksCompleteAsync(
 
   const threadIds = [...new Set(tasks.map((task) => task.threadId))];
   for (const threadId of threadIds) {
+    await runReadyTaskVerifiers(ctx.runtime, ctx.taskRegistry, threadId);
     const thread = await ctx.taskRegistry.getThread(threadId);
     if (!thread || thread.nodes.length === 0) {
       continue;
@@ -429,6 +431,15 @@ async function checkAllTasksCompleteAsync(
     if (runningVerifiers.length > 0) {
       ctx.log(
         `checkAllTasksComplete: thread ${threadId} still has running verifier jobs`,
+      );
+      return;
+    }
+    const pendingVerifiers = thread.verifierJobs.filter(
+      (job) => job.status === "pending",
+    );
+    if (pendingVerifiers.length > 0) {
+      ctx.log(
+        `checkAllTasksComplete: thread ${threadId} still has pending verifier jobs`,
       );
       return;
     }
