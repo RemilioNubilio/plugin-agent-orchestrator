@@ -323,6 +323,25 @@ describe("coordinator routes", () => {
       expect(res._getJson()[0].id).toBe("thread-1");
     });
 
+    it("returns the filtered task-thread count", async () => {
+      asMock(ctx.coordinator).countTaskThreads.mockResolvedValue(7);
+      const req = createMockReq(
+        "GET",
+        `${PREFIX}/threads/count?scenarioId=scenario-1&batchId=batch-1`,
+      );
+      const res = createMockRes();
+
+      await handleCoordinatorRoutes(req, res, `${PREFIX}/threads/count`, ctx);
+
+      expect(asMock(ctx.coordinator).countTaskThreads).toHaveBeenCalledWith(
+        expect.objectContaining({
+          scenarioId: "scenario-1",
+          batchId: "batch-1",
+        }),
+      );
+      expect(res._getJson().total).toBe(7);
+    });
+
     it("forwards query params when listing persisted task threads", async () => {
       const req = createMockReq(
         "GET",
@@ -418,6 +437,29 @@ describe("coordinator routes", () => {
         "thread-1",
       );
       expect(res._getJson().status).toBe("open");
+    });
+
+    it("controls a task thread", async () => {
+      const req = createMockReq(
+        "POST",
+        `${PREFIX}/threads/thread-1/control`,
+        { action: "pause", note: "Discuss the direction first." },
+      );
+      const res = createMockRes();
+
+      await handleCoordinatorRoutes(
+        req,
+        res,
+        `${PREFIX}/threads/thread-1/control`,
+        ctx,
+      );
+
+      expect(asMock(ctx.coordinator).pauseTaskThread).toHaveBeenCalledWith(
+        "thread-1",
+        "Discuss the direction first.",
+      );
+      expect(res._getJson().success).toBe(true);
+      expect(res._getJson().action).toBe("pause");
     });
   });
 
