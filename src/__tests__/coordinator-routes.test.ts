@@ -72,9 +72,30 @@ const createMockCoordinator = () => ({
   getTaskContext: jest.fn(),
   getTaskContextSnapshot: jest.fn(),
   listTaskThreads: jest.fn().mockResolvedValue([]),
+  countTaskThreads: jest.fn().mockResolvedValue(0),
   getTaskThread: jest.fn(),
   archiveTaskThread: jest.fn().mockResolvedValue(undefined),
   reopenTaskThread: jest.fn().mockResolvedValue(undefined),
+  pauseTaskThread: jest.fn().mockResolvedValue({
+    threadId: "thread-1",
+    stoppedSessionIds: ["session-1"],
+  }),
+  stopTaskThread: jest.fn().mockResolvedValue({
+    threadId: "thread-1",
+    stoppedSessionIds: ["session-1"],
+  }),
+  resumeTaskThread: jest.fn().mockResolvedValue({
+    threadId: "thread-1",
+    sessionId: "session-2",
+    reusedSession: false,
+    framework: "codex",
+  }),
+  continueTaskThread: jest.fn().mockResolvedValue({
+    threadId: "thread-1",
+    sessionId: "session-1",
+    reusedSession: true,
+    framework: "codex",
+  }),
   getSupervisionLevel: jest.fn().mockReturnValue("autonomous"),
   setSupervisionLevel: jest.fn(),
   getPendingConfirmations: jest.fn().mockReturnValue([]),
@@ -235,6 +256,7 @@ describe("coordinator routes", () => {
       expect(json.tasks[0].sessionId).toBe("s-1");
       expect(json.tasks[0].decisionCount).toBe(1);
       expect(json.taskThreads[0].id).toBe("thread-1");
+      expect(json.taskThreads[0].scenarioId).toBeUndefined();
       expect(json.recentTasks[0].sessionId).toBe("s-1");
       expect(json.preferredAgentType).toEqual(expect.any(String));
       expect(Array.isArray(json.frameworks)).toBe(true);
