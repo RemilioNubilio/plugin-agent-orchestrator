@@ -151,10 +151,16 @@ export function setupDeferredTaskDelivery(
     aider: 200,
   };
   const settleMs = POST_READY_DELAY[agentType] ?? 300;
+  const MIN_NEW_LINES_BY_AGENT: Record<string, number> = {
+    claude: 1,
+    gemini: 10,
+    codex: 15,
+    aider: 8,
+  };
 
   const VERIFY_DELAY_MS = 5000; // how long to wait before checking acceptance
   const MAX_RETRIES = 2;
-  const MIN_NEW_LINES = 15; // agent working produces significant output
+  const minNewLines = MIN_NEW_LINES_BY_AGENT[agentType] ?? 15;
 
   const sendTaskWithRetry = (attempt: number) => {
     const buffer = ctx.sessionOutputBuffers.get(sid);
@@ -176,7 +182,7 @@ export function setupDeferredTaskDelivery(
       setTimeout(() => {
         const currentLength = buffer?.length ?? 0;
         const newLines = currentLength - baselineLength;
-        if (newLines < MIN_NEW_LINES) {
+        if (newLines < minNewLines) {
           ctx.log(
             `Session ${sid} — task may not have been accepted (only ${newLines} new lines after ${VERIFY_DELAY_MS}ms). Retrying (attempt ${attempt + 2}/${MAX_RETRIES + 1})`,
           );
