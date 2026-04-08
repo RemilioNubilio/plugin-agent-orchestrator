@@ -321,6 +321,7 @@ export interface TaskThreadSummary extends TaskThreadRecord {
   latestActivityAt: number | null;
   decisionCount: number;
   nodeCount: number;
+  readyNodeCount: number;
   completedNodeCount: number;
   verifierJobCount: number;
   evidenceCount: number;
@@ -912,6 +913,7 @@ function parseThreadSummaryRow(row: Row): TaskThreadSummary {
     latestActivityAt: toNullableNumber(row.latest_activity_at),
     decisionCount: toNumber(row.decision_count, 0),
     nodeCount: toNumber(row.node_count, 0),
+    readyNodeCount: toNumber(row.ready_node_count, 0),
     completedNodeCount: toNumber(row.completed_node_count, 0),
     verifierJobCount: toNumber(row.verifier_job_count, 0),
     evidenceCount: toNumber(row.evidence_count, 0),
@@ -1129,6 +1131,23 @@ function buildSearchText(parts: Array<string | null | undefined>): string {
     .map((part) => (part ?? "").trim().toLowerCase())
     .filter(Boolean)
     .join(" ");
+}
+
+function isTerminalTaskNodeStatus(status: TaskNodeStatus): boolean {
+  return (
+    status === "completed" ||
+    status === "failed" ||
+    status === "canceled" ||
+    status === "interrupted"
+  );
+}
+
+function dependencyStatusSatisfied(
+  actual: TaskNodeStatus,
+  required: TaskNodeStatus,
+): boolean {
+  if (actual === required) return true;
+  return false;
 }
 
 function buildThreadListWhereClauses(
@@ -1798,6 +1817,7 @@ export class TaskRegistry {
           latest.last_activity_at AS latest_activity_at,
           COALESCE(decision_counts.decision_count, 0) AS decision_count,
           COALESCE(node_counts.node_count, 0) AS node_count,
+          COALESCE(node_counts.ready_node_count, 0) AS ready_node_count,
           COALESCE(node_counts.completed_node_count, 0) AS completed_node_count,
           COALESCE(verifier_counts.verifier_job_count, 0) AS verifier_job_count,
           COALESCE(evidence_counts.evidence_count, 0) AS evidence_count
@@ -1838,6 +1858,7 @@ export class TaskRegistry {
           SELECT
             thread_id,
             COUNT(*) AS node_count,
+            SUM(CASE WHEN status = 'ready' THEN 1 ELSE 0 END) AS ready_node_count,
             SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed_node_count
           FROM orchestrator_task_nodes
           GROUP BY thread_id
@@ -1903,6 +1924,7 @@ export class TaskRegistry {
            SELECT
              thread_id,
              COUNT(*) AS node_count,
+             SUM(CASE WHEN status = 'ready' THEN 1 ELSE 0 END) AS ready_node_count,
              SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed_node_count
            FROM orchestrator_task_nodes
            GROUP BY thread_id
@@ -2515,6 +2537,7 @@ export class TaskRegistry {
     if (!node) {
       throw new Error(`Failed to create task node ${id}`);
     }
+    await this.recomputeTaskGraphState(input.threadId);
     return node;
   }
 
@@ -2628,6 +2651,7 @@ export class TaskRegistry {
         status: nextStatus,
       },
     });
+    await this.recomputeTaskGraphState(existing.threadId);
   }
 
   async listTaskNodesForThread(threadId: string): Promise<TaskNodeRecord[]> {
@@ -2638,6 +2662,21 @@ export class TaskRegistry {
          FROM orchestrator_task_nodes
         WHERE thread_id = ${sqlQuote(threadId)}
         ORDER BY depth ASC, sequence ASC, created_at ASC`,
+    );
+    return rows.map(parseTaskNodeRow);
+  }
+
+  async listReadyTaskNodesForThread(
+    threadId: string,
+  ): Promise<TaskNodeRecord[]> {
+    await this.ensureSchema();
+    const rows = await executeRawSql(
+      this.runtime,
+      `SELECT *
+         FROM orchestrator_task_nodes
+        WHERE thread_id = ${sqlQuote(threadId)}
+          AND status = 'ready'
+        ORDER BY priority DESC, depth ASC, sequence ASC, created_at ASC`,
     );
     return rows.map(parseTaskNodeRow);
   }
@@ -2680,6 +2719,7 @@ export class TaskRegistry {
     if (!dependency) {
       throw new Error(`Failed to create task dependency ${id}`);
     }
+    await this.recomputeTaskGraphState(input.threadId);
     return dependency;
   }
 
@@ -3081,6 +3121,102 @@ export class TaskRegistry {
         ORDER BY created_at ASC`,
     );
     return rows.map(parseTaskEvidenceRow);
+  }
+
+  private deriveDependentNodeStatus(
+    node: TaskNodeRecord,
+    incomingDependencies: TaskDependencyRecord[],
+    nodesById: Map<string, TaskNodeRecord>,
+  ): TaskNodeStatus {
+    if (isTerminalTaskNodeStatus(node.status)) {
+      return node.status;
+    }
+    if (
+      node.status === "running" ||
+      node.status === "blocked" ||
+      node.status === "waiting_on_user" ||
+      node.status === "verifying" ||
+      node.status === "claimed"
+    ) {
+      return node.status;
+    }
+
+    const prerequisiteStatuses = incomingDependencies
+      .map((dependency) => nodesById.get(dependency.fromNodeId))
+      .filter((entry): entry is TaskNodeRecord => Boolean(entry))
+      .map((entry) => entry.status);
+    const allSatisfied =
+      incomingDependencies.length === 0 ||
+      incomingDependencies.every((dependency) => {
+        const source = nodesById.get(dependency.fromNodeId);
+        return (
+          source !== undefined &&
+          dependencyStatusSatisfied(source.status, dependency.requiredStatus)
+        );
+      });
+    const hasFailedPrerequisite = prerequisiteStatuses.some(
+      (status) =>
+        status === "failed" ||
+        status === "canceled" ||
+        status === "interrupted",
+    );
+
+    if (node.kind === "goal" && incomingDependencies.length > 0) {
+      if (allSatisfied) {
+        return "completed";
+      }
+      return hasFailedPrerequisite ? "failed" : "planned";
+    }
+
+    if (node.assignedSessionId) {
+      return node.status;
+    }
+    if (allSatisfied) {
+      return "ready";
+    }
+    return hasFailedPrerequisite ? "blocked" : "planned";
+  }
+
+  private async recomputeTaskGraphState(threadId: string): Promise<void> {
+    const [nodes, dependencies] = await Promise.all([
+      this.listTaskNodesForThread(threadId),
+      this.listTaskDependenciesForThread(threadId),
+    ]);
+    if (nodes.length === 0) {
+      return;
+    }
+
+    const nodesById = new Map(nodes.map((node) => [node.id, node]));
+    const incomingDependencies = new Map<string, TaskDependencyRecord[]>();
+    for (const dependency of dependencies) {
+      const bucket = incomingDependencies.get(dependency.toNodeId) ?? [];
+      bucket.push(dependency);
+      incomingDependencies.set(dependency.toNodeId, bucket);
+    }
+
+    const nowIso = isoNow();
+    for (const node of nodes) {
+      const nextStatus = this.deriveDependentNodeStatus(
+        node,
+        incomingDependencies.get(node.id) ?? [],
+        nodesById,
+      );
+      if (nextStatus === node.status) {
+        continue;
+      }
+      const nextCompletedAt =
+        nextStatus === "completed" || nextStatus === "failed"
+          ? (node.completedAt ?? nowIso)
+          : null;
+      await executeRawSql(
+        this.runtime,
+        `UPDATE orchestrator_task_nodes
+            SET status = ${sqlQuote(nextStatus)},
+                updated_at = ${sqlQuote(nowIso)},
+                completed_at = ${sqlText(nextCompletedAt)}
+          WHERE id = ${sqlQuote(node.id)}`,
+      );
+    }
   }
 
   async getLastUsedRepo(): Promise<string | undefined> {

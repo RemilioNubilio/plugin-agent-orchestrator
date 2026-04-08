@@ -310,13 +310,17 @@ describe("TaskRegistry history filters", () => {
       "node-root",
       "node-worker",
     ]);
+    expect(detail?.nodes.find((node) => node.id === "node-root")?.status).toBe(
+      "completed",
+    );
     expect(detail?.dependencies).toHaveLength(1);
     expect(detail?.claims).toHaveLength(1);
     expect(detail?.mailbox).toHaveLength(1);
     expect(detail?.verifierJobs).toHaveLength(1);
     expect(detail?.evidence).toHaveLength(1);
     expect(detail?.nodeCount).toBe(2);
-    expect(detail?.completedNodeCount).toBe(1);
+    expect(detail?.readyNodeCount).toBe(0);
+    expect(detail?.completedNodeCount).toBe(2);
     expect(detail?.verifierJobCount).toBe(1);
     expect(detail?.evidenceCount).toBe(1);
     expect(detail?.mailbox[0]?.recipient).toBe("worker-1");

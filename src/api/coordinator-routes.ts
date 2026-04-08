@@ -160,6 +160,7 @@ export async function handleCoordinatorRoutes(
         latestActivityAt: thread.latestActivityAt,
         decisionCount: thread.decisionCount,
         nodeCount: thread.nodeCount,
+        readyNodeCount: thread.readyNodeCount,
         completedNodeCount: thread.completedNodeCount,
         verifierJobCount: thread.verifierJobCount,
         evidenceCount: thread.evidenceCount,
