@@ -45,7 +45,9 @@ import {
   TaskRegistry,
 } from "./task-registry.js";
 import type { PTYService } from "./pty-service.js";
+import { buildAgentCredentials } from "./agent-credentials.js";
 import type { CodingAgentType } from "./pty-types.js";
+import { normalizeAgentType } from "./pty-types.js";
 import type {
 	CoordinationLLMResponse,
 	SharedDecision,
@@ -1085,6 +1087,398 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 
 	async reopenTaskThread(threadId: string): Promise<void> {
 		await this.taskRegistry.reopenThread(threadId);
+	}
+
+	async countTaskThreads(options?: {
+		includeArchived?: boolean;
+		status?: TaskThreadStatus;
+		statuses?: TaskThreadStatus[];
+		kind?: import("./task-registry.js").TaskThreadKind;
+		roomId?: string;
+		worldId?: string;
+		ownerUserId?: string;
+		scenarioId?: string;
+		batchId?: string;
+		createdAfter?: string;
+		createdBefore?: string;
+		updatedAfter?: string;
+		updatedBefore?: string;
+		latestActivityAfter?: number;
+		latestActivityBefore?: number;
+		hasActiveSession?: boolean;
+		search?: string;
+	}): Promise<number> {
+		return this.taskRegistry.countThreads(options);
+	}
+
+	private getLiveTaskContextsForThread(threadId: string): TaskContext[] {
+		return Array.from(this.tasks.values())
+			.filter((task) => task.threadId === threadId)
+			.sort((left, right) => right.lastActivityAt - left.lastActivityAt);
+	}
+
+	private async stopLiveThreadSessions(
+		threadId: string,
+		force: boolean,
+	): Promise<string[]> {
+		if (!this.ptyService) {
+			return [];
+		}
+
+		const sessionIds = this.getLiveTaskContextsForThread(threadId)
+			.filter((task) =>
+				task.status === "active" ||
+				task.status === "blocked" ||
+				task.status === "tool_running",
+			)
+			.map((task) => task.sessionId);
+		for (const sessionId of sessionIds) {
+			const taskCtx = this.tasks.get(sessionId);
+			if (taskCtx) {
+				taskCtx.status = "stopped";
+				taskCtx.stoppedAt = Date.now();
+				await this.syncTaskContext(taskCtx);
+			}
+			try {
+				await this.ptyService.stopSession(sessionId, force);
+			} catch (error) {
+				this.log(
+					`Failed to stop session ${sessionId} for thread ${threadId}: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+		}
+		return sessionIds;
+	}
+
+	private clipText(value: string, limit: number): string {
+		if (value.length <= limit) return value;
+		return `${value.slice(0, limit)}…`;
+	}
+
+	private formatResumePrompt(
+		thread: TaskThreadDetail,
+		instruction?: string,
+	): string {
+		const acceptanceCriteria = (thread.acceptanceCriteria ?? [])
+			.map((item) => `- ${item}`)
+			.join("\n");
+		const recentDecisions = (thread.decisions ?? [])
+			.slice(-6)
+			.map(
+				(decision, index) =>
+					`${index + 1}. ${decision.event}: ${decision.reasoning}${decision.response ? ` (response: ${decision.response})` : ""}`,
+			)
+			.join("\n");
+		const recentEvents = (thread.events ?? [])
+			.slice(-8)
+			.map(
+				(event, index) =>
+					`${index + 1}. ${event.eventType}: ${this.clipText(event.summary, 180)}`,
+			)
+			.join("\n");
+		const transcriptExcerpt = (thread.transcripts ?? [])
+			.slice(-20)
+			.map((entry) =>
+				`${entry.direction.toUpperCase()}: ${this.clipText(entry.content.trim(), 220)}`,
+			)
+			.filter((line) => line.length > 0)
+			.join("\n");
+		const latestSession = (thread.sessions ?? [])
+			.slice()
+			.sort((left, right) => right.lastActivityAt - left.lastActivityAt)[0];
+
+		return [
+			"Resume an existing Milady coordinator task thread.",
+			"",
+			`Thread: ${thread.title}`,
+			`Original request: ${thread.originalRequest}`,
+			latestSession?.workdir ? `Workspace: ${latestSession.workdir}` : "",
+			latestSession?.repo ? `Repository: ${latestSession.repo}` : "",
+			thread.summary ? `Current summary: ${thread.summary}` : "",
+			acceptanceCriteria
+				? `Acceptance criteria:\n${acceptanceCriteria}`
+				: "",
+			instruction?.trim()
+				? `Latest user instruction:\n${instruction.trim()}`
+				: "Continue from the current workspace state without starting over.",
+			recentDecisions ? `Recent coordinator decisions:\n${recentDecisions}` : "",
+			recentEvents ? `Recent task events:\n${recentEvents}` : "",
+			transcriptExcerpt
+				? `Recent transcript excerpt:\n${transcriptExcerpt}`
+				: "",
+			"Inspect the current workspace, continue the task, run the relevant verification, and summarize what changed.",
+		]
+			.filter(Boolean)
+			.join("\n\n");
+	}
+
+	async pauseTaskThread(
+		threadId: string,
+		note?: string,
+	): Promise<{ threadId: string; stoppedSessionIds: string[] }> {
+		const thread = await this.getTaskThread(threadId);
+		if (!thread) {
+			throw new Error(`Task thread ${threadId} not found`);
+		}
+
+		const stoppedSessionIds = await this.stopLiveThreadSessions(threadId, true);
+		const nowIso = new Date().toISOString();
+		await this.taskRegistry.updateThread(threadId, {
+			status: "waiting_on_user",
+			closedAt: null,
+			lastCoordinatorTurnAt: nowIso,
+			metadata: {
+				controlState: "paused",
+				pauseNote: note ?? null,
+				pauseRequestedAt: nowIso,
+			},
+		});
+		await this.taskRegistry.appendEvent({
+			threadId,
+			eventType: "task_paused",
+			summary: note?.trim()
+				? `Paused task thread: ${note.trim()}`
+				: "Paused task thread for user review",
+			data: {
+				note: note ?? null,
+				stoppedSessionIds,
+			},
+		});
+		return { threadId, stoppedSessionIds };
+	}
+
+	async stopTaskThread(
+		threadId: string,
+		note?: string,
+	): Promise<{ threadId: string; stoppedSessionIds: string[] }> {
+		const thread = await this.getTaskThread(threadId);
+		if (!thread) {
+			throw new Error(`Task thread ${threadId} not found`);
+		}
+
+		const stoppedSessionIds = await this.stopLiveThreadSessions(threadId, true);
+		const nowIso = new Date().toISOString();
+		await this.taskRegistry.updateThread(threadId, {
+			status: "interrupted",
+			closedAt: nowIso,
+			lastCoordinatorTurnAt: nowIso,
+			metadata: {
+				controlState: "stopped",
+				stopNote: note ?? null,
+				stoppedByUserAt: nowIso,
+			},
+		});
+		await this.taskRegistry.appendEvent({
+			threadId,
+			eventType: "task_stopped",
+			summary: note?.trim()
+				? `Stopped task thread: ${note.trim()}`
+				: "Stopped task thread at user request",
+			data: {
+				note: note ?? null,
+				stoppedSessionIds,
+			},
+		});
+		return { threadId, stoppedSessionIds };
+	}
+
+	async resumeTaskThread(
+		threadId: string,
+		instruction?: string,
+		agentType?: string,
+	): Promise<{
+		threadId: string;
+		sessionId: string;
+		reusedSession: boolean;
+		framework: CodingAgentType;
+	}> {
+		const thread = await this.getTaskThread(threadId);
+		if (!thread) {
+			throw new Error(`Task thread ${threadId} not found`);
+		}
+		if (!this.ptyService) {
+			throw new Error("PTY Service is not available");
+		}
+
+		const activeTask = this.getLiveTaskContextsForThread(threadId).find(
+			(task) => task.status !== "stopped" && task.status !== "completed" && task.status !== "error",
+		);
+		if (activeTask) {
+			if (instruction?.trim()) {
+				await this.ptyService.sendToSession(activeTask.sessionId, instruction.trim());
+				activeTask.lastInputSentAt = Date.now();
+				activeTask.status = "active";
+				await this.syncTaskContext(activeTask);
+			}
+			const nowIso = new Date().toISOString();
+			await this.taskRegistry.updateThread(threadId, {
+				status: "active",
+				closedAt: null,
+				lastCoordinatorTurnAt: nowIso,
+				metadata: {
+					controlState: null,
+					resumedAt: nowIso,
+				},
+			});
+			await this.taskRegistry.appendEvent({
+				threadId,
+				sessionId: activeTask.sessionId,
+				eventType: "task_resumed",
+				summary: "Continued the active task thread",
+				data: {
+					reusedSession: true,
+					instruction: instruction ?? null,
+				},
+			});
+			return {
+				threadId,
+				sessionId: activeTask.sessionId,
+				reusedSession: true,
+				framework: activeTask.agentType,
+			};
+		}
+
+		const latestSession = (thread.sessions ?? [])
+			.slice()
+			.sort((left, right) => right.lastActivityAt - left.lastActivityAt)[0];
+		const workdir = latestSession?.workdir ?? thread.latestWorkdir;
+		if (!workdir) {
+			throw new Error(`Task thread ${threadId} has no resumable workspace`);
+		}
+
+		const requestedFramework = agentType
+			? normalizeAgentType(agentType)
+			: latestSession?.framework
+				? normalizeAgentType(latestSession.framework)
+				: normalizeAgentType(await this.ptyService.resolveAgentType());
+		const frameworkState = await this.ptyService.getFrameworkState();
+		const framework = frameworkState.frameworks.find(
+			(entry) => entry.id === requestedFramework,
+		);
+		const resolvedFramework =
+			framework && framework.installed && framework.authReady
+				? requestedFramework
+				: normalizeAgentType(await this.ptyService.resolveAgentType());
+		const resolvedAvailability = frameworkState.frameworks.find(
+			(entry) => entry.id === resolvedFramework,
+		);
+
+		const session = await this.ptyService.spawnSession({
+			name: `task-resume-${thread.id.slice(-8)}`,
+			agentType: resolvedFramework,
+			workdir,
+			initialTask: this.formatResumePrompt(thread, instruction),
+			credentials: buildAgentCredentials(this.runtime),
+			approvalPreset: this.ptyService.defaultApprovalPreset,
+			skipAdapterAutoResponse: true,
+			metadata: {
+				threadId,
+				label: thread.title,
+				requestedType: resolvedFramework,
+				resumedFromThreadId: threadId,
+				resumedFromSessionId: latestSession?.sessionId ?? null,
+				resumeInstruction: instruction ?? null,
+				resumedAt: Date.now(),
+			},
+		});
+
+		await this.registerTask(session.id, {
+			threadId,
+			agentType: resolvedFramework,
+			label: latestSession?.label ?? thread.title,
+			originalTask: instruction?.trim() || thread.originalRequest,
+			workdir,
+			repo: latestSession?.repo ?? thread.latestRepo ?? undefined,
+			providerSource: resolvedAvailability
+				? inferProviderSource(resolvedAvailability)
+				: null,
+			metadata:
+				session.metadata &&
+				typeof session.metadata === "object" &&
+				!Array.isArray(session.metadata)
+					? (session.metadata as Record<string, unknown>)
+					: undefined,
+		});
+
+		const nowIso = new Date().toISOString();
+		await this.taskRegistry.updateThread(threadId, {
+			status: "active",
+			closedAt: null,
+			lastCoordinatorTurnAt: nowIso,
+			metadata: {
+				controlState: null,
+				resumedAt: nowIso,
+				lastResumedSessionId: session.id,
+			},
+		});
+		await this.taskRegistry.appendEvent({
+			threadId,
+			sessionId: session.id,
+			eventType: "task_resumed",
+			summary: "Resumed the task thread on a new session",
+			data: {
+				reusedSession: false,
+				fromSessionId: latestSession?.sessionId ?? null,
+				toSessionId: session.id,
+				instruction: instruction ?? null,
+				framework: resolvedFramework,
+			},
+		});
+
+		return {
+			threadId,
+			sessionId: session.id,
+			reusedSession: false,
+			framework: resolvedFramework,
+		};
+	}
+
+	async continueTaskThread(
+		threadId: string,
+		instruction: string,
+		agentType?: string,
+	): Promise<{
+		threadId: string;
+		sessionId: string;
+		reusedSession: boolean;
+		framework: CodingAgentType;
+	}> {
+		const latestLiveTask = this.getLiveTaskContextsForThread(threadId).find(
+			(task) => task.status === "active" || task.status === "blocked" || task.status === "tool_running",
+		);
+		if (latestLiveTask && this.ptyService) {
+			await this.ptyService.sendToSession(latestLiveTask.sessionId, instruction);
+			latestLiveTask.lastInputSentAt = Date.now();
+			latestLiveTask.status = "active";
+			await this.syncTaskContext(latestLiveTask);
+			const nowIso = new Date().toISOString();
+			await this.taskRegistry.updateThread(threadId, {
+				status: "active",
+				closedAt: null,
+				lastCoordinatorTurnAt: nowIso,
+				metadata: {
+					controlState: null,
+					continuedAt: nowIso,
+				},
+			});
+			await this.taskRegistry.appendEvent({
+				threadId,
+				sessionId: latestLiveTask.sessionId,
+				eventType: "task_resumed",
+				summary: "Sent follow-up instructions to the active task thread",
+				data: {
+					reusedSession: true,
+					instruction,
+				},
+			});
+			return {
+				threadId,
+				sessionId: latestLiveTask.sessionId,
+				reusedSession: true,
+				framework: latestLiveTask.agentType,
+			};
+		}
+		return this.resumeTaskThread(threadId, instruction, agentType);
 	}
 
 	async syncTaskContext(taskCtx: TaskContext): Promise<void> {

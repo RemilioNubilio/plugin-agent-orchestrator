@@ -30,8 +30,8 @@ import {
   toPiCommand,
 } from "../services/pty-types.js";
 import { readConfigEnvKey } from "../services/config-env.js";
+import { buildAgentCredentials } from "../services/agent-credentials.js";
 import type { CodingWorkspaceService } from "../services/workspace-service.js";
-import { buildAgentCredentials } from "./coding-task-helpers.js";
 import { mergeTaskThreadEvalMetadata } from "./eval-metadata.js";
 
 export const spawnAgentAction: Action = {

@@ -47,6 +47,9 @@ export type TaskThreadEventType =
   | "task_created"
   | "task_registered"
   | "task_status_changed"
+  | "task_paused"
+  | "task_resumed"
+  | "task_stopped"
   | "task_archived"
   | "task_reopened"
   | "session_registered"
@@ -54,7 +57,8 @@ export type TaskThreadEventType =
   | "session_interrupted"
   | "decision_recorded"
   | "artifact_recorded"
-  | "summary_updated";
+  | "summary_updated"
+  | "share_discovered";
 
 export interface TaskThreadRecord {
   id: string;
@@ -238,6 +242,17 @@ export interface UpdateTaskSessionInput {
   lastSeenDecisionIndex?: number;
   lastInputSentAt?: number | null;
   stoppedAt?: number | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface UpdateTaskThreadInput {
+  status?: TaskThreadStatus;
+  summary?: string;
+  currentPlan?: Record<string, unknown>;
+  lastUserTurnAt?: string | null;
+  lastCoordinatorTurnAt?: string | null;
+  closedAt?: string | null;
+  archivedAt?: string | null;
   metadata?: Record<string, unknown>;
 }
 
@@ -1544,6 +1559,62 @@ export class TaskRegistry {
     });
   }
 
+  async updateThread(
+    threadId: string,
+    patch: UpdateTaskThreadInput,
+  ): Promise<void> {
+    await this.ensureSchema();
+    const existing = await this.getThreadRecord(threadId);
+    if (!existing) return;
+
+    const nextMetadata = patch.metadata
+      ? { ...existing.metadata, ...patch.metadata }
+      : existing.metadata;
+    const nextSummary = patch.summary ?? existing.summary;
+    const nextSearchText = buildSearchText([
+      existing.title,
+      existing.originalRequest,
+      nextSummary,
+      patch.status ?? existing.status,
+      existing.scenarioId,
+      existing.batchId,
+      JSON.stringify(nextMetadata),
+    ]);
+    const nowIso = isoNow();
+
+    await executeRawSql(
+      this.runtime,
+      `UPDATE orchestrator_task_threads
+          SET status = ${sqlQuote(patch.status ?? existing.status)},
+              summary = ${sqlQuote(nextSummary)},
+              current_plan_json = ${sqlJson(
+                patch.currentPlan ?? existing.currentPlan,
+              )},
+              search_text = ${sqlQuote(nextSearchText)},
+              closed_at = ${sqlText(
+                patch.closedAt !== undefined ? patch.closedAt : existing.closedAt,
+              )},
+              archived_at = ${sqlText(
+                patch.archivedAt !== undefined
+                  ? patch.archivedAt
+                  : existing.archivedAt,
+              )},
+              last_user_turn_at = ${sqlText(
+                patch.lastUserTurnAt !== undefined
+                  ? patch.lastUserTurnAt
+                  : existing.lastUserTurnAt,
+              )},
+              last_coordinator_turn_at = ${sqlText(
+                patch.lastCoordinatorTurnAt !== undefined
+                  ? patch.lastCoordinatorTurnAt
+                  : existing.lastCoordinatorTurnAt,
+              )},
+              updated_at = ${sqlQuote(nowIso)},
+              metadata_json = ${sqlJson(nextMetadata)}
+        WHERE id = ${sqlQuote(threadId)}`,
+    );
+  }
+
   async archiveThread(threadId: string): Promise<void> {
     await this.ensureSchema();
     const nowIso = isoNow();
@@ -1770,6 +1841,7 @@ export class TaskRegistry {
     const thread = await this.getThreadRecord(threadId);
     if (!thread) return;
     if (thread.archivedAt) return;
+    const controlState = toText(thread.metadata.controlState).trim().toLowerCase();
 
     const sessions = await this.listSessionsForThread(threadId);
     const nowIso = isoNow();
@@ -1791,7 +1863,17 @@ export class TaskRegistry {
       (session) => session.status === "completed",
     ).length;
 
-    if (sessions.length === 0) {
+    if (controlState === "paused" && activeCount === 0 && blockedCount === 0) {
+      nextStatus = "waiting_on_user";
+    } else if (
+      controlState === "stopped" &&
+      activeCount === 0 &&
+      blockedCount === 0 &&
+      waitingOnUserCount === 0
+    ) {
+      nextStatus = "interrupted";
+      closedAt = nowIso;
+    } else if (sessions.length === 0) {
       nextStatus = "open";
     } else if (activeCount > 0) {
       nextStatus = "active";

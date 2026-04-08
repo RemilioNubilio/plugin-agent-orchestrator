@@ -29,11 +29,11 @@ import { getCoordinator } from "../services/pty-service.js";
 import { requireTaskAgentAccess } from "../services/task-policy.js";
 import { normalizeAgentType } from "../services/pty-types.js";
 import type { CodingWorkspaceService } from "../services/workspace-service.js";
+import { buildAgentCredentials } from "../services/agent-credentials.js";
 import {
   type CodingTaskContext,
   handleMultiAgent,
 } from "./coding-task-handlers.js";
-import { buildAgentCredentials } from "./coding-task-helpers.js";
 
 export const startCodingTaskAction: Action = {
   name: "CREATE_TASK",

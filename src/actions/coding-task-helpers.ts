@@ -14,71 +14,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
   type HandlerCallback,
-  type IAgentRuntime,
   logger,
 } from "@elizaos/core";
-import type { AgentCredentials } from "coding-agent-adapters";
-import { readConfigCloudKey, readConfigEnvKey } from "../services/config-env.js";
+import type { IAgentRuntime } from "@elizaos/core";
+import { readConfigEnvKey } from "../services/config-env.js";
 import type { PTYService } from "../services/pty-service.js";
 import type { CodingWorkspaceService } from "../services/workspace-service.js";
-
-/**
- * Eliza Cloud base URLs. The Anthropic SDK appends `/v1/messages` and the
- * OpenAI SDK appends `/chat/completions`, so each needs a different base.
- */
-const ELIZA_CLOUD_ANTHROPIC_BASE = "https://www.elizacloud.ai/api";
-const ELIZA_CLOUD_OPENAI_BASE = "https://www.elizacloud.ai/api/v1";
-
-/**
- * Build agent credentials based on the user's configured LLM provider.
- *
- * - subscription/api_keys: reads provider-specific API keys from runtime settings
- * - cloud: reads `cloud.apiKey` from milady.json and routes via Eliza Cloud base URLs.
- *   Note: Eliza Cloud does NOT proxy Google/Gemini, so `googleKey` is left undefined.
- *   Throws if cloud mode is selected but no cloud API key is paired.
- */
-export function buildAgentCredentials(
-  runtime: IAgentRuntime,
-): AgentCredentials {
-  const llmProvider =
-    readConfigEnvKey("PARALLAX_LLM_PROVIDER") || "subscription";
-
-  if (llmProvider === "cloud") {
-    const cloudKey = readConfigCloudKey("apiKey");
-    if (!cloudKey) {
-      throw new Error(
-        "Eliza Cloud is selected as the LLM provider but no cloud.apiKey " +
-          "is paired. Pair your account in the Cloud settings section first.",
-      );
-    }
-    return {
-      anthropicKey: cloudKey,
-      openaiKey: cloudKey,
-      // Eliza Cloud does not proxy Google/Gemini — left undefined intentionally
-      googleKey: undefined,
-      anthropicBaseUrl: ELIZA_CLOUD_ANTHROPIC_BASE,
-      openaiBaseUrl: ELIZA_CLOUD_OPENAI_BASE,
-      githubToken: runtime.getSetting("GITHUB_TOKEN") as string | undefined,
-    };
-  }
-
-  return {
-    anthropicKey: runtime.getSetting("ANTHROPIC_API_KEY") as
-      | string
-      | undefined,
-    openaiKey: runtime.getSetting("OPENAI_API_KEY") as string | undefined,
-    googleKey: runtime.getSetting("GOOGLE_GENERATIVE_AI_API_KEY") as
-      | string
-      | undefined,
-    githubToken: runtime.getSetting("GITHUB_TOKEN") as string | undefined,
-    anthropicBaseUrl: runtime.getSetting("ANTHROPIC_BASE_URL") as
-      | string
-      | undefined,
-    openaiBaseUrl: runtime.getSetting("OPENAI_BASE_URL") as
-      | string
-      | undefined,
-  };
-}
 
 /**
  * Sanitize a label into a safe directory name.
