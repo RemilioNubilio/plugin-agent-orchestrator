@@ -80,8 +80,29 @@ const GIT_NOISE_LINE =
   /^\s*(?:On branch\s+\w|Your branch is|modified:|new file:|deleted:|renamed:|Untracked files:|Changes (?:not staged|to be committed)|\d+\s+files?\s+changed.*(?:insertion|deletion))/i;
 
 /** Codex/Claude launcher banners and trust screens that pollute failover prompts. */
-const SESSION_BOOTSTRAP_NOISE_LINE =
-  /(?:^OpenAI Codex\b|^model:\s|^directory:\s|^Tip:\s+New Try the Codex App\b|^until .*Run ['"]codex app['"]|Do you trust the contents of this directory|higher risk of prompt injection|Yes,\s*continue.*No,\s*quit|Press enter to continue)/i;
+const SESSION_BOOTSTRAP_NOISE_PATTERNS = [
+  /^OpenAI Codex\b/i,
+  /^model:\s/i,
+  /^directory:\s/i,
+  /^Tip:\s+New Try the Codex App\b/i,
+  /^until .*Run ['"]codex app['"]/i,
+  /Do you trust the contents of this directory/i,
+  /higher risk of prompt injection/i,
+  /Yes,\s*continue.*No,\s*quit/i,
+  /^Press enter to continue$/i,
+  /^Quick safety check:/i,
+  /^Claude Code can make mistakes\./i,
+  /^Claude Code(?:'ll| will)\s+be able to read, edit, and execute files here\.?$/i,
+  /^\d+\.\s+Yes,\s*I trust this folder$/i,
+  /^\d+\.\s+No,\s*exit$/i,
+  /^Enter to confirm(?:\s+Esc to cancel)?$/i,
+  /^Welcome back .*Run \/init to create a CLAUDE\.md file with instructions for Claude\./i,
+  /^Your bash commands will be sandboxed\. Disable with \/sandbox\./i,
+];
+
+function isSessionBootstrapNoiseLine(line: string): boolean {
+  return SESSION_BOOTSTRAP_NOISE_PATTERNS.some((pattern) => pattern.test(line));
+}
 
 /**
  * Clean terminal output for display in chat messages.
@@ -105,7 +126,7 @@ export function cleanForChat(raw: string): string {
       if (STATUS_LINE.test(trimmed)) return false;
       if (TOOL_MARKER_LINE.test(trimmed)) return false;
       if (GIT_NOISE_LINE.test(trimmed)) return false;
-      if (SESSION_BOOTSTRAP_NOISE_LINE.test(trimmed)) return false;
+      if (isSessionBootstrapNoiseLine(trimmed)) return false;
       // Lines with only whitespace/punctuation and no alphanumeric content
       if (!/[a-zA-Z0-9]/.test(trimmed)) return false;
       // Very short lines (≤3 chars) are likely TUI fragments
@@ -116,6 +137,56 @@ export function cleanForChat(raw: string): string {
     .filter((line) => line.length > 0)
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+const FAILOVER_CONTEXT_NOISE_PATTERNS = [
+  /^Accessing workspace:?$/i,
+  /work from your team\)\. If not, take a moment to review what's in this folder first\.$/i,
+  /(?:se)?curity guide$/i,
+  /^Yes,\s*I trust this folder$/i,
+  /^Claude Code v[\d.]+$/i,
+  /^Tips for getting started$/i,
+  /^Welcome back .*Run \/init to create a CLAUDE\.md file with instructions for Claude\.?$/i,
+  /^Recent activity$/i,
+  /^No recent activity$/i,
+  /^.*\(\d+[MK]? context\)\s+Claude\b.*$/i,
+  /^don'?t ask on \(shift\+tab to cycle\)$/i,
+  /^\w+\s+\/effort$/i,
+];
+
+function isWorkdirEchoLine(line: string, workdir?: string): boolean {
+  if (!workdir) return false;
+  const normalizedWorkdir = workdir.trim();
+  if (!normalizedWorkdir) return false;
+  if (line === normalizedWorkdir || line === `/private${normalizedWorkdir}`) {
+    return true;
+  }
+  const basename = normalizedWorkdir
+    .split("/")
+    .filter(Boolean)
+    .at(-1);
+  return Boolean(
+    basename &&
+      line.includes(basename) &&
+      (/^\/(?:private\/)?/.test(line) || /^\/…\//.test(line)),
+  );
+}
+
+/**
+ * Failover prompts need stricter transcript sanitization than chat messages.
+ * The replacement agent already gets the workspace path and failure reason
+ * separately, so Claude/Codex trust screens, onboarding banners, and echoed
+ * workspace selectors should be dropped here instead of being forwarded.
+ */
+export function cleanForFailoverContext(raw: string, workdir?: string): string {
+  return cleanForChat(raw)
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .filter((line) => !FAILOVER_CONTEXT_NOISE_PATTERNS.some((pattern) => pattern.test(line)))
+    .filter((line) => !isWorkdirEchoLine(line, workdir))
+    .join("\n")
     .trim();
 }
 

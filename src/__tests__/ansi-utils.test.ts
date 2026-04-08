@@ -97,6 +97,22 @@ describe("cleanForChat", () => {
     const input = "Real content\nthinking...\nMore content";
     expect(cleanForChat(input)).toBe("Real content\nMore content");
   });
+
+  it("should strip Claude trust/bootstrap transcript from failover context", () => {
+    const input = [
+      "Quick safety check: Is this a project you created or one you trust?",
+      "Claude Code can make mistakes. You should never share sensitive info.",
+      "Claude Code'll be able to read, edit, and execute files here.",
+      "1. Yes, I trust this folder",
+      "2. No, exit",
+      "Enter to confirm Esc to cancel",
+      "Welcome back Shaw! Run /init to create a CLAUDE.md file with instructions for Claude.",
+      "Your bash commands will be sandboxed. Disable with /sandbox.",
+      "Quota exhausted while editing src/app.ts",
+    ].join("\n");
+
+    expect(cleanForChat(input)).toBe("Quota exhausted while editing src/app.ts");
+  });
 });
 
 describe("captureTaskResponse", () => {
