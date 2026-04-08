@@ -26,12 +26,14 @@ import type { CodingWorkspaceService } from "../services/workspace-service.js";
  * Strips non-alphanumeric chars (keeps hyphens), lowercases, truncates to 60 chars.
  */
 function sanitizeDirName(label: string): string {
-  return label
-    .toLowerCase()
-    .replace(/[^a-z0-9-]/g, "-")
-    .replace(/-{2,}/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 60) || "scratch";
+  return (
+    label
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, "-")
+      .replace(/-{2,}/g, "-")
+      .replace(/^-|-$/g, "")
+      .slice(0, 60) || "scratch"
+  );
 }
 
 /**
@@ -72,7 +74,9 @@ export function createScratchDir(
     const resolved = codingDir.startsWith("~")
       ? path.join(os.homedir(), codingDir.slice(1))
       : path.resolve(codingDir);
-    const dirName = label ? sanitizeDirName(label) : `scratch-${randomUUID().slice(0, 8)}`;
+    const dirName = label
+      ? sanitizeDirName(label)
+      : `scratch-${randomUUID().slice(0, 8)}`;
     const scratchDir = resolveNonColliding(resolved, dirName);
     fs.mkdirSync(scratchDir, { recursive: true });
     return scratchDir;

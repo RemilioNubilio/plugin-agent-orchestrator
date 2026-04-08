@@ -2,7 +2,7 @@
 
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { type IAgentRuntime, type Service, logger } from "@elizaos/core";
+import { type IAgentRuntime, logger, type Service } from "@elizaos/core";
 import {
   type AdapterType,
   type AgentFileDescriptor,
@@ -27,8 +27,14 @@ import type {
   WorkerSessionHandle,
 } from "pty-manager";
 import { AgentMetricsTracker } from "./agent-metrics.js";
-import { type AgentSelectionStrategy } from "./agent-selection.js";
+import type { AgentSelectionStrategy } from "./agent-selection.js";
 import { readConfigEnvKey } from "./config-env.js";
+import {
+  captureFeed,
+  captureLifecycle,
+  captureSessionOpen,
+  isDebugCaptureEnabled,
+} from "./debug-capture.js";
 import {
   handleGeminiAuth as handleGeminiAuthFlow,
   pushDefaultRules as pushDefaultAutoResponseRules,
@@ -59,14 +65,8 @@ import {
   classifyAndDecideForCoordinator,
   classifyStallOutput,
 } from "./stall-classifier.js";
-import { POST_SEND_COOLDOWN_MS } from "./swarm-decision-loop.js";
 import { SwarmCoordinator } from "./swarm-coordinator.js";
-import {
-  captureFeed,
-  captureLifecycle,
-  captureSessionOpen,
-  isDebugCaptureEnabled,
-} from "./debug-capture.js";
+import { POST_SEND_COOLDOWN_MS } from "./swarm-decision-loop.js";
 import {
   getTaskAgentFrameworkState,
   type TaskAgentFrameworkState,
@@ -161,7 +161,9 @@ export class PTYService {
     const existing = servicesMap?.get?.("SWARM_COORDINATOR");
     if (existing && existing.length > 0) {
       service.coordinator = existing[0] as unknown as SwarmCoordinator;
-      logger.info("[PTYService] SwarmCoordinator already registered, skipping duplicate start");
+      logger.info(
+        "[PTYService] SwarmCoordinator already registered, skipping duplicate start",
+      );
     } else {
       try {
         const coordinator = new SwarmCoordinator(runtime);
@@ -173,7 +175,9 @@ export class PTYService {
         // without a hard import from this plugin package.
         // We bypass registerService() (which would call start() again) and
         // write directly to the services map that getService() reads from.
-        servicesMap?.set?.("SWARM_COORDINATOR", [coordinator as unknown as Service]);
+        servicesMap?.set?.("SWARM_COORDINATOR", [
+          coordinator as unknown as Service,
+        ]);
 
         logger.info("[PTYService] SwarmCoordinator wired and started");
       } catch (err) {
@@ -249,7 +253,9 @@ export class PTYService {
     if (this.coordinator) {
       await this.coordinator.stop();
       // Remove from runtime services map
-      (this.runtime.services as Map<string, Service[]>).delete("SWARM_COORDINATOR");
+      (this.runtime.services as Map<string, Service[]>).delete(
+        "SWARM_COORDINATOR",
+      );
       this.coordinator = null;
     }
 
@@ -384,7 +390,10 @@ export class PTYService {
           sessionId,
         });
         if (hookProtocol) {
-          const existingHooks = (settings.hooks ?? {}) as Record<string, unknown>;
+          const existingHooks = (settings.hooks ?? {}) as Record<
+            string,
+            unknown
+          >;
           settings.hooks = { ...existingHooks, ...hookProtocol.settingsHooks };
           this.log(`Injecting HTTP hooks for session ${sessionId}`);
         }
@@ -419,7 +428,10 @@ export class PTYService {
           sessionId,
         });
         if (hookProtocol) {
-          const existingHooks = (settings.hooks ?? {}) as Record<string, unknown>;
+          const existingHooks = (settings.hooks ?? {}) as Record<
+            string,
+            unknown
+          >;
           settings.hooks = { ...existingHooks, ...hookProtocol.settingsHooks };
           this.log(`Injecting Gemini CLI hooks for session ${sessionId}`);
         }
@@ -451,6 +463,25 @@ export class PTYService {
       },
       workdir,
     );
+    // DEBUG: log credentials reaching the spawn (remove after fixing cloud)
+    {
+      const ac = spawnConfig.adapterConfig as
+        | Record<string, unknown>
+        | undefined;
+      const mask = (v: unknown) =>
+        typeof v === "string" && v.length > 12
+          ? `${v.slice(0, 8)}...${v.slice(-4)}`
+          : String(v);
+      const parts: string[] = [];
+      if (ac?.anthropicKey) parts.push(`anthropicKey=${mask(ac.anthropicKey)}`);
+      if (ac?.anthropicBaseUrl)
+        parts.push(`anthropicBaseUrl=${ac.anthropicBaseUrl}`);
+      if (ac?.openaiKey) parts.push(`openaiKey=${mask(ac.openaiKey)}`);
+      if (ac?.openaiBaseUrl) parts.push(`openaiBaseUrl=${ac.openaiBaseUrl}`);
+      this.log(
+        `[DEBUG] PTY spawn ${resolvedAgentType} adapterConfig credentials: ${parts.join(", ") || "(none)"}`,
+      );
+    }
     const session = await this.manager.spawn(spawnConfig);
     this.terminalSessionStates.delete(session.id);
     this.sessionNames.set(session.id, options.name);
@@ -511,7 +542,9 @@ export class PTYService {
       if (this.usingBunWorker) {
         (this.manager as BunCompatiblePTYManager).onSessionData(
           session.id,
-          (data: string) => { captureFeed(session.id, data, "stdout"); },
+          (data: string) => {
+            captureFeed(session.id, data, "stdout");
+          },
         );
       } else {
         const ptySession = (this.manager as PTYManager).getSession(session.id);
@@ -689,7 +722,9 @@ export class PTYService {
       this.toSessionInfo(s, this.sessionWorkdirs.get(s.id)),
     );
     const terminalSessions = Array.from(this.terminalSessionStates.keys())
-      .filter((sessionId) => !sessions.some((session) => session.id === sessionId))
+      .filter(
+        (sessionId) => !sessions.some((session) => session.id === sessionId),
+      )
       .map((sessionId) => this.toTerminalSessionInfo(sessionId))
       .filter((session): session is SessionInfo => session !== undefined);
     return [...liveSessions, ...terminalSessions];
@@ -706,6 +741,28 @@ export class PTYService {
   async getSessionOutput(sessionId: string, lines?: number): Promise<string> {
     if (!this.manager) throw new Error("PTYService not initialized");
     return getSessionOutputIO(this.ioContext(), sessionId, lines);
+  }
+
+  /**
+   * Whether the adapter currently classifies the session as actively
+   * processing work (e.g. Codex's "esc to interrupt" status row).
+   *
+   * The swarm idle watchdog consults this before assuming a session is
+   * idle based on output byte diffs, which are fooled by TUIs that
+   * redraw the same status row in place via cursor positioning.
+   *
+   * Returns `false` for unknown sessions or adapters that don't
+   * implement `detectLoading`. For Bun-compat mode this round-trips to
+   * the worker; for in-process mode it reads the session directly.
+   */
+  async isSessionLoading(sessionId: string): Promise<boolean> {
+    if (!this.manager) return false;
+    if (this.usingBunWorker) {
+      return (this.manager as BunCompatiblePTYManager).isSessionLoading(
+        sessionId,
+      );
+    }
+    return (this.manager as PTYManager).isSessionLoading(sessionId);
   }
 
   private clearTranscriptCapture(sessionId: string): void {
@@ -728,8 +785,9 @@ export class PTYService {
       return metadataThreadId;
     }
     return (
-      (await this.coordinator?.taskRegistry.findThreadIdBySessionId(sessionId)) ??
-      null
+      (await this.coordinator?.taskRegistry.findThreadIdBySessionId(
+        sessionId,
+      )) ?? null
     );
   }
 
@@ -754,12 +812,11 @@ export class PTYService {
     this.clearTranscriptCapture(sessionId);
 
     if (this.usingBunWorker) {
-      const unsubscribe = (this.manager as BunCompatiblePTYManager).onSessionData(
-        sessionId,
-        (data: string) => {
-          void this.persistTranscript(sessionId, "stdout", data);
-        },
-      );
+      const unsubscribe = (
+        this.manager as BunCompatiblePTYManager
+      ).onSessionData(sessionId, (data: string) => {
+        void this.persistTranscript(sessionId, "stdout", data);
+      });
       this.transcriptUnsubscribers.set(sessionId, unsubscribe);
       return;
     }
@@ -808,13 +865,16 @@ export class PTYService {
   ): void {
     // Log high-frequency events (tool_running, permission) at debug level;
     // completion events at info level.
-    const summary = event === "tool_running"
-      ? `tool=${(data as { toolName?: string }).toolName ?? "?"}`
-      : event === "permission_approved"
-        ? `tool=${(data as { tool?: string }).tool ?? "?"}`
-        : JSON.stringify(data);
+    const summary =
+      event === "tool_running"
+        ? `tool=${(data as { toolName?: string }).toolName ?? "?"}`
+        : event === "permission_approved"
+          ? `tool=${(data as { tool?: string }).tool ?? "?"}`
+          : JSON.stringify(data);
     if (event === "tool_running" || event === "permission_approved") {
-      logger.debug(`[PTYService] Hook event for ${sessionId}: ${event} ${summary}`);
+      logger.debug(
+        `[PTYService] Hook event for ${sessionId}: ${event} ${summary}`,
+      );
     } else {
       this.log(`Hook event for ${sessionId}: ${event} ${summary}`);
     }
@@ -826,7 +886,9 @@ export class PTYService {
       (this.manager as BunCompatiblePTYManager)
         .notifyHookEvent(sessionId, event)
         .catch((err) =>
-          logger.debug(`[PTYService] Failed to forward hook event to session: ${err}`),
+          logger.debug(
+            `[PTYService] Failed to forward hook event to session: ${err}`,
+          ),
         );
     }
 
@@ -847,7 +909,10 @@ export class PTYService {
       case "session_end":
         // CLI session is ending — treat as a stopped event so the coordinator
         // and frontend see the session transition to terminal state.
-        this.emitEvent(sessionId, "stopped", { ...data, reason: "session_end" });
+        this.emitEvent(sessionId, "stopped", {
+          ...data,
+          reason: "session_end",
+        });
         break;
       default:
         break;
@@ -892,7 +957,7 @@ export class PTYService {
           if (elapsed < POST_SEND_COOLDOWN_MS) {
             this.log(
               `Suppressing stall classification for ${sessionId} — ` +
-              `${Math.round(elapsed / 1000)}s since coordinator sent input`,
+                `${Math.round(elapsed / 1000)}s since coordinator sent input`,
             );
             return null;
           }
@@ -946,10 +1011,14 @@ export class PTYService {
     // When the SwarmCoordinator manages this session (non-autonomous mode),
     // strip suggestedResponse so the PTY worker doesn't auto-respond.
     // The coordinator's LLM decision loop will handle blocked prompts instead.
-    if (classification && meta?.coordinatorManaged && classification.suggestedResponse) {
+    if (
+      classification &&
+      meta?.coordinatorManaged &&
+      classification.suggestedResponse
+    ) {
       this.log(
         `Suppressing stall auto-response for coordinator-managed session ${sessionId} ` +
-        `(would have sent: "${classification.suggestedResponse}")`,
+          `(would have sent: "${classification.suggestedResponse}")`,
       );
       classification.suggestedResponse = undefined;
     }
@@ -1012,9 +1081,7 @@ export class PTYService {
    * the marker comment is already present. Serialized per-path to prevent
    * duplicate entries from concurrent spawns.
    */
-  private async ensureOrchestratorGitignore(
-    workdir: string,
-  ): Promise<void> {
+  private async ensureOrchestratorGitignore(workdir: string): Promise<void> {
     const gitignorePath = join(workdir, ".gitignore");
 
     // Serialize per-path: wait for any in-flight update to the same file.
@@ -1061,11 +1128,15 @@ export class PTYService {
     try {
       if (existing.length === 0) {
         // No .gitignore yet — create with just our entries
-        await writeFile(gitignorePath, entries.join("\n") + "\n", "utf-8");
+        await writeFile(gitignorePath, `${entries.join("\n")}\n`, "utf-8");
       } else {
         // Append-only to avoid clobbering concurrent edits
         const separator = existing.endsWith("\n") ? "" : "\n";
-        await appendFile(gitignorePath, separator + entries.join("\n") + "\n", "utf-8");
+        await appendFile(
+          gitignorePath,
+          `${separator + entries.join("\n")}\n`,
+          "utf-8",
+        );
       }
     } catch (err) {
       this.log(`Failed to update .gitignore in ${workdir}: ${err}`);
@@ -1143,8 +1214,7 @@ export class PTYService {
         : storedAgentType;
     return {
       id: sessionId,
-      name:
-        this.sessionNames.get(sessionId) ?? sessionId,
+      name: this.sessionNames.get(sessionId) ?? sessionId,
       agentType: displayAgentType,
       workdir: this.sessionWorkdirs.get(sessionId) ?? process.cwd(),
       status: terminal.status,

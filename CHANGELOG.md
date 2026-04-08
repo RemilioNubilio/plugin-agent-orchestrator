@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.1
+
+### Fixed
+
+- **Framework state preflight mapping**: `computeTaskAgentFrameworkState` was comparing `result.adapter` (a human-readable display name like "Claude Code") against lowercase IDs (`"claude"`), so `preflightByAdapter` ended up empty and every framework reported `installed: false`. The selector then fell through to "no installed framework" and recommended Claude as a hardcoded fallback regardless of the user's actual setup. Now maps display names back to canonical IDs via case-insensitive substring match.
+- **`PARALLAX_DEFAULT_AGENT_TYPE` not honored after UI changes**: `safeGetSetting` only read from `runtime.getSetting()` (in-memory character settings), so changing the default agent in the settings UI did nothing until restart. Now reads the milady config file first via `readConfigEnvKey` and falls back to runtime settings.
+- **Eliza Cloud auth-readiness for task agents**: When `PARALLAX_LLM_PROVIDER=cloud` and a `cloud.apiKey` is paired, Claude/Codex/Aider are now treated as fully auth-ready in the framework selector — they route through the cloud proxy at spawn time. (Gemini is intentionally excluded since Eliza Cloud does not proxy Google.)
+
+### Dependencies
+
+- Bumped `coding-agent-adapters` from `0.16.0` → `0.16.1` (Codex `openai_base_url` flag fix + `auth_mode=apikey` override).
+
 ## 0.6.0
 
 ### Added

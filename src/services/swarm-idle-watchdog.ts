@@ -18,11 +18,13 @@ import {
   type CoordinationLLMResponse,
   type DecisionHistoryEntry,
   parseCoordinationResponse,
-  type SharedDecision,
   type SiblingTaskSummary,
   type TaskContextSummary,
 } from "./swarm-coordinator-prompts.js";
-import { checkAllTasksComplete, executeDecision } from "./swarm-decision-loop.js";
+import {
+  checkAllTasksComplete,
+  executeDecision,
+} from "./swarm-decision-loop.js";
 import { withTrajectoryContext } from "./trajectory-context.js";
 
 // ─── Constants ───
@@ -62,7 +64,8 @@ export async function scanIdleSessions(
           event: "idle_watchdog",
           promptText: "PTY session no longer exists",
           decision: "stopped",
-          reasoning: "Underlying PTY process is gone (likely killed during restart)",
+          reasoning:
+            "Underlying PTY process is gone (likely killed during restart)",
         });
         ctx.broadcast({
           type: "stopped",
@@ -110,6 +113,29 @@ export async function scanIdleSessions(
       } catch {
         // Can't read output — proceed with idle check
       }
+
+      // Even if the visible 20-line tail didn't change, trust the adapter's
+      // own "I am busy" signal. TUIs like Codex redraw their status row
+      // ("Working (Xs • esc to interrupt)") in place via cursor positioning,
+      // so consecutive ANSI-stripped tails can collapse to identical text
+      // even while the model is actively reasoning for minutes. The adapter's
+      // detectLoading() runs against the full buffer and is the source of
+      // truth for "is the agent processing right now".
+      try {
+        const isLoading = await ctx.ptyService.isSessionLoading(
+          taskCtx.sessionId,
+        );
+        if (isLoading) {
+          taskCtx.lastActivityAt = now;
+          taskCtx.idleCheckCount = 0;
+          ctx.log(
+            `Idle watchdog: "${taskCtx.label}" adapter reports loading — not idle`,
+          );
+          continue;
+        }
+      } catch {
+        // Fall through to the LLM idle check if we can't query the adapter.
+      }
     }
 
     taskCtx.idleCheckCount++;
@@ -151,7 +177,9 @@ export async function scanIdleSessions(
         try {
           await ctx.ptyService.stopSession(taskCtx.sessionId, /* force */ true);
         } catch (err) {
-          ctx.log(`Idle watchdog: failed to stop session ${taskCtx.sessionId}: ${err}`);
+          ctx.log(
+            `Idle watchdog: failed to stop session ${taskCtx.sessionId}: ${err}`,
+          );
           taskCtx.status = "error";
           await ctx.syncTaskContext(taskCtx);
           ctx.broadcast({

@@ -1,18 +1,18 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
+import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
-import { createHash } from "node:crypto";
-import {
-  type IAgentRuntime,
-  ModelType,
-} from "@elizaos/core";
-import type {
-  TaskThreadDetail,
-} from "./task-registry.js";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
+
+import { type IAgentRuntime, ModelType } from "@elizaos/core";
 import type {
   SwarmCoordinatorContext,
   TaskContext,
 } from "./swarm-coordinator.js";
+import type { TaskThreadDetail } from "./task-registry.js";
 import { withTrajectoryContext } from "./trajectory-context.js";
 
 type ValidationVerdict = "pass" | "revise" | "escalate";
@@ -78,7 +78,9 @@ function extractJsonBlock(raw: string): string {
 
 function parseValidationResponse(raw: string): ValidationResponse | null {
   try {
-    const parsed = JSON.parse(extractJsonBlock(raw)) as Partial<ValidationResponse>;
+    const parsed = JSON.parse(
+      extractJsonBlock(raw),
+    ) as Partial<ValidationResponse>;
     const verdict = parsed.verdict;
     const summary = parsed.summary?.trim();
     if (
@@ -90,7 +92,8 @@ function parseValidationResponse(raw: string): ValidationResponse | null {
     const followUpPrompt = parsed.followUpPrompt?.trim();
     const checklist = Array.isArray(parsed.checklist)
       ? parsed.checklist.filter(
-          (item): item is string => typeof item === "string" && item.trim().length > 0,
+          (item): item is string =>
+            typeof item === "string" && item.trim().length > 0,
         )
       : undefined;
     return {
@@ -256,12 +259,15 @@ async function listRelevantTrajectories(
       if (seen.has(item.id)) continue;
       seen.add(item.id);
       const metadata = (item.metadata ?? {}) as Record<string, unknown>;
-      const orchestrator = metadata.orchestrator as Record<string, unknown> | undefined;
+      const orchestrator = metadata.orchestrator as
+        | Record<string, unknown>
+        | undefined;
       const sessionMatches =
         orchestrator?.sessionId === task.sessionId ||
         metadata.sessionId === task.sessionId;
       const labelMatches =
-        orchestrator?.taskLabel === task.label || metadata.taskLabel === task.label;
+        orchestrator?.taskLabel === task.label ||
+        metadata.taskLabel === task.label;
       if (!sessionMatches && !labelMatches && search !== task.sessionId) {
         continue;
       }
@@ -297,10 +303,9 @@ async function describeScreenshotContent(
 ): Promise<ScreenshotSemanticResult> {
   try {
     const dataUri = `data:image/png;base64,${Buffer.from(bytes).toString("base64")}`;
-    const acceptanceCriteria =
-      thread?.acceptanceCriteria?.length
-        ? thread.acceptanceCriteria.map((item) => `- ${item}`).join("\n")
-        : "- none";
+    const acceptanceCriteria = thread?.acceptanceCriteria?.length
+      ? thread.acceptanceCriteria.map((item) => `- ${item}`).join("\n")
+      : "- none";
     const raw = await runtime.useModel(ModelType.IMAGE_DESCRIPTION, {
       imageUrl: dataUri,
       prompt: [
@@ -342,6 +347,255 @@ function describeScreenshotEvidence(
   return `- status=captured scope=${screenshot.captureScope} fileIntegrityVerified=${screenshot.fileIntegrityVerified} contentVerified=${screenshot.contentVerified} sha256=${screenshot.sha256} path=${screenshot.path} sizeBytes=${screenshot.sizeBytes}${screenshot.contentSummary ? ` summary=${truncate(screenshot.contentSummary, 500)}` : ""}${screenshot.contentVerificationError ? ` contentVerificationError=${screenshot.contentVerificationError}` : ""}`;
 }
 
+/**
+ * Objective filesystem snapshot of the workspace passed to the validator.
+ *
+ * Produced by `collectWorkspaceEvidence()`. Everything here is read from
+ * disk and git — it does not depend on the agent's own turn output, so
+ * the validator can see ground truth regardless of which CLI (Claude,
+ * Codex, Gemini, Aider) produced the work. Codex in particular emits
+ * `apply_patch` previews wrapped in TUI box-drawing that the validator
+ * LLM can't reliably parse as evidence files actually exist.
+ */
+interface WorkspaceEvidence {
+  workdir: string;
+  /** Relative file paths (up to `fileLimit`), sorted for deterministic prompts. */
+  files: string[];
+  /** Total count of files found, including any truncated from `files`. */
+  fileCount: number;
+  /** True if `workdir` is inside a git working tree. */
+  isGitRepo: boolean;
+  /** `git status --short` output, trimmed. Empty string if not a git repo or clean. */
+  gitStatus: string;
+  /** `git diff --stat HEAD` output, trimmed. Empty if no diff or not a git repo. */
+  gitDiffStat: string;
+  /** Non-fatal collection errors we want to surface to the validator. */
+  notes: string[];
+}
+
+export const WORKSPACE_EVIDENCE_FILE_LIMIT = 200;
+export const WORKSPACE_EVIDENCE_MAX_DEPTH = 5;
+// Hard ceiling on the total walk. We still report `fileCount` up to this
+// number, but stop walking once we cross it so an enormous tree (e.g.
+// someone passing `~` as workdir) can't wedge the validator.
+export const WORKSPACE_EVIDENCE_MAX_WALK = 2_000;
+const WORKSPACE_EVIDENCE_SKIP_DIRS = new Set([
+  ".git",
+  "node_modules",
+  ".next",
+  "dist",
+  "build",
+  "out",
+  "target",
+  ".turbo",
+  "__pycache__",
+  ".venv",
+  "venv",
+  ".DS_Store",
+  ".cache",
+]);
+
+/**
+ * Read the workspace filesystem to produce objective evidence for the
+ * validator prompt.
+ *
+ * - Walks `workdir` up to `WORKSPACE_EVIDENCE_MAX_DEPTH` levels, skipping
+ *   common build/dep directories.
+ * - Caps the file list at `WORKSPACE_EVIDENCE_FILE_LIMIT` entries; the
+ *   `fileCount` field still reflects the total discovered so the
+ *   validator can see truncation happened.
+ * - If `workdir` is a git repository, captures `git status --short` and
+ *   `git diff --stat HEAD` so the validator can see uncommitted work.
+ * - Never throws. All errors are captured in `notes` so the validator
+ *   can judge whether missing evidence should downgrade the verdict.
+ */
+export async function collectWorkspaceEvidence(
+  workdir: string | undefined | null,
+): Promise<WorkspaceEvidence> {
+  const evidence: WorkspaceEvidence = {
+    workdir: workdir ?? "",
+    files: [],
+    fileCount: 0,
+    isGitRepo: false,
+    gitStatus: "",
+    gitDiffStat: "",
+    notes: [],
+  };
+
+  if (!workdir) {
+    evidence.notes.push("no workdir supplied");
+    return evidence;
+  }
+
+  // Resolve ~ and confirm the directory exists.
+  const resolved = workdir.startsWith("~")
+    ? path.join(homedir(), workdir.slice(1))
+    : path.resolve(workdir);
+  evidence.workdir = resolved;
+
+  try {
+    const rootStat = await stat(resolved);
+    if (!rootStat.isDirectory()) {
+      evidence.notes.push(`workdir is not a directory: ${resolved}`);
+      return evidence;
+    }
+  } catch (err) {
+    evidence.notes.push(
+      `workdir not readable: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return evidence;
+  }
+
+  // Walk the tree breadth-first-ish and collect relative file paths.
+  interface WalkEntry {
+    name: string;
+    isDirectory: () => boolean;
+    isFile: () => boolean;
+  }
+  const collected: string[] = [];
+  let totalCount = 0;
+  let walkCeilingHit = false;
+  const walk = async (dir: string, depth: number): Promise<void> => {
+    if (depth > WORKSPACE_EVIDENCE_MAX_DEPTH) return;
+    if (totalCount >= WORKSPACE_EVIDENCE_MAX_WALK) {
+      walkCeilingHit = true;
+      return;
+    }
+    let entries: WalkEntry[];
+    try {
+      entries = (await readdir(dir, { withFileTypes: true })) as WalkEntry[];
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (WORKSPACE_EVIDENCE_SKIP_DIRS.has(entry.name)) continue;
+      if (totalCount >= WORKSPACE_EVIDENCE_MAX_WALK) {
+        walkCeilingHit = true;
+        break;
+      }
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(full, depth + 1);
+      } else if (entry.isFile()) {
+        totalCount++;
+        if (collected.length < WORKSPACE_EVIDENCE_FILE_LIMIT) {
+          collected.push(path.relative(resolved, full));
+        }
+      }
+    }
+  };
+
+  try {
+    await walk(resolved, 0);
+  } catch (err) {
+    evidence.notes.push(
+      `walk failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  collected.sort();
+  evidence.files = collected;
+  evidence.fileCount = totalCount;
+  if (walkCeilingHit) {
+    evidence.notes.push(
+      `workspace walk hit the ${WORKSPACE_EVIDENCE_MAX_WALK}-file ceiling; counts and listing are truncated`,
+    );
+  }
+
+  // Git evidence — best-effort, silent on failure.
+  try {
+    await execFileAsync("git", ["rev-parse", "--is-inside-work-tree"], {
+      cwd: resolved,
+      timeout: 3_000,
+    });
+    evidence.isGitRepo = true;
+    try {
+      const { stdout } = await execFileAsync(
+        "git",
+        ["status", "--short", "--untracked-files=all"],
+        { cwd: resolved, timeout: 5_000, maxBuffer: 256 * 1024 },
+      );
+      evidence.gitStatus = stdout.trim();
+    } catch {
+      /* ignore */
+    }
+    try {
+      const { stdout } = await execFileAsync(
+        "git",
+        ["diff", "--stat", "HEAD"],
+        { cwd: resolved, timeout: 5_000, maxBuffer: 256 * 1024 },
+      );
+      evidence.gitDiffStat = stdout.trim();
+    } catch {
+      // No HEAD yet (empty repo) or other error — fall back to a
+      // full diff against the empty tree.
+      try {
+        const { stdout } = await execFileAsync("git", ["diff", "--stat"], {
+          cwd: resolved,
+          timeout: 5_000,
+          maxBuffer: 256 * 1024,
+        });
+        evidence.gitDiffStat = stdout.trim();
+      } catch {
+        /* ignore */
+      }
+    }
+  } catch {
+    // Not a git repo, or git not installed. Both fine — filesystem
+    // listing alone is still useful for scratch dirs.
+  }
+
+  return evidence;
+}
+
+function formatWorkspaceEvidence(evidence: WorkspaceEvidence): string {
+  if (!evidence.workdir) return "- no workdir supplied";
+  if (evidence.fileCount === 0 && evidence.notes.length > 0) {
+    return `- workdir: ${evidence.workdir}\n- ${evidence.notes.join("\n- ")}`;
+  }
+
+  const lines: string[] = [];
+  lines.push(`workdir: ${evidence.workdir}`);
+  lines.push(
+    `file count: ${evidence.fileCount}${
+      evidence.files.length < evidence.fileCount
+        ? ` (showing first ${evidence.files.length})`
+        : ""
+    }`,
+  );
+  if (evidence.files.length > 0) {
+    lines.push("files:");
+    for (const file of evidence.files) {
+      lines.push(`  ${file}`);
+    }
+  } else {
+    lines.push("files: (workspace is empty)");
+  }
+  if (evidence.isGitRepo) {
+    lines.push(
+      evidence.gitStatus
+        ? `git status:\n${indent(evidence.gitStatus, "  ")}`
+        : "git status: (clean or no changes)",
+    );
+    if (evidence.gitDiffStat) {
+      lines.push(
+        `git diff --stat HEAD:\n${indent(evidence.gitDiffStat, "  ")}`,
+      );
+    }
+  }
+  if (evidence.notes.length > 0) {
+    lines.push(`notes: ${evidence.notes.join("; ")}`);
+  }
+  return lines.join("\n");
+}
+
+function indent(text: string, prefix: string): string {
+  return text
+    .split("\n")
+    .map((line) => `${prefix}${line}`)
+    .join("\n");
+}
+
 function buildValidationPrompt(
   task: TaskContext,
   thread: TaskThreadDetail | null,
@@ -350,11 +604,11 @@ function buildValidationPrompt(
   turnOutput: string,
   trajectories: TrajectoryListItem[],
   screenshot: ValidationScreenshotCapture,
+  workspaceEvidence: WorkspaceEvidence,
 ): string {
-  const acceptanceCriteria =
-    thread?.acceptanceCriteria?.length
-      ? thread.acceptanceCriteria.map((item) => `- ${item}`).join("\n")
-      : "- Complete the user's request\n- Verify the result with available evidence\n- Do not claim success if important work is still missing";
+  const acceptanceCriteria = thread?.acceptanceCriteria?.length
+    ? thread.acceptanceCriteria.map((item) => `- ${item}`).join("\n")
+    : "- Complete the user's request\n- Verify the result with available evidence\n- Do not claim success if important work is still missing";
   const completionExcerpt =
     turnOutput || completionSummary || completionReasoning || "none";
   const trajectoryBlock =
@@ -367,15 +621,21 @@ function buildValidationPrompt(
           .join("\n")
       : "- none";
   const transcriptPreview =
-    thread?.transcripts?.slice(-8).map((entry) => {
-      const content = truncate(entry.content, 220);
-      return `- [${entry.direction}] ${content}`;
-    }).join("\n") ?? "- none";
+    thread?.transcripts
+      ?.slice(-8)
+      .map((entry) => {
+        const content = truncate(entry.content, 220);
+        return `- [${entry.direction}] ${content}`;
+      })
+      .join("\n") ?? "- none";
   const artifactBlock =
-    thread?.artifacts?.slice(-8).map((artifact) => {
-      const locator = artifact.path ?? artifact.uri ?? "inline";
-      return `- ${artifact.artifactType}: ${artifact.title} (${locator})`;
-    }).join("\n") ?? "- none";
+    thread?.artifacts
+      ?.slice(-8)
+      .map((artifact) => {
+        const locator = artifact.path ?? artifact.uri ?? "inline";
+        return `- ${artifact.artifactType}: ${artifact.title} (${locator})`;
+      })
+      .join("\n") ?? "- none";
 
   return [
     "You are validating whether an orchestrated task is actually finished.",
@@ -405,12 +665,21 @@ function buildValidationPrompt(
     "Screenshot evidence:",
     describeScreenshotEvidence(screenshot),
     "",
+    // Objective filesystem evidence. This is the ground truth — it does
+    // NOT depend on the agent's own turn output, so it is reliable
+    // regardless of which CLI produced the work. Use this as the
+    // primary signal for "did files actually get created / modified".
+    "Workspace evidence (read from disk):",
+    formatWorkspaceEvidence(workspaceEvidence),
+    "",
     "Rules:",
     "- Pass only if the task appears complete and the available evidence supports that claim.",
     "- Revise if the agent should keep working. In that case, provide a direct follow-up prompt.",
     "- Escalate if the task cannot be validated from available evidence and needs human review.",
     "- Be skeptical. Missing tests or missing verification should usually mean revise or escalate, not pass.",
     "- Treat screenshot capture as artifact evidence only. A desktop screenshot may prove the UI rendered, but it does not semantically prove the task without supporting transcript, test, or trajectory evidence.",
+    "- Trust the 'Workspace evidence' block over agent commentary: if files are listed there, they exist on disk, regardless of how the agent described its work. If the task was to create files and the workspace evidence shows them, that is strong evidence for pass.",
+    "- Conversely, if the agent claims to have created files but the workspace evidence shows an empty directory or missing files, treat that as revise (not pass) — the agent's claim is unverified.",
   ].join("\n");
 }
 
@@ -433,16 +702,23 @@ export async function validateTaskCompletion(
   ctx: SwarmCoordinatorContext,
   input: ValidateTaskCompletionInput,
 ): Promise<TaskValidationResult> {
-  const { sessionId, taskCtx, completionReasoning, completionSummary, turnOutput } =
-    input;
+  const {
+    sessionId,
+    taskCtx,
+    completionReasoning,
+    completionSummary,
+    turnOutput,
+  } = input;
   const thread = await ctx.taskRegistry.getThread(taskCtx.threadId);
-  const trajectories = await listRelevantTrajectories(ctx.runtime, taskCtx, thread);
-  const screenshot = await captureValidationScreenshot(
+  const trajectories = await listRelevantTrajectories(
     ctx.runtime,
     taskCtx,
     thread,
-    sessionId,
   );
+  const [screenshot, workspaceEvidence] = await Promise.all([
+    captureValidationScreenshot(ctx.runtime, taskCtx, thread, sessionId),
+    collectWorkspaceEvidence(taskCtx.workdir),
+  ]);
 
   const prompt = buildValidationPrompt(
     taskCtx,
@@ -452,6 +728,7 @@ export async function validateTaskCompletion(
     turnOutput,
     trajectories,
     screenshot,
+    workspaceEvidence,
   );
   const rawValidation = await withTrajectoryContext(
     ctx.runtime,
@@ -468,12 +745,11 @@ export async function validateTaskCompletion(
   );
 
   const parsed = parseValidationResponse(rawValidation);
-  const verdict: ValidationResponse =
-    parsed ?? {
-      verdict: "escalate",
-      summary:
-        "Validation model returned an invalid response, so this task needs human review.",
-    };
+  const verdict: ValidationResponse = parsed ?? {
+    verdict: "escalate",
+    summary:
+      "Validation model returned an invalid response, so this task needs human review.",
+  };
 
   const report = {
     version: 1,
@@ -501,10 +777,16 @@ export async function validateTaskCompletion(
         createdAt: item.createdAt,
       })),
       checklist: verdict.checklist ?? [],
-      turnOutputExcerpt: truncate(turnOutput || completionSummary || completionReasoning || ""),
+      turnOutputExcerpt: truncate(
+        turnOutput || completionSummary || completionReasoning || "",
+      ),
     },
   };
-  const reportPath = await persistValidationReport(taskCtx.threadId, sessionId, report);
+  const reportPath = await persistValidationReport(
+    taskCtx.threadId,
+    sessionId,
+    report,
+  );
 
   const artifacts: TaskValidationResult["artifacts"] = [
     {
@@ -546,8 +828,7 @@ export async function validateTaskCompletion(
           : {}),
         ...(screenshot.contentVerificationError
           ? {
-              contentVerificationError:
-                screenshot.contentVerificationError,
+              contentVerificationError: screenshot.contentVerificationError,
             }
           : {}),
       },
@@ -557,7 +838,9 @@ export async function validateTaskCompletion(
   return {
     verdict: verdict.verdict,
     summary: verdict.summary,
-    ...(verdict.followUpPrompt ? { followUpPrompt: verdict.followUpPrompt } : {}),
+    ...(verdict.followUpPrompt
+      ? { followUpPrompt: verdict.followUpPrompt }
+      : {}),
     reportPath,
     artifacts,
   };

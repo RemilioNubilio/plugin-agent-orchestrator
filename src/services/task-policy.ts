@@ -84,10 +84,15 @@ function parseTaskAgentPolicy(runtime: IAgentRuntime): TaskAgentPolicyConfig {
 
   const record = parsed as Record<string, unknown>;
   const connectors =
-    record.connectors && typeof record.connectors === "object" && !Array.isArray(record.connectors)
+    record.connectors &&
+    typeof record.connectors === "object" &&
+    !Array.isArray(record.connectors)
       ? Object.fromEntries(
           Object.entries(record.connectors as Record<string, unknown>).map(
-            ([connector, value]) => [connector, normalizeConnectorPolicy(value as RoleName | ConnectorPolicy)],
+            ([connector, value]) => [
+              connector,
+              normalizeConnectorPolicy(value as RoleName | ConnectorPolicy),
+            ],
           ),
         )
       : DEFAULT_POLICY.connectors;
@@ -100,10 +105,9 @@ function parseTaskAgentPolicy(runtime: IAgentRuntime): TaskAgentPolicyConfig {
   };
 }
 
-function getConnectorFromBridgeMetadata(
-  message: Memory,
-): string | null {
-  const metadata = (message.content as Record<string, unknown> | undefined)?.metadata;
+function getConnectorFromBridgeMetadata(message: Memory): string | null {
+  const metadata = (message.content as Record<string, unknown> | undefined)
+    ?.metadata;
   if (!metadata || typeof metadata !== "object") return null;
   const bridgeSender = (metadata as Record<string, unknown>).bridgeSender;
   if (!bridgeSender || typeof bridgeSender !== "object") return null;
@@ -151,8 +155,14 @@ async function resolveSenderRole(
   message: Memory,
 ): Promise<RoleCheckResult | null> {
   try {
-    // @ts-ignore — optional milady-side package, resolved at runtime only
-    const rolesModule = (await import("@miladyai/plugin-roles")) as {
+    // Optional milady-side package — resolved at runtime only. We use a
+    // dynamic module specifier so neither tsc nor biome flags it: tsc
+    // doesn't try to resolve the literal at type-check time, and biome's
+    // ts-ignore-prefers-ts-expect-error rule doesn't apply because there
+    // is no directive. If the package isn't installed the runtime
+    // `import()` simply throws and we fall through to the null return.
+    const rolesModuleSpecifier = "@miladyai/plugin-roles";
+    const rolesModule = (await import(rolesModuleSpecifier)) as {
       checkSenderRole?: (
         runtime: IAgentRuntime,
         message: Memory,
@@ -172,8 +182,19 @@ export async function requireTaskAgentAccess(
   message: Memory,
   ability: TaskAgentAbility,
 ): Promise<
-  | { allowed: true; connector: string | null; requiredRole: RoleName; actualRole: RoleName }
-  | { allowed: false; connector: string | null; requiredRole: RoleName; actualRole: RoleName; reason: string }
+  | {
+      allowed: true;
+      connector: string | null;
+      requiredRole: RoleName;
+      actualRole: RoleName;
+    }
+  | {
+      allowed: false;
+      connector: string | null;
+      requiredRole: RoleName;
+      actualRole: RoleName;
+      reason: string;
+    }
 > {
   if (message.entityId === runtime.agentId) {
     return {
@@ -189,8 +210,11 @@ export async function requireTaskAgentAccess(
   const connectorPolicy = connector
     ? normalizeConnectorPolicy(policy.connectors?.[connector])
     : {};
-  const defaultPolicy = normalizeConnectorPolicy(policy.default as RoleName | ConnectorPolicy);
-  const requiredRole = connectorPolicy[ability] ?? defaultPolicy[ability] ?? "GUEST";
+  const defaultPolicy = normalizeConnectorPolicy(
+    policy.default as RoleName | ConnectorPolicy,
+  );
+  const requiredRole =
+    connectorPolicy[ability] ?? defaultPolicy[ability] ?? "GUEST";
 
   if (requiredRole === "GUEST") {
     return {
