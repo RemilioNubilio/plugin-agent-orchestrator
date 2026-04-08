@@ -56,7 +56,7 @@ export function stripAnsi(raw: string): string {
 
 /** Unicode spinner, box-drawing, and decorative characters used by CLI TUIs. */
 const TUI_DECORATIVE =
-  /[│╭╰╮╯─═╌║╔╗╚╝╠╣╦╩╬┌┐└┘├┤┬┴┼●○❮❯▶◀⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⣾⣽⣻⢿⡿⣟⣯⣷✽✻✶✳✢⏺←→↑↓⬆⬇◆▪▫■□▲△▼▽◈⟨⟩⌘⏎⏏⌫⌦⇧⇪⌥·⎿✔◼]/g;
+  /[│╭╰╮╯─═╌║╔╗╚╝╠╣╦╩╬┌┐└┘├┤┬┴┼●○❮❯▶◀⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⣾⣽⣻⢿⡿⣟⣯⣷✽✻✶✳✢⏺←→↑↓⬆⬇◆▪▫■□▲△▼▽◈⟨⟩⌘⏎⏏⌫⌦⇧⇪⌥·⎿✔◼█▌▐▖▗▘▝▛▜▟▙◐◑◒◓⏵]/g;
 
 /**
  * Lines that are just CLI loading/thinking status — no meaningful content.

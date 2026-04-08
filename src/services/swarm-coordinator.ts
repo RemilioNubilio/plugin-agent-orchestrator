@@ -23,7 +23,7 @@ import type { ServerResponse } from "node:http";
 import type { IAgentRuntime } from "@elizaos/core";
 import { logger } from "@elizaos/core";
 import { buildAgentCredentials } from "./agent-credentials.js";
-import { cleanForChat, extractDevServerUrl } from "./ansi-utils.js";
+import { cleanForFailoverContext, cleanForChat, extractDevServerUrl } from "./ansi-utils.js";
 import type { PTYService } from "./pty-service.js";
 import type { CodingAgentType } from "./pty-types.js";
 import { normalizeAgentType } from "./pty-types.js";
@@ -1862,7 +1862,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
     reason: string,
     recentOutput: string,
   ): string {
-    const cleanedOutput = cleanForChat(recentOutput);
+    const cleanedOutput = cleanForFailoverContext(recentOutput, taskCtx.workdir);
     const trimmedOutput = cleanedOutput.trim();
     const clippedOutput =
       trimmedOutput.length > FAILOVER_OUTPUT_MAX_CHARS

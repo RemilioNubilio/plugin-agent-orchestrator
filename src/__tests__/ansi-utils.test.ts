@@ -4,8 +4,13 @@
 
 import { describe, expect, it } from "bun:test";
 
-const { captureTaskResponse, cleanForChat, extractDevServerUrl, stripAnsi } =
-  await import("../services/ansi-utils.js");
+const {
+  captureTaskResponse,
+  cleanForChat,
+  cleanForFailoverContext,
+  extractDevServerUrl,
+  stripAnsi,
+} = await import("../services/ansi-utils.js");
 
 describe("stripAnsi", () => {
   it("should replace cursor movement codes with spaces", () => {
@@ -93,6 +98,14 @@ describe("cleanForChat", () => {
     );
   });
 
+  it("should strip Codex/Claude status glyphs while preserving status text", () => {
+    const input =
+      "▜▌ Recent activity\n▝▜█████▛▘ No recent activity\n⏵⏵ don't ask on (shift+tab to cycle)\n◐ medium /effort";
+    expect(cleanForChat(input)).toBe(
+      "Recent activity\nNo recent activity\ndon't ask on (shift+tab to cycle)\nmedium /effort",
+    );
+  });
+
   it("should filter loading/thinking lines", () => {
     const input = "Real content\nthinking...\nMore content";
     expect(cleanForChat(input)).toBe("Real content\nMore content");
@@ -152,6 +165,34 @@ describe("captureTaskResponse", () => {
     const markers = new Map([["s1", 1]]);
 
     expect(captureTaskResponse("s1", buffers, markers)).toBe("");
+  });
+});
+
+describe("cleanForFailoverContext", () => {
+  it("removes fragmented Claude trust and onboarding noise before failover handoff", () => {
+    const workdir =
+      "/var/folders/1g/77s889gx10n7mtl6z1nfrxzm0000gn/T/milady-live-failover-nF6dyD";
+    const input = [
+      "Accessing workspace:",
+      `/private${workdir}`,
+      "project, or work from your team). If not, take a moment to review what's in this folder first.",
+      "curity guide",
+      "Yes, I trust this folder",
+      "Claude Code v2.1.97",
+      "Tips for getting started",
+      "Welcome back Shaw! Run /init to create a CLAUDE.md file with instructions for Claude",
+      "Recent activity",
+      "No recent activity",
+      "Opus 4.6 (1M context) Claude Max Shaw",
+      `/…/${workdir.split("/").at(-1)}`,
+      "don't ask on (shift+tab to cycle)",
+      "medium /effort",
+      "Quota exhausted while editing src/app.ts",
+    ].join("\n");
+
+    expect(cleanForFailoverContext(input, workdir)).toBe(
+      "Quota exhausted while editing src/app.ts",
+    );
   });
 });
 
