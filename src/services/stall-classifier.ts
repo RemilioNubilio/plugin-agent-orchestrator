@@ -66,6 +66,7 @@ function isStatusNoiseLine(line: string): boolean {
   if (!compact) return true;
   if (compact.startsWith("› ")) return true;
   if (STATUS_NOISE_LINE.test(compact)) return true;
+  if (looksLikeSpinnerFragments(compact)) return true;
   if (STATUS_PATH_LINE.test(compact) && /\b\d+% left\b/i.test(compact)) return true;
   if (STATUS_PATH_LINE.test(compact) && looksLikeSpinnerFragments(compact)) return true;
   return false;
