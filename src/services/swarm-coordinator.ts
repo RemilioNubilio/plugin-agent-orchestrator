@@ -1356,7 +1356,10 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 			(entry) => entry.id === requestedFramework,
 		);
 		const resolvedFramework =
-			framework && framework.installed && framework.authReady
+			framework &&
+			framework.installed &&
+			framework.authReady &&
+			!framework.temporarilyDisabled
 				? requestedFramework
 				: normalizeAgentType(await this.ptyService.resolveAgentType());
 		const resolvedAvailability = frameworkState.frameworks.find(

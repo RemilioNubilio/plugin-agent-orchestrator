@@ -272,7 +272,11 @@ export async function handleAgentRoutes(
     try {
       const { createAdapter } = await import("coding-agent-adapters");
       const adapter = createAdapter(agentType);
-      const result = await adapter.triggerAuth();
+      const result = await (
+        adapter as typeof adapter & {
+          triggerAuth?: () => Promise<unknown>;
+        }
+      ).triggerAuth?.();
       if (!result) {
         sendError(res, `No auth flow available for ${agentType}`, 400);
       } else {

@@ -28,9 +28,11 @@ const createMockTaskRegistry = () => ({
 	createThread: jest.fn().mockResolvedValue({ id: "thread-1" }),
 	getThreadSummary: jest.fn().mockResolvedValue(null),
 	listThreads: jest.fn().mockResolvedValue([]),
+	countThreads: jest.fn().mockResolvedValue(0),
 	getThread: jest.fn().mockResolvedValue(null),
 	archiveThread: jest.fn().mockResolvedValue(undefined),
 	reopenThread: jest.fn().mockResolvedValue(undefined),
+	updateThread: jest.fn().mockResolvedValue(undefined),
 	registerSession: jest.fn().mockResolvedValue(undefined),
 	updateSession: jest.fn().mockResolvedValue(undefined),
 	recordDecision: jest.fn().mockResolvedValue(undefined),
@@ -101,6 +103,7 @@ const createMockPTYService = () => ({
 			},
 		],
 	}),
+	resolveAgentType: jest.fn().mockResolvedValue("codex"),
 	defaultApprovalPreset: "autonomous",
 });
 
@@ -299,6 +302,166 @@ describe("SwarmCoordinator", () => {
 					],
 					metadata: expect.objectContaining({
 						acceptanceCriteriaSource: "model",
+					}),
+				}),
+			);
+		});
+	});
+
+	describe("thread control", () => {
+		it("pauses a thread and records waiting_on_user state", async () => {
+			mockTaskRegistry.getThread.mockResolvedValue({
+				id: "thread-1",
+				title: "Pause me",
+				status: "active",
+				originalRequest: "Fix bug",
+				summary: "",
+				acceptanceCriteria: [],
+				events: [],
+				decisions: [],
+				artifacts: [],
+				transcripts: [],
+				sessions: [],
+				pendingDecisions: [],
+				sessionCount: 1,
+				activeSessionCount: 1,
+				latestSessionId: "s-1",
+				latestSessionLabel: "test-agent",
+				latestWorkdir: "/workspace",
+				latestRepo: null,
+				latestActivityAt: 1,
+				decisionCount: 0,
+				createdAt: new Date().toISOString(),
+				updatedAt: new Date().toISOString(),
+				closedAt: null,
+				archivedAt: null,
+				roomId: null,
+				worldId: null,
+				ownerUserId: null,
+				lastUserTurnAt: null,
+				lastCoordinatorTurnAt: null,
+				currentPlan: {},
+				metadata: {},
+				searchText: "",
+				agentId: "agent-1",
+				kind: "coding",
+				scenarioId: null,
+				batchId: null,
+			});
+			await coordinator.registerTask("s-1", {
+				threadId: "thread-1",
+				agentType: "claude",
+				label: "test-agent",
+				originalTask: "Fix bug",
+				workdir: "/workspace",
+			});
+
+			const result = await coordinator.pauseTaskThread(
+				"thread-1",
+				"Review the current direction",
+			);
+
+			expect(result.stoppedSessionIds).toEqual(["s-1"]);
+			expect(mockPty.stopSession).toHaveBeenCalledWith("s-1", true);
+			expect(mockTaskRegistry.updateThread).toHaveBeenCalledWith(
+				"thread-1",
+				expect.objectContaining({
+					status: "waiting_on_user",
+					metadata: expect.objectContaining({
+						controlState: "paused",
+					}),
+				}),
+			);
+		});
+
+		it("resumes a stopped thread on a new session", async () => {
+			mockTaskRegistry.getThread.mockResolvedValue({
+				id: "thread-1",
+				title: "Resume me",
+				status: "interrupted",
+				originalRequest: "Finish the site",
+				summary: "Partial implementation exists",
+				acceptanceCriteria: ["Ship the page"],
+				events: [],
+				decisions: [],
+				artifacts: [],
+				transcripts: [],
+				sessions: [
+					{
+						id: "s-1",
+						threadId: "thread-1",
+						sessionId: "s-1",
+						framework: "claude",
+						label: "resume-me",
+						originalTask: "Finish the site",
+						workdir: "/workspace",
+						repo: null,
+						status: "interrupted",
+						decisionCount: 0,
+						autoResolvedCount: 0,
+						registeredAt: 1,
+						lastActivityAt: 2,
+						idleCheckCount: 0,
+						taskDelivered: true,
+						completionSummary: null,
+						lastSeenDecisionIndex: 0,
+						lastInputSentAt: null,
+						stoppedAt: 3,
+						metadata: {},
+						agentId: "agent-1",
+						providerSource: "subscription",
+						createdAt: new Date().toISOString(),
+						updatedAt: new Date().toISOString(),
+					},
+				],
+				pendingDecisions: [],
+				sessionCount: 1,
+				activeSessionCount: 0,
+				latestSessionId: "s-1",
+				latestSessionLabel: "resume-me",
+				latestWorkdir: "/workspace",
+				latestRepo: null,
+				latestActivityAt: 2,
+				decisionCount: 0,
+				createdAt: new Date().toISOString(),
+				updatedAt: new Date().toISOString(),
+				closedAt: new Date().toISOString(),
+				archivedAt: null,
+				roomId: null,
+				worldId: null,
+				ownerUserId: null,
+				lastUserTurnAt: null,
+				lastCoordinatorTurnAt: null,
+				currentPlan: {},
+				metadata: {
+					controlState: "paused",
+				},
+				searchText: "",
+				agentId: "agent-1",
+				kind: "coding",
+				scenarioId: null,
+				batchId: null,
+			});
+
+			const result = await coordinator.resumeTaskThread(
+				"thread-1",
+				"Continue from the saved workspace.",
+			);
+
+			expect(result.sessionId).toBe("s-failover");
+			expect(result.reusedSession).toBe(false);
+			expect(mockPty.spawnSession).toHaveBeenCalledWith(
+				expect.objectContaining({
+					workdir: "/workspace",
+					agentType: "codex",
+				}),
+			);
+			expect(mockTaskRegistry.updateThread).toHaveBeenCalledWith(
+				"thread-1",
+				expect.objectContaining({
+					status: "active",
+					metadata: expect.objectContaining({
+						lastResumedSessionId: "s-failover",
 					}),
 				}),
 			);

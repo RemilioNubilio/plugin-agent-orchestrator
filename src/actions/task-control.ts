@@ -206,7 +206,11 @@ export const taskControlAction: Action = {
     if (callback) {
       await callback({ text: responseText });
     }
-    return { success: true, text: responseText, data };
+    return {
+      success: true,
+      text: responseText,
+      data: data as ActionResult["data"],
+    };
   },
   parameters: [
     {

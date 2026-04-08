@@ -151,7 +151,7 @@ async function resolveSenderRole(
   message: Memory,
 ): Promise<RoleCheckResult | null> {
   try {
-    // @ts-expect-error — optional milady-side package, resolved at runtime only
+    // @ts-ignore — optional milady-side package, resolved at runtime only
     const rolesModule = (await import("@miladyai/plugin-roles")) as {
       checkSenderRole?: (
         runtime: IAgentRuntime,

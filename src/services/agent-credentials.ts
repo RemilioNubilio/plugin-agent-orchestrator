@@ -18,17 +18,21 @@ export function buildAgentCredentials(
         "Eliza Cloud is selected as the LLM provider but no cloud.apiKey is paired. Pair your account in the Cloud settings section first.",
       );
     }
-    return {
+    const cloudCredentials = {
       anthropicKey: cloudKey,
       openaiKey: cloudKey,
       googleKey: undefined,
       anthropicBaseUrl: ELIZA_CLOUD_ANTHROPIC_BASE,
       openaiBaseUrl: ELIZA_CLOUD_OPENAI_BASE,
       githubToken: runtime.getSetting("GITHUB_TOKEN") as string | undefined,
+    } as AgentCredentials & {
+      anthropicBaseUrl?: string;
+      openaiBaseUrl?: string;
     };
+    return cloudCredentials;
   }
 
-  return {
+  const directCredentials = {
     anthropicKey: runtime.getSetting("ANTHROPIC_API_KEY") as
       | string
       | undefined,
@@ -43,5 +47,9 @@ export function buildAgentCredentials(
     openaiBaseUrl: runtime.getSetting("OPENAI_BASE_URL") as
       | string
       | undefined,
+  } as AgentCredentials & {
+    anthropicBaseUrl?: string;
+    openaiBaseUrl?: string;
   };
+  return directCredentials;
 }

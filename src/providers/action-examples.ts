@@ -128,7 +128,7 @@ export const codingAgentExamplesProvider: Provider = {
       "  </TASK_HISTORY>",
       "</params>",
       "",
-      'User: "Hold on a second, can you pause that and let'"'"'s discuss if it'"'"'s right?"',
+      "User: \"Hold on a second, can you pause that and let's discuss if it's right?\"",
       "Assistant:",
       "<actions>",
       "  <action>REPLY</action>",
