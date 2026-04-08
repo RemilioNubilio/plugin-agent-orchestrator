@@ -9,6 +9,7 @@ import { describe, expect, it, jest } from "bun:test";
 
 const {
   POST_SEND_COOLDOWN_MS,
+  checkAllTasksComplete,
   handleBlocked,
   handleTurnComplete,
   executeDecision,
@@ -77,6 +78,11 @@ function createMockCtx(overrides: Record<string, unknown> = {}) {
         latestRepo: null,
         latestActivityAt: Date.now(),
         decisionCount: 0,
+        nodeCount: 0,
+        readyNodeCount: 0,
+        completedNodeCount: 0,
+        verifierJobCount: 0,
+        evidenceCount: 0,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         acceptanceCriteria: ["Fix bug", "Run validation"],
@@ -85,6 +91,13 @@ function createMockCtx(overrides: Record<string, unknown> = {}) {
         events: [],
         artifacts: [],
         transcripts: [],
+        pendingDecisions: [],
+        nodes: [],
+        dependencies: [],
+        claims: [],
+        mailbox: [],
+        verifierJobs: [],
+        evidence: [],
       }),
       appendEvent: jest.fn().mockResolvedValue(undefined),
       recordArtifact: jest.fn().mockResolvedValue(undefined),
@@ -619,5 +632,85 @@ describe("handleTurnComplete", () => {
 
     // Should have been skipped
     expect(ctx.runtime.useModel).not.toHaveBeenCalled();
+  });
+});
+
+describe("checkAllTasksComplete", () => {
+  it("waits for graph goal nodes to become terminal before firing swarm_complete", async () => {
+    const ctx = createMockCtx();
+    ctx.tasks.set(
+      "s-1",
+      createTaskCtx({ status: "completed", completionSummary: "Done" }),
+    );
+    ctx.taskRegistry.getThread.mockResolvedValue({
+      id: "thread-1",
+      title: "test-agent",
+      kind: "coding",
+      status: "active",
+      originalRequest: "Fix bug",
+      summary: "",
+      sessionCount: 1,
+      activeSessionCount: 0,
+      latestSessionId: "s-1",
+      latestSessionLabel: "test-agent",
+      latestWorkdir: "/workspace/project",
+      latestRepo: null,
+      latestActivityAt: Date.now(),
+      decisionCount: 0,
+      nodeCount: 1,
+      readyNodeCount: 0,
+      completedNodeCount: 0,
+      verifierJobCount: 0,
+      evidenceCount: 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      acceptanceCriteria: [],
+      sessions: [],
+      decisions: [],
+      events: [],
+      artifacts: [],
+      transcripts: [],
+      pendingDecisions: [],
+      nodes: [
+        {
+          id: "node-goal",
+          threadId: "thread-1",
+          parentNodeId: null,
+          kind: "goal",
+          status: "planned",
+          title: "Ship task",
+          instructions: "Ship task",
+          acceptanceCriteria: [],
+          requiredCapabilities: [],
+          expectedArtifacts: [],
+          assignedSessionId: null,
+          assignedLabel: null,
+          agentType: null,
+          workdir: null,
+          repo: null,
+          priority: 0,
+          depth: 0,
+          sequence: 0,
+          createdFrom: null,
+          metadata: {},
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          startedAt: null,
+          completedAt: null,
+        },
+      ],
+      dependencies: [],
+      claims: [],
+      mailbox: [],
+      verifierJobs: [],
+      evidence: [],
+    });
+
+    checkAllTasksComplete(ctx as never);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(ctx.broadcast).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "swarm_complete" }),
+    );
   });
 });

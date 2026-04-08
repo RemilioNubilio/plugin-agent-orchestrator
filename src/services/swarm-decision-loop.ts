@@ -369,6 +369,12 @@ export function isOutOfScopeAccess(
  * If so, send a swarm-wide summary message to the chat.
  */
 export function checkAllTasksComplete(ctx: SwarmCoordinatorContext): void {
+  void checkAllTasksCompleteAsync(ctx);
+}
+
+async function checkAllTasksCompleteAsync(
+  ctx: SwarmCoordinatorContext,
+): Promise<void> {
   const tasks = Array.from(ctx.tasks.values());
   if (tasks.length === 0) return;
 
@@ -379,6 +385,40 @@ export function checkAllTasksComplete(ctx: SwarmCoordinatorContext): void {
     const statuses = tasks.map((t) => `${t.label}=${t.status}`).join(", ");
     ctx.log(`checkAllTasksComplete: not all done yet — ${statuses}`);
     return;
+  }
+
+  const threadIds = [...new Set(tasks.map((task) => task.threadId))];
+  for (const threadId of threadIds) {
+    const thread = await ctx.taskRegistry.getThread(threadId);
+    if (!thread || thread.nodes.length === 0) {
+      continue;
+    }
+    const terminalNodeStates = new Set([
+      "completed",
+      "failed",
+      "canceled",
+      "interrupted",
+    ]);
+    const goalNodes = thread.nodes.filter((node) => node.kind === "goal");
+    if (goalNodes.some((node) => !terminalNodeStates.has(node.status))) {
+      const pendingGoals = goalNodes
+        .filter((node) => !terminalNodeStates.has(node.status))
+        .map((node) => `${node.title}=${node.status}`)
+        .join(", ");
+      ctx.log(
+        `checkAllTasksComplete: thread ${threadId} still has non-terminal goal nodes — ${pendingGoals}`,
+      );
+      return;
+    }
+    const runningVerifiers = thread.verifierJobs.filter(
+      (job) => job.status === "running",
+    );
+    if (runningVerifiers.length > 0) {
+      ctx.log(
+        `checkAllTasksComplete: thread ${threadId} still has running verifier jobs`,
+      );
+      return;
+    }
   }
 
   // Guard: only fire once per swarm (reset by coordinator on stop/new swarm)
