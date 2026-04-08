@@ -635,6 +635,10 @@ export class PTYService {
     if (!this.manager) throw new Error("PTYService not initialized");
     captureFeed(sessionId, input, "stdin");
     void this.persistTranscript(sessionId, "stdin", input);
+    const metadata = this.sessionMetadata.get(sessionId);
+    if (metadata) {
+      metadata.lastSentInput = input;
+    }
     const message = await sendToSessionIO(this.ioContext(), sessionId, input);
     this.scheduleCompletionReconcile(sessionId);
     return message;
@@ -1036,6 +1040,8 @@ export class PTYService {
           manager: this.manager,
           metricsTracker: this.metricsTracker,
           debugSnapshots: this.serviceConfig.debug === true,
+          lastSentInput:
+            typeof meta?.lastSentInput === "string" ? meta.lastSentInput : undefined,
           log: (msg: string) => this.log(msg),
           taskContext: {
             sessionId: taskCtx.sessionId,
@@ -1069,6 +1075,8 @@ export class PTYService {
       manager: this.manager,
       metricsTracker: this.metricsTracker,
       debugSnapshots: this.serviceConfig.debug === true,
+      lastSentInput:
+        typeof meta?.lastSentInput === "string" ? meta.lastSentInput : undefined,
       log: (msg: string) => this.log(msg),
     });
 

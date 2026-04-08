@@ -124,6 +124,22 @@ describe("stall-classifier", () => {
       await classifyStallOutput(makeCtx());
       expect(mockMetrics.incrementStalls).toHaveBeenCalledWith("claude");
     });
+
+    it("short-circuits to still_working for echoed failover transcripts and status noise", async () => {
+      const lastSentInput =
+        'Continue the task. Previous transcript: Enter to confirm Esc to cancel. Use /var/folders/example/workdir instead.';
+      const result = await classifyStallOutput(
+        makeCtx({
+          recentOutput:
+            '› Continue the task. Previous transcript: Enter to confirm Esc to cancel. Use /var/folders/example/workdir instead.\n' +
+            '• Working (31s • esc to interrupt) › Improve documentation in @filename gpt-5.4 xhigh · 96% left · /private/var/folders/example\n' +
+            'W Wo • Wor • Work • Worki Workin • Working',
+          lastSentInput,
+        }),
+      );
+      expect(result).toEqual({ state: "still_working" });
+      expect(mockRuntime.useModel).not.toHaveBeenCalled();
+    });
   });
 
   describe("buildCombinedClassifyDecidePrompt", () => {
@@ -267,6 +283,22 @@ describe("stall-classifier", () => {
       mockRuntime.useModel.mockResolvedValue('{"state":"still_working"}');
       await classifyAndDecideForCoordinator(makeCtx());
       expect(mockMetrics.incrementStalls).toHaveBeenCalledWith("claude");
+    });
+
+    it("overrides noisy waiting_for_input prompts back to still_working", async () => {
+      const lastSentInput =
+        "Prior transcript: Enter to confirm Esc to cancel. Create failover-proof.txt.";
+      mockRuntime.useModel.mockResolvedValue(
+        '{"state":"waiting_for_input","prompt":"Enter to confirm Esc to cancel","suggestedResponse":"keys:enter"}',
+      );
+      const result = await classifyAndDecideForCoordinator(
+        makeCtx({
+          recentOutput:
+            "Enter to confirm Esc to cancel\n• Working (11s • esc to interrupt) › Improve documentation in @filename gpt-5.4 xhigh · 97% left · /private/var/folders/example",
+          lastSentInput,
+        }),
+      );
+      expect(result).toEqual({ state: "still_working" });
     });
   });
 

@@ -421,6 +421,8 @@ export function buildCombinedClassifyDecidePrompt(
     `No prompt or completion summary visible.\n\n` +
     `4. "error" — The agent hit an error state (crash, unrecoverable error, stack trace).\n\n` +
     `5. "tool_running" — The agent is using an external tool (browser automation, MCP tool, etc.).\n\n` +
+    `Ignore echoed user input, copied prior transcripts, spinner fragments, and status rows like ` +
+    `"Working (12s • esc to interrupt)" or "97% left" — those indicate active work, not a live prompt.\n\n` +
     `If "waiting_for_input", you must also decide how to respond. Guidelines:\n` +
     `- IMPORTANT: If the prompt asks to approve access to files or directories OUTSIDE the working ` +
     `directory (${taskContext.workdir}), DECLINE the request. Respond with "n" and tell the agent: ` +
