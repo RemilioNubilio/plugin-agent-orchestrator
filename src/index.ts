@@ -13,6 +13,9 @@
 import type { Plugin } from "@elizaos/core";
 import { finalizeWorkspaceAction } from "./actions/finalize-workspace.js";
 import { listAgentsAction } from "./actions/list-agents.js";
+import { taskControlAction } from "./actions/task-control.js";
+import { taskHistoryAction } from "./actions/task-history.js";
+import { taskShareAction } from "./actions/task-share.js";
 // Actions - Issue management
 import { manageIssuesAction } from "./actions/manage-issues.js";
 // Actions - Workspace management
@@ -53,6 +56,9 @@ export const taskAgentPlugin: Plugin = {
     sendToAgentAction,
     stopAgentAction,
     listAgentsAction,
+    taskHistoryAction,
+    taskControlAction,
+    taskShareAction,
     // Workspace management
     provisionWorkspaceAction,
     finalizeWorkspaceAction,
@@ -93,6 +99,9 @@ export { manageIssuesAction } from "./actions/manage-issues.js";
 export { provisionWorkspaceAction } from "./actions/provision-workspace.js";
 export { sendToAgentAction } from "./actions/send-to-agent.js";
 export { spawnAgentAction } from "./actions/spawn-agent.js";
+export { taskControlAction } from "./actions/task-control.js";
+export { taskHistoryAction } from "./actions/task-history.js";
+export { taskShareAction } from "./actions/task-share.js";
 export { createTaskAction } from "./actions/start-coding-task.js";
 export { listTaskAgentsAction } from "./actions/list-agents.js";
 export { sendToTaskAgentAction } from "./actions/send-to-agent.js";

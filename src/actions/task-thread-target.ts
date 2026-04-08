@@ -77,10 +77,16 @@ export async function resolveTaskThreadTarget(params: {
     return coordinator.getTaskThread(explicitThreadId);
   }
 
+  const codingSession =
+    state && typeof state === "object"
+      ? ((state as Record<string, unknown>).codingSession as
+          | Record<string, unknown>
+          | undefined)
+      : undefined;
   const explicitSessionId =
     stringValue(options?.sessionId) ??
     stringValue(content.sessionId) ??
-    stringValue((state as Record<string, unknown> | undefined)?.codingSession?.id);
+    stringValue(codingSession?.id);
   if (explicitSessionId) {
     const bySession = await threadBySession(coordinator, explicitSessionId);
     if (bySession) return bySession;
