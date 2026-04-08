@@ -253,6 +253,15 @@ export function buildIdleCheckPrompt(
     `- If the agent's output reveals a significant creative or architectural decision, ` +
     `include "keyDecision" with a brief one-line summary.\n` +
     `- Look for explicit "DECISION:" markers in the agent's output — always capture these as keyDecision.\n\n` +
+    // CRITICAL constraint on the `response` field — fixes a real bug
+    // where LLMs produced 3rd-person status reports that then got
+    // piped verbatim into the agent's stdin as if the user typed them.
+    `CRITICAL — "response" field format rules:\n` +
+    `- When action is "respond", the "response" string is sent VERBATIM into the agent's terminal as if the user typed it.\n` +
+    `- It MUST be a brief, second-person imperative addressed directly to the agent. Examples: "continue", "please create the pull request", "answer the question above", "proceed with the next step".\n` +
+    `- NEVER write a third-person status report about the agent. Do NOT write things like "The agent is still setting up" or "The agent needs to continue its work" — that text would be piped into the agent's stdin and confuse it into thinking a new user message arrived describing itself.\n` +
+    `- NEVER describe the situation in the response field. If you need to explain your reasoning, put it in the "reasoning" field instead.\n` +
+    `- Keep the response under 20 words when possible. Short nudges work best.\n\n` +
     `Respond with ONLY a JSON object:\n` +
     `{"action": "respond|complete|escalate|ignore", "response": "...", "useKeys": false, "keys": [], "reasoning": "...", "keyDecision": "..."}`
   );
