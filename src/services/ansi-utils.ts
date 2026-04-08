@@ -201,3 +201,19 @@ export function captureTaskResponse(
 
   return cleanForChat(responseLines.join("\n"));
 }
+
+/**
+ * Peek at the current task response without consuming the marker.
+ * Useful for state reconciliation paths that need to inspect a response
+ * before deciding whether to emit a synthetic completion event.
+ */
+export function peekTaskResponse(
+  sessionId: string,
+  buffers: Map<string, string[]>,
+  markers: Map<string, number>,
+): string {
+  const buffer = buffers.get(sessionId);
+  const marker = markers.get(sessionId);
+  if (!buffer || marker === undefined) return "";
+  return cleanForChat(buffer.slice(marker).join("\n"));
+}

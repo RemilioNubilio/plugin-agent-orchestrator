@@ -49,6 +49,12 @@ import {
   subscribeToOutput as subscribeToOutputIO,
 } from "./pty-session-io.js";
 import {
+  captureTaskResponse,
+  cleanForChat,
+  extractCompletionSummary,
+  peekTaskResponse,
+} from "./ansi-utils.js";
+import {
   buildSpawnConfig,
   setupDeferredTaskDelivery,
   setupOutputBuffer,
@@ -120,6 +126,9 @@ export class PTYService {
   private outputUnsubscribers: Map<string, () => void> = new Map();
   private transcriptUnsubscribers: Map<string, () => void> = new Map();
   private sessionOutputBuffers: Map<string, string[]> = new Map();
+  private completionReconcileTimers: Map<string, ReturnType<typeof setInterval>> =
+    new Map();
+  private completionSignalSince: Map<string, number> = new Map();
   private terminalSessionStates: Map<
     string,
     {
@@ -281,6 +290,11 @@ export class PTYService {
       unsubscribe();
     }
     this.transcriptUnsubscribers.clear();
+    for (const timer of this.completionReconcileTimers.values()) {
+      clearInterval(timer);
+    }
+    this.completionReconcileTimers.clear();
+    this.completionSignalSince.clear();
 
     if (this.manager) {
       await this.manager.shutdown();
@@ -621,7 +635,9 @@ export class PTYService {
     if (!this.manager) throw new Error("PTYService not initialized");
     captureFeed(sessionId, input, "stdin");
     void this.persistTranscript(sessionId, "stdin", input);
-    return sendToSessionIO(this.ioContext(), sessionId, input);
+    const message = await sendToSessionIO(this.ioContext(), sessionId, input);
+    this.scheduleCompletionReconcile(sessionId);
+    return message;
   }
 
   async sendKeysToSession(
@@ -647,6 +663,7 @@ export class PTYService {
         force,
       );
     } finally {
+      this.clearCompletionReconcile(sessionId);
       this.clearTranscriptCapture(sessionId);
     }
   }
@@ -754,9 +771,13 @@ export class PTYService {
     const sessions = this.usingBunWorker
       ? await (this.manager as BunCompatiblePTYManager).list()
       : (this.manager as PTYManager).list(filter);
-    const liveSessions = sessions.map((s) =>
-      this.toSessionInfo(s, this.sessionWorkdirs.get(s.id)),
-    );
+    const liveSessions = sessions.map((session) => {
+      const cached = this.manager?.get(session.id);
+      return this.toSessionInfo(
+        cached ?? session,
+        this.sessionWorkdirs.get(session.id),
+      );
+    });
     const terminalSessions = Array.from(this.terminalSessionStates.keys())
       .filter(
         (sessionId) => !sessions.some((session) => session.id === sessionId),
@@ -1278,6 +1299,17 @@ export class PTYService {
   }
 
   private emitEvent(sessionId: string, event: string, data: unknown): void {
+    if (event === "blocked" && this.shouldSuppressBlockedEvent(sessionId, data)) {
+      return;
+    }
+    if (
+      event === "ready" ||
+      event === "task_complete" ||
+      event === "stopped" ||
+      event === "error"
+    ) {
+      this.clearCompletionReconcile(sessionId);
+    }
     if (event === "stopped" || event === "error") {
       const liveSession = this.manager?.get(sessionId);
       const createdAt =
@@ -1362,5 +1394,218 @@ export class PTYService {
         source: "pty_manager",
       });
     }
+  }
+
+  private clearCompletionReconcile(sessionId: string): void {
+    const timer = this.completionReconcileTimers.get(sessionId);
+    if (timer) {
+      clearInterval(timer);
+      this.completionReconcileTimers.delete(sessionId);
+    }
+    this.completionSignalSince.delete(sessionId);
+  }
+
+  private scheduleCompletionReconcile(sessionId: string): void {
+    this.clearCompletionReconcile(sessionId);
+    const timer = setInterval(() => {
+      void this.reconcileBusySessionFromOutput(sessionId);
+    }, 1000);
+    this.completionReconcileTimers.set(sessionId, timer);
+    void this.reconcileBusySessionFromOutput(sessionId);
+  }
+
+  private isAdapterBackedAgentType(value: unknown): value is AdapterType {
+    return (
+      value === "claude" ||
+      value === "gemini" ||
+      value === "codex" ||
+      value === "aider" ||
+      value === "hermes"
+    );
+  }
+
+  private shouldSuppressBlockedEvent(sessionId: string, data: unknown): boolean {
+    const payload = data as
+      | {
+          promptInfo?: unknown;
+          source?: unknown;
+        }
+      | undefined;
+    if (payload?.source !== "pty_manager") {
+      return false;
+    }
+    const promptInfo =
+      payload.promptInfo &&
+      typeof payload.promptInfo === "object" &&
+      !Array.isArray(payload.promptInfo)
+        ? (payload.promptInfo as Record<string, unknown>)
+        : undefined;
+    if (!promptInfo) {
+      return false;
+    }
+    const promptType =
+      typeof promptInfo.type === "string" ? promptInfo.type.toLowerCase() : "";
+    if (promptType && promptType !== "unknown") {
+      return false;
+    }
+    const promptText =
+      typeof promptInfo.prompt === "string" ? cleanForChat(promptInfo.prompt) : "";
+    if (!promptText) {
+      return false;
+    }
+    const compactPrompt = promptText.replace(/\s+/g, " ").trim();
+    const hasWorkspacePath = /(\/private\/|\/var\/folders\/)/.test(compactPrompt);
+    const looksLikeWorkingStatus =
+      /working \(\d+s .*esc to interrupt\)/i.test(compactPrompt) ||
+      /messages to be submitted after next tool call/i.test(compactPrompt) ||
+      /find and fix a bug in @filename/i.test(compactPrompt) ||
+      /use \/skills to list available skills/i.test(compactPrompt);
+    const looksLikeSpinnerTail =
+      /\b\d+% left\b/i.test(compactPrompt) &&
+      hasWorkspacePath;
+    const looksLikeSpinnerFragments =
+      hasWorkspacePath &&
+      /(?:\bW Wo\b|• Wor|• Work|Worki|Workin|Working)/i.test(compactPrompt);
+    if (
+      !looksLikeWorkingStatus &&
+      !looksLikeSpinnerTail &&
+      !looksLikeSpinnerFragments
+    ) {
+      return false;
+    }
+    this.log(
+      `Suppressing false blocked prompt noise for ${sessionId}: ${compactPrompt.slice(0, 160)}`,
+    );
+    return true;
+  }
+
+  private responseLooksMeaningful(response: string, rawOutput: string): boolean {
+    if (extractCompletionSummary(rawOutput).trim().length > 0) {
+      return true;
+    }
+    const cleaned = response.trim();
+    if (!cleaned) return false;
+    const substantiveLines = cleaned
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .filter(
+        (line) =>
+          !line.startsWith("› ") &&
+          !/^Work(?:i|in|ing)?(?:\s+\d+)?$/i.test(line) &&
+          !/^\d+% left\b/i.test(line) &&
+          !/context left/i.test(line) &&
+          !/esc to interrupt/i.test(line) &&
+          !/Use \/skills/i.test(line) &&
+          !/Messages to be submitted after next tool call/i.test(line),
+      );
+    if (
+      substantiveLines.some((line) =>
+        /\b(Added|Created|Creating|Updated|Wrote|Deleted|Renamed|Verified|Completed|Finished|Saved|Ran|LIVE_)\b/i.test(
+          line,
+        ),
+      )
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  private async reconcileBusySessionFromOutput(sessionId: string): Promise<void> {
+    if (!this.manager) {
+      this.clearCompletionReconcile(sessionId);
+      return;
+    }
+
+    const liveSession = this.manager.get(sessionId);
+    if (!liveSession) {
+      this.clearCompletionReconcile(sessionId);
+      return;
+    }
+
+    if (liveSession.status !== "busy") {
+      this.clearCompletionReconcile(sessionId);
+      return;
+    }
+
+    const agentType = this.sessionMetadata.get(sessionId)?.agentType;
+    if (!this.isAdapterBackedAgentType(agentType)) {
+      this.clearCompletionReconcile(sessionId);
+      return;
+    }
+
+    const adapter = this.getAdapter(agentType);
+    const rawOutput = await this.getSessionOutput(sessionId);
+    if (!rawOutput.trim()) {
+      this.completionSignalSince.delete(sessionId);
+      return;
+    }
+
+    if (adapter.detectLoading?.(rawOutput)) {
+      this.completionSignalSince.delete(sessionId);
+      return;
+    }
+
+    if (adapter.detectLogin(rawOutput).required) {
+      this.completionSignalSince.delete(sessionId);
+      return;
+    }
+
+    if (adapter.detectBlockingPrompt(rawOutput).detected) {
+      this.completionSignalSince.delete(sessionId);
+      return;
+    }
+
+    const completionSignal = adapter.detectTaskComplete
+      ? adapter.detectTaskComplete(rawOutput)
+      : adapter.detectReady(rawOutput);
+    if (!completionSignal) {
+      this.completionSignalSince.delete(sessionId);
+      return;
+    }
+
+    const previewResponse = this.taskResponseMarkers.has(sessionId)
+      ? peekTaskResponse(
+          sessionId,
+          this.sessionOutputBuffers,
+          this.taskResponseMarkers,
+        )
+      : cleanForChat(rawOutput);
+    if (!this.responseLooksMeaningful(previewResponse, rawOutput)) {
+      this.completionSignalSince.delete(sessionId);
+      return;
+    }
+
+    const firstSeenAt = this.completionSignalSince.get(sessionId);
+    if (firstSeenAt === undefined) {
+      this.completionSignalSince.set(sessionId, Date.now());
+      return;
+    }
+
+    if (Date.now() - firstSeenAt < 2500) {
+      return;
+    }
+
+    const response = this.taskResponseMarkers.has(sessionId)
+      ? captureTaskResponse(
+          sessionId,
+          this.sessionOutputBuffers,
+          this.taskResponseMarkers,
+        )
+      : previewResponse;
+    const durationMs = liveSession.startedAt
+      ? Date.now() - new Date(liveSession.startedAt).getTime()
+      : 0;
+    liveSession.status = "ready";
+    liveSession.lastActivityAt = new Date();
+    this.metricsTracker.recordCompletion(agentType, "output-reconcile", durationMs);
+    this.log(
+      `Reconciled ${sessionId} from busy to task_complete using stable adapter output`,
+    );
+    this.emitEvent(sessionId, "task_complete", {
+      session: liveSession,
+      response,
+      source: "output_reconcile",
+    });
   }
 }

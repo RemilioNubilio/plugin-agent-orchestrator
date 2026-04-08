@@ -56,7 +56,12 @@ function createMockCtx(
     sessionOutputBuffers: new Map(),
     outputUnsubscribers: new Map(),
     taskResponseMarkers: new Map(),
-    getAdapter: jest.fn() as unknown as SpawnContext["getAdapter"],
+    getAdapter: jest.fn().mockReturnValue({
+      detectReady: (output: string) => output.includes("READY_PROMPT"),
+      detectLoading: () => false,
+      detectLogin: () => ({ required: false }),
+      detectBlockingPrompt: () => ({ detected: false }),
+    }) as unknown as SpawnContext["getAdapter"],
     sendToSession: jest.fn().mockResolvedValue(undefined),
     sendKeysToSession: jest.fn().mockResolvedValue(undefined),
     pushDefaultRules: jest.fn().mockResolvedValue(undefined),
@@ -202,6 +207,24 @@ describe("setupDeferredTaskDelivery ready-event timeout", () => {
     );
   });
 
+  it("marks task delivery only when the deferred send actually starts", () => {
+    const manager = createMockManager();
+    const ctx = createMockCtx(manager);
+
+    setupDeferredTaskDelivery(ctx, mockSession as any, "Fix the bug", "claude");
+
+    expect(ctx.markTaskDelivered).not.toHaveBeenCalled();
+
+    manager.emit("session_ready", mockSession);
+    expect(ctx.markTaskDelivered).not.toHaveBeenCalled();
+
+    jest.advanceTimersByTime(799);
+    expect(ctx.markTaskDelivered).not.toHaveBeenCalled();
+
+    jest.advanceTimersByTime(1);
+    expect(ctx.markTaskDelivered).toHaveBeenCalledWith("s-timeout-1");
+  });
+
   it("ignores session_ready events for other sessions", () => {
     const manager = createMockManager();
     const ctx = createMockCtx(manager);
@@ -218,6 +241,24 @@ describe("setupDeferredTaskDelivery ready-event timeout", () => {
     // The 30s timeout should still fire and deliver
     jest.advanceTimersByTime(30_000);
     jest.advanceTimersByTime(800);
+    expect(ctx.sendToSession).toHaveBeenCalledWith("s-timeout-1", "Fix the bug");
+  });
+
+  it("delivers early when the Bun output buffer already shows a ready prompt", () => {
+    const manager = createMockManager();
+    const ctx = createMockCtx(manager);
+    ctx.sessionOutputBuffers.set("s-timeout-1", ["READY_PROMPT"]);
+
+    setupDeferredTaskDelivery(ctx, mockSession as any, "Fix the bug", "codex");
+
+    jest.advanceTimersByTime(500);
+    jest.advanceTimersByTime(300);
+
+    expect(ctx.log).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "detected ready prompt from buffered output, delivering task before timeout",
+      ),
+    );
     expect(ctx.sendToSession).toHaveBeenCalledWith("s-timeout-1", "Fix the bug");
   });
 });

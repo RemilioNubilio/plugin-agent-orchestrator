@@ -306,6 +306,100 @@ describe("PTYService", () => {
       expect(mockManager.send).toHaveBeenCalledWith(session.id, "hello");
     });
 
+    it("reconciles a busy Codex session to task_complete when output is stably complete", async () => {
+      const sessionId = "session-codex-busy";
+      const liveSession = {
+        id: sessionId,
+        name: "codex-session",
+        type: "codex",
+        status: "busy",
+        startedAt: new Date(Date.now() - 10_000),
+        lastActivityAt: new Date(),
+      };
+      mockManager.get.mockImplementation((id: string) =>
+        id === sessionId ? liveSession : undefined,
+      );
+      jest
+        .spyOn(service, "getSessionOutput")
+        .mockResolvedValue(
+          [
+            "Planning the edits",
+            "Worked for 8s",
+            "Added SECOND_CODEX.txt (+1 -0)",
+            "› Implement {feature}",
+            "? for shortcuts",
+          ].join("\n"),
+        );
+      (
+        service as unknown as {
+          sessionMetadata: Map<string, Record<string, unknown>>;
+          sessionOutputBuffers: Map<string, string[]>;
+          taskResponseMarkers: Map<string, number>;
+          completionSignalSince: Map<string, number>;
+          adapterCache: Map<string, Record<string, unknown>>;
+          reconcileBusySessionFromOutput: (sessionId: string) => Promise<void>;
+        }
+      ).sessionMetadata.set(sessionId, {
+        agentType: "codex",
+        requestedType: "codex",
+      });
+      (
+        service as unknown as {
+          adapterCache: Map<string, Record<string, unknown>>;
+        }
+      ).adapterCache.set("codex", {
+        detectLoading: () => false,
+        detectLogin: () => ({ required: false }),
+        detectBlockingPrompt: () => ({ detected: false }),
+        detectTaskComplete: (output: string) =>
+          output.includes("Added SECOND_CODEX.txt"),
+        detectReady: () => false,
+      });
+      (
+        service as unknown as {
+          sessionOutputBuffers: Map<string, string[]>;
+          taskResponseMarkers: Map<string, number>;
+          completionSignalSince: Map<string, number>;
+          reconcileBusySessionFromOutput: (sessionId: string) => Promise<void>;
+        }
+      ).sessionOutputBuffers.set(sessionId, [
+        "Planning the edits",
+        "Worked for 8s",
+        "Added SECOND_CODEX.txt (+1 -0)",
+        "› Implement {feature}",
+        "? for shortcuts",
+      ]);
+      (
+        service as unknown as {
+          taskResponseMarkers: Map<string, number>;
+        }
+      ).taskResponseMarkers.set(sessionId, 0);
+      (
+        service as unknown as {
+          completionSignalSince: Map<string, number>;
+        }
+      ).completionSignalSince.set(sessionId, Date.now() - 3000);
+
+      const callback = jest.fn();
+      service.onSessionEvent(callback);
+
+      await (
+        service as unknown as {
+          reconcileBusySessionFromOutput: (sessionId: string) => Promise<void>;
+        }
+      ).reconcileBusySessionFromOutput(sessionId);
+
+      expect(liveSession.status).toBe("ready");
+      expect(callback).toHaveBeenCalledWith(
+        sessionId,
+        "task_complete",
+        expect.objectContaining({
+          source: "output_reconcile",
+          response: expect.stringContaining("Added SECOND_CODEX.txt"),
+        }),
+      );
+    });
+
     it("should throw when sending to unknown session", async () => {
       mockManager.get.mockReturnValueOnce(undefined);
       await expect(
@@ -392,6 +486,30 @@ describe("PTYService", () => {
           autoResponded: false,
         }),
       );
+    });
+
+    it("suppresses false blocked events when PTY prompt text is just working status noise", () => {
+      const rawCallback = jest.fn();
+      const normalizedCallback = jest.fn();
+      service.onSessionEvent(rawCallback);
+      service.onNormalizedSessionEvent(normalizedCallback);
+
+      (
+        service as unknown as {
+          emitEvent: (sessionId: string, event: string, data: unknown) => void;
+        }
+      ).emitEvent("session-1", "blocked", {
+        promptInfo: {
+          prompt:
+            "• Working (11s • esc to interrupt) › Find and fix a bug in @filename gpt-5.4 xhigh · 97% left · /private/var/folders/example",
+          type: "unknown",
+        },
+        autoResponded: false,
+        source: "pty_manager",
+      });
+
+      expect(rawCallback).not.toHaveBeenCalled();
+      expect(normalizedCallback).not.toHaveBeenCalled();
     });
 
     it("marks hook events with the hook source in the normalized stream", () => {

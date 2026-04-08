@@ -15,6 +15,7 @@ const mockSendKeysToSession = jest.fn();
 const mockGetSession = jest.fn();
 const mockListSessions = jest.fn();
 const mockRegisterTask = jest.fn();
+const mockSetTaskDelivered = jest.fn();
 
 const createMockPTYService = (
   sessions: { id: string }[] = [],
@@ -46,6 +47,7 @@ describe("sendToAgentAction", () => {
     mockSendToSession.mockResolvedValue(undefined);
     mockSendKeysToSession.mockResolvedValue(undefined);
     mockRegisterTask.mockReset();
+    mockSetTaskDelivered.mockReset();
     mockGetSession.mockReturnValue({
       id: "session-123",
       status: "running",
@@ -158,6 +160,7 @@ describe("sendToAgentAction", () => {
       const runtime = createMockRuntime(
         createMockPTYService([{ id: "session-123" }], {
           registerTask: mockRegisterTask,
+          setTaskDelivered: mockSetTaskDelivered,
           getTaskContext: jest.fn().mockReturnValue({
             label: "existing-agent",
             repo: "https://github.com/example/repo",
@@ -195,6 +198,7 @@ describe("sendToAgentAction", () => {
           }),
         }),
       );
+      expect(mockSetTaskDelivered).toHaveBeenCalledWith("session-123");
     });
 
     it("uses session from state if not specified", async () => {

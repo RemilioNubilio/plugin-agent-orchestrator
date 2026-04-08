@@ -233,6 +233,7 @@ export const sendToAgentAction: Action = {
                   ? (session.metadata as Record<string, unknown>)
                   : undefined,
             });
+            await coordinator.setTaskDelivered(sessionId);
           }
         }
         if (callback) {

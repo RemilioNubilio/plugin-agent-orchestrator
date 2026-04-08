@@ -20,6 +20,7 @@ import type {
   SessionInfo,
   SpawnSessionOptions,
 } from "./pty-types.js";
+import { cleanForChat } from "./ansi-utils.js";
 
 /**
  * System environment variables safe to pass to spawned agents.
@@ -161,6 +162,15 @@ export function setupDeferredTaskDelivery(
   const VERIFY_DELAY_MS = 5000; // how long to wait before checking acceptance
   const MAX_RETRIES = 2;
   const minNewLines = MIN_NEW_LINES_BY_AGENT[agentType] ?? 15;
+  const READY_PROBE_INTERVAL_MS = 500;
+  const isAdapterBackedAgent =
+    agentType === "claude" ||
+    agentType === "gemini" ||
+    agentType === "codex" ||
+    agentType === "aider";
+  const adapter = isAdapterBackedAgent
+    ? ctx.getAdapter(agentType as AdapterType)
+    : null;
 
   const sendTaskWithRetry = (attempt: number) => {
     const buffer = ctx.sessionOutputBuffers.get(sid);
@@ -182,7 +192,13 @@ export function setupDeferredTaskDelivery(
       setTimeout(() => {
         const currentLength = buffer?.length ?? 0;
         const newLines = currentLength - baselineLength;
-        if (newLines < minNewLines) {
+        const newOutput = buffer?.slice(baselineLength).join("\n") ?? "";
+        const accepted =
+          newLines > 0 ||
+          newLines >= minNewLines ||
+          (adapter?.detectLoading?.(newOutput) ?? false) ||
+          cleanForChat(newOutput).length >= 32;
+        if (!accepted) {
           ctx.log(
             `Session ${sid} — task may not have been accepted (only ${newLines} new lines after ${VERIFY_DELAY_MS}ms). Retrying (attempt ${attempt + 2}/${MAX_RETRIES + 1})`,
           );
@@ -198,20 +214,33 @@ export function setupDeferredTaskDelivery(
 
   const READY_TIMEOUT_MS = 30_000;
   let taskSent = false;
+  let taskDeliveredMarked = false;
   let readyTimeout: ReturnType<typeof setTimeout> | undefined;
+  let readyProbe: ReturnType<typeof setInterval> | undefined;
+  const clearPendingReadyWait = () => {
+    if (readyTimeout) {
+      clearTimeout(readyTimeout);
+      readyTimeout = undefined;
+    }
+    if (readyProbe) {
+      clearInterval(readyProbe);
+      readyProbe = undefined;
+    }
+  };
   const sendTask = () => {
     if (taskSent) return;
     taskSent = true;
-    if (readyTimeout) clearTimeout(readyTimeout);
-    // Mark task as delivered so forwardReadyAsTaskComplete allows
-    // subsequent session_ready events to trigger completion.
-    // The session_ready handler in pty-init also calls markTaskDelivered
-    // as a secondary safeguard for the normal (non-timeout) path.
-    ctx.markTaskDelivered(sid);
+    clearPendingReadyWait();
     // Delay to let TUI finish rendering after ready detection.
     // Without this, Claude Code's TUI can swallow the Enter key
     // if it arrives during a render cycle.
-    setTimeout(() => sendTaskWithRetry(0), settleMs);
+    setTimeout(() => {
+      if (!taskDeliveredMarked) {
+        ctx.markTaskDelivered(sid);
+        taskDeliveredMarked = true;
+      }
+      sendTaskWithRetry(0);
+    }, settleMs);
     if (ctx.usingBunWorker) {
       (ctx.manager as BunCompatiblePTYManager).removeListener(
         "session_ready",
@@ -242,6 +271,28 @@ export function setupDeferredTaskDelivery(
         sendTask();
       }
     }, READY_TIMEOUT_MS);
+
+    if (ctx.usingBunWorker && isAdapterBackedAgent) {
+      readyProbe = setInterval(() => {
+        if (taskSent) return;
+        const buffer = ctx.sessionOutputBuffers.get(sid);
+        if (!buffer || buffer.length === 0) return;
+        const output = buffer.join("\n");
+        const cleanedOutput = cleanForChat(output);
+        if (adapter.detectLoading?.(output)) return;
+        if (adapter.detectLogin(output).required) return;
+        if (adapter.detectBlockingPrompt(output).detected) return;
+        const promptVisible =
+          adapter.detectReady(output) ||
+          (agentType === "codex" &&
+            /›\s+(?:Ask Codex to do anything|\S.*)/.test(cleanedOutput));
+        if (!promptVisible) return;
+        ctx.log(
+          `Session ${sid} — detected ready prompt from buffered output, delivering task before timeout`,
+        );
+        sendTask();
+      }, READY_PROBE_INTERVAL_MS);
+    }
   }
 }
 
