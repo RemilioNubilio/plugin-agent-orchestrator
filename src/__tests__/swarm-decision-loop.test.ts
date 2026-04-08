@@ -293,7 +293,7 @@ describe("handleBlocked", () => {
     expect(taskCtx.decisions[0].decision).toBe("auto_resolved");
   });
 
-  it("dismisses Claude navigation dialogs with key input instead of text", async () => {
+  it("accepts Claude navigation dialogs with key input instead of text", async () => {
     const ctx = createMockCtx();
     const taskCtx = createTaskCtx({ agentType: "claude" });
     ctx.tasks.set("s-1", taskCtx);
@@ -309,7 +309,7 @@ describe("handleBlocked", () => {
 
     expect(ctx.runtime.useModel).not.toHaveBeenCalled();
     expect(ctx.ptyService.sendKeysToSession).toHaveBeenCalledWith("s-1", [
-      "esc",
+      "enter",
     ]);
     expect(taskCtx.decisions[0].decision).toBe("auto_resolved");
   });

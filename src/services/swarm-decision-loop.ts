@@ -309,9 +309,9 @@ function inferRoutinePromptResponse(
     )
   ) {
     return {
-      suggestedResponse: "keys:esc",
+      suggestedResponse: "keys:enter",
       reasoning:
-        "Dismissed Claude's routine navigation dialog so the replacement session can reach a normal prompt.",
+        "Accepted Claude's default dialog action so the replacement session can continue without exiting the CLI.",
     };
   }
 

@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, jest, mock } from "bun:test";
 import type { IAgentRuntime, Memory } from "@elizaos/core";
 
+process.env.MILADY_SKIP_LOCAL_PLUGIN_ROLES = "1";
+
 const mockCheckSenderRole = jest.fn();
 
 mock.module("@miladyai/plugin-roles", () => ({

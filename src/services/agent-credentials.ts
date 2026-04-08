@@ -32,18 +32,19 @@ export function buildAgentCredentials(
     return cloudCredentials;
   }
 
+  const subscriptionMode = llmProvider === "subscription";
   const directCredentials = {
-    anthropicKey: runtime.getSetting("ANTHROPIC_API_KEY") as
-      | string
-      | undefined,
+    anthropicKey: subscriptionMode
+      ? undefined
+      : (runtime.getSetting("ANTHROPIC_API_KEY") as string | undefined),
     openaiKey: runtime.getSetting("OPENAI_API_KEY") as string | undefined,
     googleKey: runtime.getSetting("GOOGLE_GENERATIVE_AI_API_KEY") as
       | string
       | undefined,
     githubToken: runtime.getSetting("GITHUB_TOKEN") as string | undefined,
-    anthropicBaseUrl: runtime.getSetting("ANTHROPIC_BASE_URL") as
-      | string
-      | undefined,
+    anthropicBaseUrl: subscriptionMode
+      ? undefined
+      : (runtime.getSetting("ANTHROPIC_BASE_URL") as string | undefined),
     openaiBaseUrl: runtime.getSetting("OPENAI_BASE_URL") as
       | string
       | undefined,

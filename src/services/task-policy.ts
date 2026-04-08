@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
 import type { IAgentRuntime, Memory } from "@elizaos/core";
 
 type RoleName = "OWNER" | "ADMIN" | "USER" | "GUEST";
@@ -30,6 +33,11 @@ type RoleCheckResult = {
   isAdmin: boolean;
   isOwner: boolean;
 };
+
+const LOCAL_ROLES_MODULE_CANDIDATES = [
+  path.resolve(process.cwd(), "packages/plugin-roles/src/index.ts"),
+  path.resolve(process.cwd(), "packages/plugin-roles/dist/index.js"),
+];
 
 function normalizeRole(value: unknown): RoleName {
   const upper = typeof value === "string" ? value.trim().toUpperCase() : "";
@@ -150,6 +158,30 @@ async function resolveSenderRole(
   runtime: IAgentRuntime,
   message: Memory,
 ): Promise<RoleCheckResult | null> {
+  if (process.env.MILADY_SKIP_LOCAL_PLUGIN_ROLES !== "1") {
+    for (const candidate of LOCAL_ROLES_MODULE_CANDIDATES) {
+      if (!fs.existsSync(candidate)) {
+        continue;
+      }
+
+      try {
+        const localRolesModule = (await import(
+          pathToFileURL(candidate).href
+        )) as {
+          checkSenderRole?: (
+            runtime: IAgentRuntime,
+            message: Memory,
+          ) => Promise<RoleCheckResult | null>;
+        };
+        if (typeof localRolesModule.checkSenderRole === "function") {
+          return await localRolesModule.checkSenderRole(runtime, message);
+        }
+      } catch {
+        // fall through to the installed package import below
+      }
+    }
+  }
+
   try {
     // @ts-ignore — optional milady-side package, resolved at runtime only
     const rolesModule = (await import("@miladyai/plugin-roles")) as {

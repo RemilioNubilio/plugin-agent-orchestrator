@@ -529,14 +529,14 @@ describe("startCodingTaskAction", () => {
 
       expect(mockSpawnSession).toHaveBeenCalledWith(
         expect.objectContaining({
-          credentials: {
-            anthropicKey: "sk-ant-test",
+          credentials: expect.objectContaining({
             openaiKey: "sk-oai-test",
             googleKey: "goog-test",
             githubToken: "ghp-test",
-          },
+          }),
         }),
       );
+      expect(mockSpawnSession.mock.calls[0]?.[0]?.credentials?.anthropicKey).toBeUndefined();
     });
   });
 });

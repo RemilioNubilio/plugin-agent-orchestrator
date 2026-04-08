@@ -79,6 +79,10 @@ const TOOL_MARKER_LINE =
 const GIT_NOISE_LINE =
   /^\s*(?:On branch\s+\w|Your branch is|modified:|new file:|deleted:|renamed:|Untracked files:|Changes (?:not staged|to be committed)|\d+\s+files?\s+changed.*(?:insertion|deletion))/i;
 
+/** Codex/Claude launcher banners and trust screens that pollute failover prompts. */
+const SESSION_BOOTSTRAP_NOISE_LINE =
+  /(?:^OpenAI Codex\b|^model:\s|^directory:\s|^Tip:\s+New Try the Codex App\b|^until .*Run ['"]codex app['"]|Do you trust the contents of this directory|higher risk of prompt injection|Yes,\s*continue.*No,\s*quit|Press enter to continue)/i;
+
 /**
  * Clean terminal output for display in chat messages.
  *
@@ -101,6 +105,7 @@ export function cleanForChat(raw: string): string {
       if (STATUS_LINE.test(trimmed)) return false;
       if (TOOL_MARKER_LINE.test(trimmed)) return false;
       if (GIT_NOISE_LINE.test(trimmed)) return false;
+      if (SESSION_BOOTSTRAP_NOISE_LINE.test(trimmed)) return false;
       // Lines with only whitespace/punctuation and no alphanumeric content
       if (!/[a-zA-Z0-9]/.test(trimmed)) return false;
       // Very short lines (≤3 chars) are likely TUI fragments
