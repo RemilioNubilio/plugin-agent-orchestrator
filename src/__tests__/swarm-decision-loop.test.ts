@@ -289,6 +289,27 @@ describe("handleBlocked", () => {
     expect(taskCtx.decisions[0].decision).toBe("auto_resolved");
   });
 
+  it("dismisses Claude navigation dialogs with key input instead of text", async () => {
+    const ctx = createMockCtx();
+    const taskCtx = createTaskCtx({ agentType: "claude" });
+    ctx.tasks.set("s-1", taskCtx);
+
+    await handleBlocked(ctx as never, "s-1", taskCtx as never, {
+      promptInfo: {
+        prompt: "Claude dialog awaiting navigation",
+        type: "config",
+        canAutoRespond: false,
+      },
+      autoResponded: false,
+    });
+
+    expect(ctx.runtime.useModel).not.toHaveBeenCalled();
+    expect(ctx.ptyService.sendKeysToSession).toHaveBeenCalledWith("s-1", [
+      "esc",
+    ]);
+    expect(taskCtx.decisions[0].decision).toBe("auto_resolved");
+  });
+
   it("declines and redirects out-of-scope path access in autonomous mode", async () => {
     const ctx = createMockCtx();
     // LLM says "respond y" but path is out of scope

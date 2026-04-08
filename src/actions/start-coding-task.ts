@@ -24,18 +24,22 @@ import {
   type State,
 } from "@elizaos/core";
 import type { AgentCredentials } from "coding-agent-adapters";
+import { buildAgentCredentials } from "../services/agent-credentials.js";
 import type { PTYService } from "../services/pty-service.js";
 import { getCoordinator } from "../services/pty-service.js";
-import { requireTaskAgentAccess } from "../services/task-policy.js";
 import { normalizeAgentType } from "../services/pty-types.js";
+import { requireTaskAgentAccess } from "../services/task-policy.js";
 import type { CodingWorkspaceService } from "../services/workspace-service.js";
-import { buildAgentCredentials } from "../services/agent-credentials.js";
 import {
   type CodingTaskContext,
   handleMultiAgent,
 } from "./coding-task-handlers.js";
 
-export const startCodingTaskAction: Action = {
+type BackgroundAction = Action & {
+  suppressPostActionContinuation?: boolean;
+};
+
+export const startCodingTaskAction: BackgroundAction = {
   name: "CREATE_TASK",
 
   similes: [
@@ -58,6 +62,8 @@ export const startCodingTaskAction: Action = {
     "'on that project', 'add a feature to it'), you MUST include the repo URL in the `repo` parameter. " +
     "If the task involves code changes to a real project but you don't know the repo URL, ASK the user for it " +
     "before calling this action — do not default to a scratch directory for real project work.",
+
+  suppressPostActionContinuation: true,
 
   examples: [
     [
@@ -180,12 +186,11 @@ export const startCodingTaskAction: Action = {
       }
     }
     if (!repo && reuseRepo) {
-      const wsService = runtime.getService("CODING_WORKSPACE_SERVICE") as
-        unknown as CodingWorkspaceService | undefined;
+      const wsService = runtime.getService(
+        "CODING_WORKSPACE_SERVICE",
+      ) as unknown as CodingWorkspaceService | undefined;
       if (wsService && typeof wsService.listWorkspaces === "function") {
-        const withRepo = wsService
-          .listWorkspaces()
-          .find((ws) => ws.repo);
+        const withRepo = wsService.listWorkspaces().find((ws) => ws.repo);
         if (withRepo) {
           repo = withRepo.repo;
         }

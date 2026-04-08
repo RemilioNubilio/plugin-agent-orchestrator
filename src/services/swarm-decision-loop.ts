@@ -301,6 +301,19 @@ function inferRoutinePromptResponse(
     };
   }
 
+  if (
+    promptType === "config" &&
+    /claude (?:dialog awaiting navigation|menu navigation required)/i.test(
+      promptText,
+    )
+  ) {
+    return {
+      suggestedResponse: "keys:esc",
+      reasoning:
+        "Dismissed Claude's routine navigation dialog so the replacement session can reach a normal prompt.",
+    };
+  }
+
   if (promptType && promptType !== "unknown") {
     return null;
   }

@@ -35,6 +35,24 @@ export async function pushDefaultRules(
 ): Promise<void> {
   const rules: AutoResponseRule[] = [];
 
+  // Codex sometimes renders the workspace trust screen incrementally.
+  // The upstream adapter rule is one-shot; if it fires before the menu is fully
+  // interactive, Codex can keep showing the same prompt and block the session.
+  // Keep this session rule active until the prompt actually clears.
+  if (agentType === "codex") {
+    rules.push({
+      pattern:
+        /higher.?risk.?of.?prompt.?injection|yes,?.?continue.*no,?.?quit|do.?you.?trust.?the.?contents|trust.?this.?directory|allow.?codex.?to.?work.?in.?this.?folder|without.?asking.?for.?approval/i,
+      type: "permission",
+      response: "",
+      responseType: "keys" as const,
+      keys: ["enter"],
+      description:
+        "Retry Codex workspace trust approval until the prompt clears",
+      safe: true,
+    });
+  }
+
   // Aider gitignore prompt
   if (agentType === "aider") {
     rules.push({
@@ -49,7 +67,8 @@ export async function pushDefaultRules(
   // Claude — API key confirmation prompt (appears when ANTHROPIC_API_KEY is set
   // alongside a subscription login, or in CLAUDE_CODE_SIMPLE mode)
   if (agentType === "claude") {
-    const llmProvider = readConfigEnvKey("PARALLAX_LLM_PROVIDER") || "subscription";
+    const llmProvider =
+      readConfigEnvKey("PARALLAX_LLM_PROVIDER") || "subscription";
     if (llmProvider === "api_keys" || llmProvider === "cloud") {
       rules.push({
         pattern:
