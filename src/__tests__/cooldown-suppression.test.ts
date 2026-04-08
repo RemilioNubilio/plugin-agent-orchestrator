@@ -19,9 +19,11 @@ const { handleTurnComplete, executeDecision } = await import(
 function createMockCtx(overrides: Record<string, unknown> = {}) {
   return {
     runtime: {
-      useModel: jest.fn().mockResolvedValue(
-        '{"action":"respond","response":"Continue","reasoning":"Follow up"}',
-      ),
+      useModel: jest
+        .fn()
+        .mockResolvedValue(
+          '{"action":"respond","response":"Continue","reasoning":"Follow up"}',
+        ),
       getService: jest.fn().mockReturnValue(null),
     },
     ptyService: {
@@ -79,6 +81,11 @@ function createMockCtx(overrides: Record<string, unknown> = {}) {
       }),
       appendEvent: jest.fn().mockResolvedValue(undefined),
       recordArtifact: jest.fn().mockResolvedValue(undefined),
+      createTaskVerifierJob: jest.fn().mockResolvedValue({
+        id: "verify-1",
+      }),
+      updateTaskVerifierJob: jest.fn().mockResolvedValue(undefined),
+      recordTaskEvidence: jest.fn().mockResolvedValue(undefined),
       updateThreadSummary: jest.fn().mockResolvedValue(undefined),
     },
     broadcast: jest.fn(),
@@ -92,6 +99,7 @@ function createTaskCtx(overrides: Record<string, unknown> = {}) {
   return {
     sessionId: "s-1",
     threadId: "thread-1",
+    taskNodeId: "node-1",
     agentType: "claude",
     label: "test-agent",
     originalTask: "Fix bug",

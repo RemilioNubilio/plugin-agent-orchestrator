@@ -189,4 +189,138 @@ describe("TaskRegistry history filters", () => {
     });
     expect(activeOnly).toBe(1);
   });
+
+  it("persists graph nodes, dependencies, claims, mailbox, verifier jobs, and evidence", async () => {
+    const db = new PGlite();
+    databases.push(db);
+    const registry = createRegistryHarness(db);
+    await registry.ensureSchema();
+
+    await registry.createThread({
+      id: "thread-graph",
+      title: "Coordinator graph",
+      originalRequest: "Plan and execute a multi-agent task",
+      kind: "planning",
+      acceptanceCriteria: [
+        "All worker nodes complete",
+        "Validation evidence exists",
+      ],
+    });
+
+    const rootNode = await registry.createTaskNode({
+      id: "node-root",
+      threadId: "thread-graph",
+      kind: "goal",
+      status: "planned",
+      title: "Ship the coordinated task",
+      instructions: "Aggregate worker outputs",
+      acceptanceCriteria: [
+        "All worker nodes complete",
+        "Validation evidence exists",
+      ],
+      depth: 0,
+      sequence: 0,
+    });
+    const workerNode = await registry.createTaskNode({
+      id: "node-worker",
+      threadId: "thread-graph",
+      parentNodeId: rootNode.id,
+      kind: "execution",
+      status: "running",
+      title: "Implement the worker task",
+      instructions: "Write the code and tests",
+      requiredCapabilities: ["codex"],
+      expectedArtifacts: ["diff", "test-report"],
+      assignedSessionId: "session-graph",
+      assignedLabel: "worker-1",
+      agentType: "codex",
+      workdir: "/tmp/graph-worker",
+      sequence: 1,
+      depth: 1,
+    });
+
+    await registry.createTaskDependency({
+      threadId: "thread-graph",
+      fromNodeId: workerNode.id,
+      toNodeId: rootNode.id,
+      dependencyKind: "parent_child",
+      requiredStatus: "completed",
+    });
+    await registry.createTaskClaim({
+      threadId: "thread-graph",
+      nodeId: workerNode.id,
+      sessionId: "session-graph",
+      claimType: "execution",
+      status: "active",
+    });
+    await registry.appendTaskMailboxMessage({
+      threadId: "thread-graph",
+      nodeId: workerNode.id,
+      sessionId: "session-graph",
+      sender: "planner",
+      recipient: "worker-1",
+      subject: "shared-context",
+      body: "Use the same interface names across all agents.",
+      deliveryState: "delivered",
+      deliveredAt: "2026-04-08T00:00:00.000Z",
+    });
+    const verifierJob = await registry.createTaskVerifierJob({
+      id: "verify-graph",
+      threadId: "thread-graph",
+      nodeId: workerNode.id,
+      status: "running",
+      verifierType: "task_completion",
+      title: "Validate worker task",
+      instructions: "Run tests and inspect the diff",
+      config: { command: "bun test" },
+    });
+    await registry.recordTaskEvidence({
+      threadId: "thread-graph",
+      nodeId: workerNode.id,
+      sessionId: "session-graph",
+      verifierJobId: verifierJob.id,
+      evidenceType: "test-report",
+      title: "Unit test output",
+      summary: "All tests passed",
+      path: "/tmp/graph-worker/test-report.txt",
+      content: { passed: true, command: "bun test" },
+    });
+    await registry.updateTaskNode(workerNode.id, {
+      status: "completed",
+      completedAt: "2026-04-08T01:00:00.000Z",
+    });
+    const activeClaim = await registry.findActiveTaskClaim(
+      workerNode.id,
+      "session-graph",
+    );
+    if (!activeClaim) {
+      throw new Error("Expected an active claim for node-worker");
+    }
+    await registry.updateTaskClaim(activeClaim.id, {
+      status: "completed",
+      releasedAt: "2026-04-08T01:00:00.000Z",
+    });
+    await registry.updateTaskVerifierJob(verifierJob.id, {
+      status: "passed",
+      completedAt: "2026-04-08T01:00:00.000Z",
+    });
+
+    const detail = await registry.getThread("thread-graph");
+    expect(detail?.nodes.map((node) => node.id)).toEqual([
+      "node-root",
+      "node-worker",
+    ]);
+    expect(detail?.dependencies).toHaveLength(1);
+    expect(detail?.claims).toHaveLength(1);
+    expect(detail?.mailbox).toHaveLength(1);
+    expect(detail?.verifierJobs).toHaveLength(1);
+    expect(detail?.evidence).toHaveLength(1);
+    expect(detail?.nodeCount).toBe(2);
+    expect(detail?.completedNodeCount).toBe(1);
+    expect(detail?.verifierJobCount).toBe(1);
+    expect(detail?.evidenceCount).toBe(1);
+    expect(detail?.mailbox[0]?.recipient).toBe("worker-1");
+    expect(detail?.verifierJobs[0]?.status).toBe("passed");
+    expect(detail?.evidence[0]?.summary).toBe("All tests passed");
+  });
 });

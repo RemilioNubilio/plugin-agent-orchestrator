@@ -171,6 +171,146 @@ export interface TaskPendingDecisionRecord {
   updatedAt: string;
 }
 
+export type TaskNodeKind =
+  | "goal"
+  | "execution"
+  | "research"
+  | "planning"
+  | "verification"
+  | "handoff";
+
+export type TaskNodeStatus =
+  | "planned"
+  | "ready"
+  | "claimed"
+  | "running"
+  | "blocked"
+  | "waiting_on_user"
+  | "verifying"
+  | "completed"
+  | "failed"
+  | "canceled"
+  | "interrupted";
+
+export interface TaskNodeRecord {
+  id: string;
+  threadId: string;
+  parentNodeId: string | null;
+  kind: TaskNodeKind;
+  status: TaskNodeStatus;
+  title: string;
+  instructions: string;
+  acceptanceCriteria: string[];
+  requiredCapabilities: string[];
+  expectedArtifacts: string[];
+  assignedSessionId: string | null;
+  assignedLabel: string | null;
+  agentType: CodingAgentType | null;
+  workdir: string | null;
+  repo: string | null;
+  priority: number;
+  depth: number;
+  sequence: number;
+  createdFrom: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
+export type TaskDependencyKind =
+  | "blocks"
+  | "parent_child"
+  | "artifact"
+  | "handoff";
+
+export interface TaskDependencyRecord {
+  id: string;
+  threadId: string;
+  fromNodeId: string;
+  toNodeId: string;
+  dependencyKind: TaskDependencyKind;
+  requiredStatus: TaskNodeStatus;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+}
+
+export type TaskClaimType = "execution" | "verification" | "ownership";
+export type TaskClaimStatus =
+  | "active"
+  | "released"
+  | "completed"
+  | "failed"
+  | "interrupted";
+
+export interface TaskClaimRecord {
+  id: string;
+  threadId: string;
+  nodeId: string;
+  sessionId: string;
+  claimType: TaskClaimType;
+  status: TaskClaimStatus;
+  claimedAt: string;
+  releasedAt: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export type TaskMailboxDeliveryState = "pending" | "delivered" | "consumed";
+
+export interface TaskMailboxMessageRecord {
+  id: string;
+  threadId: string;
+  nodeId: string | null;
+  sessionId: string | null;
+  sender: string;
+  recipient: string;
+  subject: string;
+  body: string;
+  deliveryState: TaskMailboxDeliveryState;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  deliveredAt: string | null;
+}
+
+export type TaskVerifierJobStatus =
+  | "pending"
+  | "running"
+  | "passed"
+  | "failed"
+  | "canceled";
+
+export interface TaskVerifierJobRecord {
+  id: string;
+  threadId: string;
+  nodeId: string;
+  status: TaskVerifierJobStatus;
+  verifierType: string;
+  title: string;
+  instructions: string;
+  config: Record<string, unknown>;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
+export interface TaskEvidenceRecord {
+  id: string;
+  threadId: string;
+  nodeId: string | null;
+  sessionId: string | null;
+  verifierJobId: string | null;
+  evidenceType: string;
+  title: string;
+  summary: string;
+  path: string | null;
+  uri: string | null;
+  content: Record<string, unknown>;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+}
+
 export interface TaskThreadSummary extends TaskThreadRecord {
   sessionCount: number;
   activeSessionCount: number;
@@ -180,6 +320,10 @@ export interface TaskThreadSummary extends TaskThreadRecord {
   latestRepo: string | null;
   latestActivityAt: number | null;
   decisionCount: number;
+  nodeCount: number;
+  completedNodeCount: number;
+  verifierJobCount: number;
+  evidenceCount: number;
 }
 
 export interface TaskThreadDetail extends TaskThreadSummary {
@@ -189,6 +333,12 @@ export interface TaskThreadDetail extends TaskThreadSummary {
   artifacts: TaskArtifactRecord[];
   transcripts: TaskTranscriptRecord[];
   pendingDecisions: TaskPendingDecisionRecord[];
+  nodes: TaskNodeRecord[];
+  dependencies: TaskDependencyRecord[];
+  claims: TaskClaimRecord[];
+  mailbox: TaskMailboxMessageRecord[];
+  verifierJobs: TaskVerifierJobRecord[];
+  evidence: TaskEvidenceRecord[];
 }
 
 export interface CreateTaskThreadInput {
@@ -305,6 +455,137 @@ export interface UpsertPendingDecisionInput {
   llmDecision: Record<string, unknown>;
   taskContext: Record<string, unknown>;
   createdAt?: number;
+}
+
+export interface CreateTaskNodeInput {
+  id?: string;
+  threadId: string;
+  parentNodeId?: string | null;
+  kind?: TaskNodeKind;
+  status?: TaskNodeStatus;
+  title: string;
+  instructions?: string;
+  acceptanceCriteria?: string[];
+  requiredCapabilities?: string[];
+  expectedArtifacts?: string[];
+  assignedSessionId?: string | null;
+  assignedLabel?: string | null;
+  agentType?: CodingAgentType | null;
+  workdir?: string | null;
+  repo?: string | null;
+  priority?: number;
+  depth?: number;
+  sequence?: number;
+  createdFrom?: string | null;
+  metadata?: Record<string, unknown>;
+  startedAt?: string | null;
+  completedAt?: string | null;
+}
+
+export interface UpdateTaskNodeInput {
+  parentNodeId?: string | null;
+  kind?: TaskNodeKind;
+  status?: TaskNodeStatus;
+  title?: string;
+  instructions?: string;
+  acceptanceCriteria?: string[];
+  requiredCapabilities?: string[];
+  expectedArtifacts?: string[];
+  assignedSessionId?: string | null;
+  assignedLabel?: string | null;
+  agentType?: CodingAgentType | null;
+  workdir?: string | null;
+  repo?: string | null;
+  priority?: number;
+  depth?: number;
+  sequence?: number;
+  createdFrom?: string | null;
+  metadata?: Record<string, unknown>;
+  startedAt?: string | null;
+  completedAt?: string | null;
+}
+
+export interface CreateTaskDependencyInput {
+  id?: string;
+  threadId: string;
+  fromNodeId: string;
+  toNodeId: string;
+  dependencyKind?: TaskDependencyKind;
+  requiredStatus?: TaskNodeStatus;
+  metadata?: Record<string, unknown>;
+}
+
+export interface CreateTaskClaimInput {
+  id?: string;
+  threadId: string;
+  nodeId: string;
+  sessionId: string;
+  claimType?: TaskClaimType;
+  status?: TaskClaimStatus;
+  metadata?: Record<string, unknown>;
+  claimedAt?: string;
+  releasedAt?: string | null;
+}
+
+export interface UpdateTaskClaimInput {
+  status?: TaskClaimStatus;
+  metadata?: Record<string, unknown>;
+  releasedAt?: string | null;
+}
+
+export interface AppendTaskMailboxMessageInput {
+  id?: string;
+  threadId: string;
+  nodeId?: string | null;
+  sessionId?: string | null;
+  sender: string;
+  recipient: string;
+  subject?: string;
+  body: string;
+  deliveryState?: TaskMailboxDeliveryState;
+  metadata?: Record<string, unknown>;
+  createdAt?: string;
+  deliveredAt?: string | null;
+}
+
+export interface CreateTaskVerifierJobInput {
+  id?: string;
+  threadId: string;
+  nodeId: string;
+  status?: TaskVerifierJobStatus;
+  verifierType: string;
+  title: string;
+  instructions?: string;
+  config?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+  createdAt?: string;
+  startedAt?: string | null;
+  completedAt?: string | null;
+}
+
+export interface UpdateTaskVerifierJobInput {
+  status?: TaskVerifierJobStatus;
+  title?: string;
+  instructions?: string;
+  config?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+  startedAt?: string | null;
+  completedAt?: string | null;
+}
+
+export interface RecordTaskEvidenceInput {
+  id?: string;
+  threadId: string;
+  nodeId?: string | null;
+  sessionId?: string | null;
+  verifierJobId?: string | null;
+  evidenceType: string;
+  title: string;
+  summary?: string;
+  path?: string | null;
+  uri?: string | null;
+  content?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
 }
 
 export interface ListTaskThreadsOptions {
@@ -460,9 +741,100 @@ function normalizeSessionStatus(value: unknown): TaskSessionStatus {
   }
 }
 
+function normalizeTaskNodeKind(value: unknown): TaskNodeKind {
+  switch (toText(value).toLowerCase()) {
+    case "goal":
+    case "execution":
+    case "research":
+    case "planning":
+    case "verification":
+    case "handoff":
+      return toText(value).toLowerCase() as TaskNodeKind;
+    default:
+      return "execution";
+  }
+}
+
+function normalizeTaskNodeStatus(value: unknown): TaskNodeStatus {
+  switch (toText(value).toLowerCase()) {
+    case "ready":
+    case "claimed":
+    case "running":
+    case "blocked":
+    case "waiting_on_user":
+    case "verifying":
+    case "completed":
+    case "failed":
+    case "canceled":
+    case "interrupted":
+      return toText(value).toLowerCase() as TaskNodeStatus;
+    default:
+      return "planned";
+  }
+}
+
+function normalizeTaskDependencyKind(value: unknown): TaskDependencyKind {
+  switch (toText(value).toLowerCase()) {
+    case "parent_child":
+    case "artifact":
+    case "handoff":
+      return toText(value).toLowerCase() as TaskDependencyKind;
+    default:
+      return "blocks";
+  }
+}
+
+function normalizeTaskClaimType(value: unknown): TaskClaimType {
+  switch (toText(value).toLowerCase()) {
+    case "verification":
+    case "ownership":
+      return toText(value).toLowerCase() as TaskClaimType;
+    default:
+      return "execution";
+  }
+}
+
+function normalizeTaskClaimStatus(value: unknown): TaskClaimStatus {
+  switch (toText(value).toLowerCase()) {
+    case "released":
+    case "completed":
+    case "failed":
+    case "interrupted":
+      return toText(value).toLowerCase() as TaskClaimStatus;
+    default:
+      return "active";
+  }
+}
+
+function normalizeMailboxDeliveryState(
+  value: unknown,
+): TaskMailboxDeliveryState {
+  switch (toText(value).toLowerCase()) {
+    case "delivered":
+    case "consumed":
+      return toText(value).toLowerCase() as TaskMailboxDeliveryState;
+    default:
+      return "pending";
+  }
+}
+
+function normalizeVerifierJobStatus(value: unknown): TaskVerifierJobStatus {
+  switch (toText(value).toLowerCase()) {
+    case "running":
+    case "passed":
+    case "failed":
+    case "canceled":
+      return toText(value).toLowerCase() as TaskVerifierJobStatus;
+    default:
+      return "pending";
+  }
+}
+
 function extractRows(result: unknown): Row[] {
   if (Array.isArray(result)) {
-    return result.map((row) => asObject(row)).filter((row): row is Row => row !== null);
+    return result
+      .map((row) => asObject(row))
+      .filter((row): row is Row => row !== null);
   }
   const obj = asObject(result);
   if (!obj || !Array.isArray(obj.rows)) return [];
@@ -511,7 +883,7 @@ function parseThreadRow(row: Row): TaskThreadRecord {
     scenarioId: toNullableText(row.scenario_id),
     batchId: toNullableText(row.batch_id),
     title: toText(row.title),
-    kind: (toText(row.kind, "coding") as TaskThreadKind),
+    kind: toText(row.kind, "coding") as TaskThreadKind,
     status: normalizeThreadStatus(row.status),
     originalRequest: toText(row.original_request),
     summary: toText(row.summary),
@@ -539,6 +911,10 @@ function parseThreadSummaryRow(row: Row): TaskThreadSummary {
     latestRepo: toNullableText(row.latest_repo),
     latestActivityAt: toNullableNumber(row.latest_activity_at),
     decisionCount: toNumber(row.decision_count, 0),
+    nodeCount: toNumber(row.node_count, 0),
+    completedNodeCount: toNumber(row.completed_node_count, 0),
+    verifierJobCount: toNumber(row.verifier_job_count, 0),
+    evidenceCount: toNumber(row.evidence_count, 0),
   };
 }
 
@@ -640,6 +1016,114 @@ function parsePendingDecisionRow(row: Row): TaskPendingDecisionRecord {
   };
 }
 
+function parseTaskNodeRow(row: Row): TaskNodeRecord {
+  return {
+    id: toText(row.id),
+    threadId: toText(row.thread_id),
+    parentNodeId: toNullableText(row.parent_node_id),
+    kind: normalizeTaskNodeKind(row.kind),
+    status: normalizeTaskNodeStatus(row.status),
+    title: toText(row.title),
+    instructions: toText(row.instructions),
+    acceptanceCriteria: parseJsonArray(row.acceptance_criteria_json),
+    requiredCapabilities: parseJsonArray(row.required_capabilities_json),
+    expectedArtifacts: parseJsonArray(row.expected_artifacts_json),
+    assignedSessionId: toNullableText(row.assigned_session_id),
+    assignedLabel: toNullableText(row.assigned_label),
+    agentType: toNullableText(row.agent_type) as CodingAgentType | null,
+    workdir: toNullableText(row.workdir),
+    repo: toNullableText(row.repo),
+    priority: toNumber(row.priority, 0),
+    depth: toNumber(row.depth, 0),
+    sequence: toNumber(row.sequence, 0),
+    createdFrom: toNullableText(row.created_from),
+    metadata: parseJsonRecord(row.metadata_json),
+    createdAt: toText(row.created_at),
+    updatedAt: toText(row.updated_at),
+    startedAt: toNullableText(row.started_at),
+    completedAt: toNullableText(row.completed_at),
+  };
+}
+
+function parseTaskDependencyRow(row: Row): TaskDependencyRecord {
+  return {
+    id: toText(row.id),
+    threadId: toText(row.thread_id),
+    fromNodeId: toText(row.from_node_id),
+    toNodeId: toText(row.to_node_id),
+    dependencyKind: normalizeTaskDependencyKind(row.dependency_kind),
+    requiredStatus: normalizeTaskNodeStatus(row.required_status),
+    metadata: parseJsonRecord(row.metadata_json),
+    createdAt: toText(row.created_at),
+  };
+}
+
+function parseTaskClaimRow(row: Row): TaskClaimRecord {
+  return {
+    id: toText(row.id),
+    threadId: toText(row.thread_id),
+    nodeId: toText(row.node_id),
+    sessionId: toText(row.session_id),
+    claimType: normalizeTaskClaimType(row.claim_type),
+    status: normalizeTaskClaimStatus(row.status),
+    claimedAt: toText(row.claimed_at),
+    releasedAt: toNullableText(row.released_at),
+    metadata: parseJsonRecord(row.metadata_json),
+  };
+}
+
+function parseTaskMailboxMessageRow(row: Row): TaskMailboxMessageRecord {
+  return {
+    id: toText(row.id),
+    threadId: toText(row.thread_id),
+    nodeId: toNullableText(row.node_id),
+    sessionId: toNullableText(row.session_id),
+    sender: toText(row.sender),
+    recipient: toText(row.recipient),
+    subject: toText(row.subject),
+    body: toText(row.body),
+    deliveryState: normalizeMailboxDeliveryState(row.delivery_state),
+    metadata: parseJsonRecord(row.metadata_json),
+    createdAt: toText(row.created_at),
+    deliveredAt: toNullableText(row.delivered_at),
+  };
+}
+
+function parseTaskVerifierJobRow(row: Row): TaskVerifierJobRecord {
+  return {
+    id: toText(row.id),
+    threadId: toText(row.thread_id),
+    nodeId: toText(row.node_id),
+    status: normalizeVerifierJobStatus(row.status),
+    verifierType: toText(row.verifier_type),
+    title: toText(row.title),
+    instructions: toText(row.instructions),
+    config: parseJsonRecord(row.config_json),
+    metadata: parseJsonRecord(row.metadata_json),
+    createdAt: toText(row.created_at),
+    startedAt: toNullableText(row.started_at),
+    completedAt: toNullableText(row.completed_at),
+  };
+}
+
+function parseTaskEvidenceRow(row: Row): TaskEvidenceRecord {
+  return {
+    id: toText(row.id),
+    threadId: toText(row.thread_id),
+    nodeId: toNullableText(row.node_id),
+    sessionId: toNullableText(row.session_id),
+    verifierJobId: toNullableText(row.verifier_job_id),
+    evidenceType: toText(row.evidence_type),
+    title: toText(row.title),
+    summary: toText(row.summary),
+    path: toNullableText(row.path),
+    uri: toNullableText(row.uri),
+    content: parseJsonRecord(row.content_json),
+    metadata: parseJsonRecord(row.metadata_json),
+    createdAt: toText(row.created_at),
+  };
+}
+
 function buildSearchText(parts: Array<string | null | undefined>): string {
   return parts
     .map((part) => (part ?? "").trim().toLowerCase())
@@ -713,10 +1197,7 @@ function buildThreadListWhereClauses(
     );
   }
   if (options.search?.trim()) {
-    const q = options.search
-      .trim()
-      .toLowerCase()
-      .replace(/[%_]/g, "\\$&");
+    const q = options.search.trim().toLowerCase().replace(/[%_]/g, "\\$&");
     clauses.push(`thread.search_text LIKE ${sqlQuote(`%${q}%`)}`);
   }
 
@@ -877,6 +1358,120 @@ export class TaskRegistry {
 
     await executeRawSql(
       this.runtime,
+      `CREATE TABLE IF NOT EXISTS orchestrator_task_nodes (
+        id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL,
+        parent_node_id TEXT,
+        kind TEXT NOT NULL DEFAULT 'execution',
+        status TEXT NOT NULL DEFAULT 'planned',
+        title TEXT NOT NULL,
+        instructions TEXT NOT NULL DEFAULT '',
+        acceptance_criteria_json TEXT NOT NULL DEFAULT '[]',
+        required_capabilities_json TEXT NOT NULL DEFAULT '[]',
+        expected_artifacts_json TEXT NOT NULL DEFAULT '[]',
+        assigned_session_id TEXT,
+        assigned_label TEXT,
+        agent_type TEXT,
+        workdir TEXT,
+        repo TEXT,
+        priority INTEGER NOT NULL DEFAULT 0,
+        depth INTEGER NOT NULL DEFAULT 0,
+        sequence INTEGER NOT NULL DEFAULT 0,
+        created_from TEXT,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        started_at TEXT,
+        completed_at TEXT
+      )`,
+    );
+
+    await executeRawSql(
+      this.runtime,
+      `CREATE TABLE IF NOT EXISTS orchestrator_task_dependencies (
+        id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL,
+        from_node_id TEXT NOT NULL,
+        to_node_id TEXT NOT NULL,
+        dependency_kind TEXT NOT NULL DEFAULT 'blocks',
+        required_status TEXT NOT NULL DEFAULT 'completed',
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL
+      )`,
+    );
+
+    await executeRawSql(
+      this.runtime,
+      `CREATE TABLE IF NOT EXISTS orchestrator_task_claims (
+        id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL,
+        node_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        claim_type TEXT NOT NULL DEFAULT 'execution',
+        status TEXT NOT NULL DEFAULT 'active',
+        claimed_at TEXT NOT NULL,
+        released_at TEXT,
+        metadata_json TEXT NOT NULL DEFAULT '{}'
+      )`,
+    );
+
+    await executeRawSql(
+      this.runtime,
+      `CREATE TABLE IF NOT EXISTS orchestrator_task_mailbox (
+        id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL,
+        node_id TEXT,
+        session_id TEXT,
+        sender TEXT NOT NULL,
+        recipient TEXT NOT NULL,
+        subject TEXT NOT NULL DEFAULT '',
+        body TEXT NOT NULL,
+        delivery_state TEXT NOT NULL DEFAULT 'pending',
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        delivered_at TEXT
+      )`,
+    );
+
+    await executeRawSql(
+      this.runtime,
+      `CREATE TABLE IF NOT EXISTS orchestrator_task_verifier_jobs (
+        id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL,
+        node_id TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        verifier_type TEXT NOT NULL,
+        title TEXT NOT NULL,
+        instructions TEXT NOT NULL DEFAULT '',
+        config_json TEXT NOT NULL DEFAULT '{}',
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        started_at TEXT,
+        completed_at TEXT
+      )`,
+    );
+
+    await executeRawSql(
+      this.runtime,
+      `CREATE TABLE IF NOT EXISTS orchestrator_task_evidence (
+        id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL,
+        node_id TEXT,
+        session_id TEXT,
+        verifier_job_id TEXT,
+        evidence_type TEXT NOT NULL,
+        title TEXT NOT NULL,
+        summary TEXT NOT NULL DEFAULT '',
+        path TEXT,
+        uri TEXT,
+        content_json TEXT NOT NULL DEFAULT '{}',
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL
+      )`,
+    );
+
+    await executeRawSql(
+      this.runtime,
       `ALTER TABLE orchestrator_task_threads ADD COLUMN scenario_id TEXT`,
     ).catch(() => undefined);
     await executeRawSql(
@@ -942,6 +1537,51 @@ export class TaskRegistry {
       this.runtime,
       `CREATE INDEX IF NOT EXISTS idx_orchestrator_task_pending_decisions_created_at
          ON orchestrator_task_pending_decisions(created_at DESC)`,
+    );
+    await executeRawSql(
+      this.runtime,
+      `CREATE INDEX IF NOT EXISTS idx_orchestrator_task_nodes_thread_id
+         ON orchestrator_task_nodes(thread_id, sequence ASC, created_at ASC)`,
+    );
+    await executeRawSql(
+      this.runtime,
+      `CREATE INDEX IF NOT EXISTS idx_orchestrator_task_nodes_status
+         ON orchestrator_task_nodes(thread_id, status)`,
+    );
+    await executeRawSql(
+      this.runtime,
+      `CREATE INDEX IF NOT EXISTS idx_orchestrator_task_dependencies_thread_id
+         ON orchestrator_task_dependencies(thread_id)`,
+    );
+    await executeRawSql(
+      this.runtime,
+      `CREATE INDEX IF NOT EXISTS idx_orchestrator_task_dependencies_to_node_id
+         ON orchestrator_task_dependencies(to_node_id)`,
+    );
+    await executeRawSql(
+      this.runtime,
+      `CREATE INDEX IF NOT EXISTS idx_orchestrator_task_claims_thread_id
+         ON orchestrator_task_claims(thread_id, status, claimed_at DESC)`,
+    );
+    await executeRawSql(
+      this.runtime,
+      `CREATE INDEX IF NOT EXISTS idx_orchestrator_task_claims_node_id
+         ON orchestrator_task_claims(node_id, status)`,
+    );
+    await executeRawSql(
+      this.runtime,
+      `CREATE INDEX IF NOT EXISTS idx_orchestrator_task_mailbox_thread_id
+         ON orchestrator_task_mailbox(thread_id, created_at ASC)`,
+    );
+    await executeRawSql(
+      this.runtime,
+      `CREATE INDEX IF NOT EXISTS idx_orchestrator_task_verifier_jobs_thread_id
+         ON orchestrator_task_verifier_jobs(thread_id, status, created_at ASC)`,
+    );
+    await executeRawSql(
+      this.runtime,
+      `CREATE INDEX IF NOT EXISTS idx_orchestrator_task_evidence_thread_id
+         ON orchestrator_task_evidence(thread_id, created_at ASC)`,
     );
 
     schemaReady.add(key);
@@ -1088,15 +1728,33 @@ export class TaskRegistry {
     const summary = await this.getThreadSummary(threadId);
     if (!summary) return null;
 
-    const [sessions, decisions, events, artifacts, transcripts, pendingDecisions] =
-      await Promise.all([
-        this.listSessionsForThread(threadId),
-        this.listDecisionsForThread(threadId),
-        this.listEventsForThread(threadId),
-        this.listArtifactsForThread(threadId),
-        this.listTranscriptsForThread(threadId),
-        this.listPendingDecisionsForThread(threadId),
-      ]);
+    const [
+      sessions,
+      decisions,
+      events,
+      artifacts,
+      transcripts,
+      pendingDecisions,
+      nodes,
+      dependencies,
+      claims,
+      mailbox,
+      verifierJobs,
+      evidence,
+    ] = await Promise.all([
+      this.listSessionsForThread(threadId),
+      this.listDecisionsForThread(threadId),
+      this.listEventsForThread(threadId),
+      this.listArtifactsForThread(threadId),
+      this.listTranscriptsForThread(threadId),
+      this.listPendingDecisionsForThread(threadId),
+      this.listTaskNodesForThread(threadId),
+      this.listTaskDependenciesForThread(threadId),
+      this.listTaskClaimsForThread(threadId),
+      this.listTaskMailboxMessagesForThread(threadId),
+      this.listTaskVerifierJobsForThread(threadId),
+      this.listTaskEvidenceForThread(threadId),
+    ]);
 
     return {
       ...summary,
@@ -1106,6 +1764,12 @@ export class TaskRegistry {
       artifacts,
       transcripts,
       pendingDecisions,
+      nodes,
+      dependencies,
+      claims,
+      mailbox,
+      verifierJobs,
+      evidence,
     };
   }
 
@@ -1132,7 +1796,11 @@ export class TaskRegistry {
           latest.workdir AS latest_workdir,
           latest.repo AS latest_repo,
           latest.last_activity_at AS latest_activity_at,
-          COALESCE(decision_counts.decision_count, 0) AS decision_count
+          COALESCE(decision_counts.decision_count, 0) AS decision_count,
+          COALESCE(node_counts.node_count, 0) AS node_count,
+          COALESCE(node_counts.completed_node_count, 0) AS completed_node_count,
+          COALESCE(verifier_counts.verifier_job_count, 0) AS verifier_job_count,
+          COALESCE(evidence_counts.evidence_count, 0) AS evidence_count
         FROM orchestrator_task_threads AS thread
         LEFT JOIN (
           SELECT
@@ -1166,6 +1834,27 @@ export class TaskRegistry {
            GROUP BY thread_id
         ) AS decision_counts
           ON decision_counts.thread_id = thread.id
+        LEFT JOIN (
+          SELECT
+            thread_id,
+            COUNT(*) AS node_count,
+            SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed_node_count
+          FROM orchestrator_task_nodes
+          GROUP BY thread_id
+        ) AS node_counts
+          ON node_counts.thread_id = thread.id
+        LEFT JOIN (
+          SELECT thread_id, COUNT(*) AS verifier_job_count
+            FROM orchestrator_task_verifier_jobs
+           GROUP BY thread_id
+        ) AS verifier_counts
+          ON verifier_counts.thread_id = thread.id
+        LEFT JOIN (
+          SELECT thread_id, COUNT(*) AS evidence_count
+            FROM orchestrator_task_evidence
+           GROUP BY thread_id
+        ) AS evidence_counts
+          ON evidence_counts.thread_id = thread.id
         ${whereClause}
         ORDER BY thread.updated_at DESC
         ${limitClause}`,
@@ -1210,6 +1899,27 @@ export class TaskRegistry {
               AND grouped.max_last_activity_at = latest_session.last_activity_at
          ) AS latest
            ON latest.thread_id = thread.id
+         LEFT JOIN (
+           SELECT
+             thread_id,
+             COUNT(*) AS node_count,
+             SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed_node_count
+           FROM orchestrator_task_nodes
+           GROUP BY thread_id
+         ) AS node_counts
+           ON node_counts.thread_id = thread.id
+         LEFT JOIN (
+           SELECT thread_id, COUNT(*) AS verifier_job_count
+             FROM orchestrator_task_verifier_jobs
+            GROUP BY thread_id
+         ) AS verifier_counts
+           ON verifier_counts.thread_id = thread.id
+         LEFT JOIN (
+           SELECT thread_id, COUNT(*) AS evidence_count
+             FROM orchestrator_task_evidence
+            GROUP BY thread_id
+         ) AS evidence_counts
+           ON evidence_counts.thread_id = thread.id
          ${whereClause}`,
     );
 
@@ -1529,10 +2239,7 @@ export class TaskRegistry {
     );
   }
 
-  async updateThreadSummary(
-    threadId: string,
-    summary: string,
-  ): Promise<void> {
+  async updateThreadSummary(threadId: string, summary: string): Promise<void> {
     await this.ensureSchema();
     const thread = await this.getThreadRecord(threadId);
     if (!thread) return;
@@ -1592,7 +2299,9 @@ export class TaskRegistry {
               )},
               search_text = ${sqlQuote(nextSearchText)},
               closed_at = ${sqlText(
-                patch.closedAt !== undefined ? patch.closedAt : existing.closedAt,
+                patch.closedAt !== undefined
+                  ? patch.closedAt
+                  : existing.closedAt,
               )},
               archived_at = ${sqlText(
                 patch.archivedAt !== undefined
@@ -1751,6 +2460,629 @@ export class TaskRegistry {
     return rows.map(parsePendingDecisionRow);
   }
 
+  async createTaskNode(input: CreateTaskNodeInput): Promise<TaskNodeRecord> {
+    await this.ensureSchema();
+    const nowIso = isoNow();
+    const id = input.id?.trim() || `node-${crypto.randomUUID()}`;
+    await executeRawSql(
+      this.runtime,
+      `INSERT INTO orchestrator_task_nodes (
+        id, thread_id, parent_node_id, kind, status, title, instructions,
+        acceptance_criteria_json, required_capabilities_json, expected_artifacts_json,
+        assigned_session_id, assigned_label, agent_type, workdir, repo, priority,
+        depth, sequence, created_from, metadata_json, created_at, updated_at,
+        started_at, completed_at
+      ) VALUES (
+        ${sqlQuote(id)},
+        ${sqlQuote(input.threadId)},
+        ${sqlText(input.parentNodeId ?? null)},
+        ${sqlQuote(input.kind ?? "execution")},
+        ${sqlQuote(input.status ?? "planned")},
+        ${sqlQuote(input.title)},
+        ${sqlQuote(input.instructions ?? "")},
+        ${sqlJson(input.acceptanceCriteria ?? [])},
+        ${sqlJson(input.requiredCapabilities ?? [])},
+        ${sqlJson(input.expectedArtifacts ?? [])},
+        ${sqlText(input.assignedSessionId ?? null)},
+        ${sqlText(input.assignedLabel ?? null)},
+        ${sqlText(input.agentType ?? null)},
+        ${sqlText(input.workdir ?? null)},
+        ${sqlText(input.repo ?? null)},
+        ${sqlInteger(input.priority ?? 0)},
+        ${sqlInteger(input.depth ?? 0)},
+        ${sqlInteger(input.sequence ?? 0)},
+        ${sqlText(input.createdFrom ?? null)},
+        ${sqlJson(input.metadata ?? {})},
+        ${sqlQuote(nowIso)},
+        ${sqlQuote(nowIso)},
+        ${sqlText(input.startedAt ?? null)},
+        ${sqlText(input.completedAt ?? null)}
+      )`,
+    );
+    await this.appendEvent({
+      threadId: input.threadId,
+      sessionId: input.assignedSessionId ?? null,
+      eventType: "task_node_created",
+      summary: `Created task node "${input.title}"`,
+      data: {
+        nodeId: id,
+        kind: input.kind ?? "execution",
+        status: input.status ?? "planned",
+        parentNodeId: input.parentNodeId ?? null,
+      },
+    });
+    const node = await this.getTaskNode(id);
+    if (!node) {
+      throw new Error(`Failed to create task node ${id}`);
+    }
+    return node;
+  }
+
+  async getTaskNode(nodeId: string): Promise<TaskNodeRecord | null> {
+    await this.ensureSchema();
+    const rows = await executeRawSql(
+      this.runtime,
+      `SELECT *
+         FROM orchestrator_task_nodes
+        WHERE id = ${sqlQuote(nodeId)}
+        LIMIT 1`,
+    );
+    return rows[0] ? parseTaskNodeRow(rows[0]) : null;
+  }
+
+  async updateTaskNode(
+    nodeId: string,
+    patch: UpdateTaskNodeInput,
+  ): Promise<void> {
+    await this.ensureSchema();
+    const existing = await this.getTaskNode(nodeId);
+    if (!existing) return;
+    const nextMetadata = patch.metadata
+      ? { ...existing.metadata, ...patch.metadata }
+      : existing.metadata;
+    const nextStatus = patch.status ?? existing.status;
+    const nextStartedAt =
+      patch.startedAt !== undefined
+        ? patch.startedAt
+        : nextStatus === "running" || nextStatus === "verifying"
+          ? (existing.startedAt ?? isoNow())
+          : existing.startedAt;
+    const nextCompletedAt =
+      patch.completedAt !== undefined
+        ? patch.completedAt
+        : ["completed", "failed", "canceled", "interrupted"].includes(
+              nextStatus,
+            )
+          ? (existing.completedAt ?? isoNow())
+          : null;
+    const nowIso = isoNow();
+
+    await executeRawSql(
+      this.runtime,
+      `UPDATE orchestrator_task_nodes
+          SET parent_node_id = ${sqlText(
+            patch.parentNodeId !== undefined
+              ? patch.parentNodeId
+              : existing.parentNodeId,
+          )},
+              kind = ${sqlQuote(patch.kind ?? existing.kind)},
+              status = ${sqlQuote(nextStatus)},
+              title = ${sqlQuote(patch.title ?? existing.title)},
+              instructions = ${sqlQuote(
+                patch.instructions ?? existing.instructions,
+              )},
+              acceptance_criteria_json = ${sqlJson(
+                patch.acceptanceCriteria ?? existing.acceptanceCriteria,
+              )},
+              required_capabilities_json = ${sqlJson(
+                patch.requiredCapabilities ?? existing.requiredCapabilities,
+              )},
+              expected_artifacts_json = ${sqlJson(
+                patch.expectedArtifacts ?? existing.expectedArtifacts,
+              )},
+              assigned_session_id = ${sqlText(
+                patch.assignedSessionId !== undefined
+                  ? patch.assignedSessionId
+                  : existing.assignedSessionId,
+              )},
+              assigned_label = ${sqlText(
+                patch.assignedLabel !== undefined
+                  ? patch.assignedLabel
+                  : existing.assignedLabel,
+              )},
+              agent_type = ${sqlText(
+                patch.agentType !== undefined
+                  ? patch.agentType
+                  : existing.agentType,
+              )},
+              workdir = ${sqlText(
+                patch.workdir !== undefined ? patch.workdir : existing.workdir,
+              )},
+              repo = ${sqlText(
+                patch.repo !== undefined ? patch.repo : existing.repo,
+              )},
+              priority = ${sqlInteger(patch.priority ?? existing.priority)},
+              depth = ${sqlInteger(patch.depth ?? existing.depth)},
+              sequence = ${sqlInteger(patch.sequence ?? existing.sequence)},
+              created_from = ${sqlText(
+                patch.createdFrom !== undefined
+                  ? patch.createdFrom
+                  : existing.createdFrom,
+              )},
+              metadata_json = ${sqlJson(nextMetadata)},
+              updated_at = ${sqlQuote(nowIso)},
+              started_at = ${sqlText(nextStartedAt)},
+              completed_at = ${sqlText(nextCompletedAt)}
+        WHERE id = ${sqlQuote(nodeId)}`,
+    );
+    await this.appendEvent({
+      threadId: existing.threadId,
+      sessionId:
+        patch.assignedSessionId !== undefined
+          ? patch.assignedSessionId
+          : existing.assignedSessionId,
+      eventType: "task_node_updated",
+      summary: `Updated task node "${patch.title ?? existing.title}"`,
+      data: {
+        nodeId,
+        status: nextStatus,
+      },
+    });
+  }
+
+  async listTaskNodesForThread(threadId: string): Promise<TaskNodeRecord[]> {
+    await this.ensureSchema();
+    const rows = await executeRawSql(
+      this.runtime,
+      `SELECT *
+         FROM orchestrator_task_nodes
+        WHERE thread_id = ${sqlQuote(threadId)}
+        ORDER BY depth ASC, sequence ASC, created_at ASC`,
+    );
+    return rows.map(parseTaskNodeRow);
+  }
+
+  async createTaskDependency(
+    input: CreateTaskDependencyInput,
+  ): Promise<TaskDependencyRecord> {
+    await this.ensureSchema();
+    const createdAt = isoNow();
+    const id = input.id?.trim() || `dep-${crypto.randomUUID()}`;
+    await executeRawSql(
+      this.runtime,
+      `INSERT INTO orchestrator_task_dependencies (
+        id, thread_id, from_node_id, to_node_id, dependency_kind, required_status,
+        metadata_json, created_at
+      ) VALUES (
+        ${sqlQuote(id)},
+        ${sqlQuote(input.threadId)},
+        ${sqlQuote(input.fromNodeId)},
+        ${sqlQuote(input.toNodeId)},
+        ${sqlQuote(input.dependencyKind ?? "blocks")},
+        ${sqlQuote(input.requiredStatus ?? "completed")},
+        ${sqlJson(input.metadata ?? {})},
+        ${sqlQuote(createdAt)}
+      )`,
+    );
+    await this.appendEvent({
+      threadId: input.threadId,
+      eventType: "task_dependency_created",
+      summary: `Created dependency ${input.fromNodeId} -> ${input.toNodeId}`,
+      data: {
+        dependencyId: id,
+        fromNodeId: input.fromNodeId,
+        toNodeId: input.toNodeId,
+        dependencyKind: input.dependencyKind ?? "blocks",
+        requiredStatus: input.requiredStatus ?? "completed",
+      },
+    });
+    const dependency = await this.getTaskDependency(id);
+    if (!dependency) {
+      throw new Error(`Failed to create task dependency ${id}`);
+    }
+    return dependency;
+  }
+
+  async getTaskDependency(
+    dependencyId: string,
+  ): Promise<TaskDependencyRecord | null> {
+    await this.ensureSchema();
+    const rows = await executeRawSql(
+      this.runtime,
+      `SELECT *
+         FROM orchestrator_task_dependencies
+        WHERE id = ${sqlQuote(dependencyId)}
+        LIMIT 1`,
+    );
+    return rows[0] ? parseTaskDependencyRow(rows[0]) : null;
+  }
+
+  async listTaskDependenciesForThread(
+    threadId: string,
+  ): Promise<TaskDependencyRecord[]> {
+    await this.ensureSchema();
+    const rows = await executeRawSql(
+      this.runtime,
+      `SELECT *
+         FROM orchestrator_task_dependencies
+        WHERE thread_id = ${sqlQuote(threadId)}
+        ORDER BY created_at ASC`,
+    );
+    return rows.map(parseTaskDependencyRow);
+  }
+
+  async createTaskClaim(input: CreateTaskClaimInput): Promise<TaskClaimRecord> {
+    await this.ensureSchema();
+    const claimedAt = input.claimedAt ?? isoNow();
+    const id = input.id?.trim() || `claim-${crypto.randomUUID()}`;
+    await executeRawSql(
+      this.runtime,
+      `INSERT INTO orchestrator_task_claims (
+        id, thread_id, node_id, session_id, claim_type, status, claimed_at,
+        released_at, metadata_json
+      ) VALUES (
+        ${sqlQuote(id)},
+        ${sqlQuote(input.threadId)},
+        ${sqlQuote(input.nodeId)},
+        ${sqlQuote(input.sessionId)},
+        ${sqlQuote(input.claimType ?? "execution")},
+        ${sqlQuote(input.status ?? "active")},
+        ${sqlQuote(claimedAt)},
+        ${sqlText(input.releasedAt ?? null)},
+        ${sqlJson(input.metadata ?? {})}
+      )`,
+    );
+    await this.appendEvent({
+      threadId: input.threadId,
+      sessionId: input.sessionId,
+      eventType: "task_claim_created",
+      summary: `Claimed task node ${input.nodeId}`,
+      data: {
+        claimId: id,
+        nodeId: input.nodeId,
+        sessionId: input.sessionId,
+        claimType: input.claimType ?? "execution",
+        status: input.status ?? "active",
+      },
+    });
+    const claim = await this.getTaskClaim(id);
+    if (!claim) {
+      throw new Error(`Failed to create task claim ${id}`);
+    }
+    return claim;
+  }
+
+  async getTaskClaim(claimId: string): Promise<TaskClaimRecord | null> {
+    await this.ensureSchema();
+    const rows = await executeRawSql(
+      this.runtime,
+      `SELECT *
+         FROM orchestrator_task_claims
+        WHERE id = ${sqlQuote(claimId)}
+        LIMIT 1`,
+    );
+    return rows[0] ? parseTaskClaimRow(rows[0]) : null;
+  }
+
+  async findActiveTaskClaim(
+    nodeId: string,
+    sessionId: string,
+  ): Promise<TaskClaimRecord | null> {
+    await this.ensureSchema();
+    const rows = await executeRawSql(
+      this.runtime,
+      `SELECT *
+         FROM orchestrator_task_claims
+        WHERE node_id = ${sqlQuote(nodeId)}
+          AND session_id = ${sqlQuote(sessionId)}
+          AND status = 'active'
+        ORDER BY claimed_at DESC
+        LIMIT 1`,
+    );
+    return rows[0] ? parseTaskClaimRow(rows[0]) : null;
+  }
+
+  async updateTaskClaim(
+    claimId: string,
+    patch: UpdateTaskClaimInput,
+  ): Promise<void> {
+    await this.ensureSchema();
+    const existing = await this.getTaskClaim(claimId);
+    if (!existing) return;
+    const nextMetadata = patch.metadata
+      ? { ...existing.metadata, ...patch.metadata }
+      : existing.metadata;
+    await executeRawSql(
+      this.runtime,
+      `UPDATE orchestrator_task_claims
+          SET status = ${sqlQuote(patch.status ?? existing.status)},
+              released_at = ${sqlText(
+                patch.releasedAt !== undefined
+                  ? patch.releasedAt
+                  : existing.releasedAt,
+              )},
+              metadata_json = ${sqlJson(nextMetadata)}
+        WHERE id = ${sqlQuote(claimId)}`,
+    );
+  }
+
+  async listTaskClaimsForThread(threadId: string): Promise<TaskClaimRecord[]> {
+    await this.ensureSchema();
+    const rows = await executeRawSql(
+      this.runtime,
+      `SELECT *
+         FROM orchestrator_task_claims
+        WHERE thread_id = ${sqlQuote(threadId)}
+        ORDER BY claimed_at ASC`,
+    );
+    return rows.map(parseTaskClaimRow);
+  }
+
+  async appendTaskMailboxMessage(
+    input: AppendTaskMailboxMessageInput,
+  ): Promise<TaskMailboxMessageRecord> {
+    await this.ensureSchema();
+    const id = input.id?.trim() || `mail-${crypto.randomUUID()}`;
+    const createdAt = input.createdAt ?? isoNow();
+    await executeRawSql(
+      this.runtime,
+      `INSERT INTO orchestrator_task_mailbox (
+        id, thread_id, node_id, session_id, sender, recipient, subject, body,
+        delivery_state, metadata_json, created_at, delivered_at
+      ) VALUES (
+        ${sqlQuote(id)},
+        ${sqlQuote(input.threadId)},
+        ${sqlText(input.nodeId ?? null)},
+        ${sqlText(input.sessionId ?? null)},
+        ${sqlQuote(input.sender)},
+        ${sqlQuote(input.recipient)},
+        ${sqlQuote(input.subject ?? "")},
+        ${sqlQuote(input.body)},
+        ${sqlQuote(input.deliveryState ?? "pending")},
+        ${sqlJson(input.metadata ?? {})},
+        ${sqlQuote(createdAt)},
+        ${sqlText(input.deliveredAt ?? null)}
+      )`,
+    );
+    await this.appendEvent({
+      threadId: input.threadId,
+      sessionId: input.sessionId ?? null,
+      eventType: "task_mailbox_message",
+      summary: `Mailbox message "${input.subject ?? ""}" queued for ${input.recipient}`,
+      data: {
+        messageId: id,
+        nodeId: input.nodeId ?? null,
+        sender: input.sender,
+        recipient: input.recipient,
+        deliveryState: input.deliveryState ?? "pending",
+      },
+    });
+    const message = await this.getTaskMailboxMessage(id);
+    if (!message) {
+      throw new Error(`Failed to create mailbox message ${id}`);
+    }
+    return message;
+  }
+
+  async getTaskMailboxMessage(
+    messageId: string,
+  ): Promise<TaskMailboxMessageRecord | null> {
+    await this.ensureSchema();
+    const rows = await executeRawSql(
+      this.runtime,
+      `SELECT *
+         FROM orchestrator_task_mailbox
+        WHERE id = ${sqlQuote(messageId)}
+        LIMIT 1`,
+    );
+    return rows[0] ? parseTaskMailboxMessageRow(rows[0]) : null;
+  }
+
+  async markTaskMailboxMessageDelivered(messageId: string): Promise<void> {
+    await this.ensureSchema();
+    await executeRawSql(
+      this.runtime,
+      `UPDATE orchestrator_task_mailbox
+          SET delivery_state = 'delivered',
+              delivered_at = ${sqlQuote(isoNow())}
+        WHERE id = ${sqlQuote(messageId)}`,
+    );
+  }
+
+  async listTaskMailboxMessagesForThread(
+    threadId: string,
+  ): Promise<TaskMailboxMessageRecord[]> {
+    await this.ensureSchema();
+    const rows = await executeRawSql(
+      this.runtime,
+      `SELECT *
+         FROM orchestrator_task_mailbox
+        WHERE thread_id = ${sqlQuote(threadId)}
+        ORDER BY created_at ASC`,
+    );
+    return rows.map(parseTaskMailboxMessageRow);
+  }
+
+  async createTaskVerifierJob(
+    input: CreateTaskVerifierJobInput,
+  ): Promise<TaskVerifierJobRecord> {
+    await this.ensureSchema();
+    const id = input.id?.trim() || `verify-${crypto.randomUUID()}`;
+    const createdAt = input.createdAt ?? isoNow();
+    await executeRawSql(
+      this.runtime,
+      `INSERT INTO orchestrator_task_verifier_jobs (
+        id, thread_id, node_id, status, verifier_type, title, instructions,
+        config_json, metadata_json, created_at, started_at, completed_at
+      ) VALUES (
+        ${sqlQuote(id)},
+        ${sqlQuote(input.threadId)},
+        ${sqlQuote(input.nodeId)},
+        ${sqlQuote(input.status ?? "pending")},
+        ${sqlQuote(input.verifierType)},
+        ${sqlQuote(input.title)},
+        ${sqlQuote(input.instructions ?? "")},
+        ${sqlJson(input.config ?? {})},
+        ${sqlJson(input.metadata ?? {})},
+        ${sqlQuote(createdAt)},
+        ${sqlText(input.startedAt ?? null)},
+        ${sqlText(input.completedAt ?? null)}
+      )`,
+    );
+    await this.appendEvent({
+      threadId: input.threadId,
+      eventType: "verifier_job_created",
+      summary: `Created verifier job "${input.title}"`,
+      data: {
+        verifierJobId: id,
+        nodeId: input.nodeId,
+        verifierType: input.verifierType,
+        status: input.status ?? "pending",
+      },
+    });
+    const job = await this.getTaskVerifierJob(id);
+    if (!job) {
+      throw new Error(`Failed to create verifier job ${id}`);
+    }
+    return job;
+  }
+
+  async getTaskVerifierJob(
+    verifierJobId: string,
+  ): Promise<TaskVerifierJobRecord | null> {
+    await this.ensureSchema();
+    const rows = await executeRawSql(
+      this.runtime,
+      `SELECT *
+         FROM orchestrator_task_verifier_jobs
+        WHERE id = ${sqlQuote(verifierJobId)}
+        LIMIT 1`,
+    );
+    return rows[0] ? parseTaskVerifierJobRow(rows[0]) : null;
+  }
+
+  async updateTaskVerifierJob(
+    verifierJobId: string,
+    patch: UpdateTaskVerifierJobInput,
+  ): Promise<void> {
+    await this.ensureSchema();
+    const existing = await this.getTaskVerifierJob(verifierJobId);
+    if (!existing) return;
+    const nextMetadata = patch.metadata
+      ? { ...existing.metadata, ...patch.metadata }
+      : existing.metadata;
+    await executeRawSql(
+      this.runtime,
+      `UPDATE orchestrator_task_verifier_jobs
+          SET status = ${sqlQuote(patch.status ?? existing.status)},
+              title = ${sqlQuote(patch.title ?? existing.title)},
+              instructions = ${sqlQuote(
+                patch.instructions ?? existing.instructions,
+              )},
+              config_json = ${sqlJson(patch.config ?? existing.config)},
+              metadata_json = ${sqlJson(nextMetadata)},
+              started_at = ${sqlText(
+                patch.startedAt !== undefined
+                  ? patch.startedAt
+                  : existing.startedAt,
+              )},
+              completed_at = ${sqlText(
+                patch.completedAt !== undefined
+                  ? patch.completedAt
+                  : existing.completedAt,
+              )}
+        WHERE id = ${sqlQuote(verifierJobId)}`,
+    );
+  }
+
+  async listTaskVerifierJobsForThread(
+    threadId: string,
+  ): Promise<TaskVerifierJobRecord[]> {
+    await this.ensureSchema();
+    const rows = await executeRawSql(
+      this.runtime,
+      `SELECT *
+         FROM orchestrator_task_verifier_jobs
+        WHERE thread_id = ${sqlQuote(threadId)}
+        ORDER BY created_at ASC`,
+    );
+    return rows.map(parseTaskVerifierJobRow);
+  }
+
+  async recordTaskEvidence(
+    input: RecordTaskEvidenceInput,
+  ): Promise<TaskEvidenceRecord> {
+    await this.ensureSchema();
+    const id = input.id?.trim() || `evidence-${crypto.randomUUID()}`;
+    const createdAt = isoNow();
+    await executeRawSql(
+      this.runtime,
+      `INSERT INTO orchestrator_task_evidence (
+        id, thread_id, node_id, session_id, verifier_job_id, evidence_type, title,
+        summary, path, uri, content_json, metadata_json, created_at
+      ) VALUES (
+        ${sqlQuote(id)},
+        ${sqlQuote(input.threadId)},
+        ${sqlText(input.nodeId ?? null)},
+        ${sqlText(input.sessionId ?? null)},
+        ${sqlText(input.verifierJobId ?? null)},
+        ${sqlQuote(input.evidenceType)},
+        ${sqlQuote(input.title)},
+        ${sqlQuote(input.summary ?? "")},
+        ${sqlText(input.path ?? null)},
+        ${sqlText(input.uri ?? null)},
+        ${sqlJson(input.content ?? {})},
+        ${sqlJson(input.metadata ?? {})},
+        ${sqlQuote(createdAt)}
+      )`,
+    );
+    await this.appendEvent({
+      threadId: input.threadId,
+      sessionId: input.sessionId ?? null,
+      eventType: "task_evidence_recorded",
+      summary: `Recorded ${input.evidenceType} evidence`,
+      data: {
+        evidenceId: id,
+        nodeId: input.nodeId ?? null,
+        verifierJobId: input.verifierJobId ?? null,
+        title: input.title,
+      },
+    });
+    const evidence = await this.getTaskEvidence(id);
+    if (!evidence) {
+      throw new Error(`Failed to create task evidence ${id}`);
+    }
+    return evidence;
+  }
+
+  async getTaskEvidence(
+    evidenceId: string,
+  ): Promise<TaskEvidenceRecord | null> {
+    await this.ensureSchema();
+    const rows = await executeRawSql(
+      this.runtime,
+      `SELECT *
+         FROM orchestrator_task_evidence
+        WHERE id = ${sqlQuote(evidenceId)}
+        LIMIT 1`,
+    );
+    return rows[0] ? parseTaskEvidenceRow(rows[0]) : null;
+  }
+
+  async listTaskEvidenceForThread(
+    threadId: string,
+  ): Promise<TaskEvidenceRecord[]> {
+    await this.ensureSchema();
+    const rows = await executeRawSql(
+      this.runtime,
+      `SELECT *
+         FROM orchestrator_task_evidence
+        WHERE thread_id = ${sqlQuote(threadId)}
+        ORDER BY created_at ASC`,
+    );
+    return rows.map(parseTaskEvidenceRow);
+  }
+
   async getLastUsedRepo(): Promise<string | undefined> {
     await this.ensureSchema();
     const rows = await executeRawSql(
@@ -1775,7 +3107,9 @@ export class TaskRegistry {
     return rows.map(parseSessionRow);
   }
 
-  async listDecisionsForThread(threadId: string): Promise<TaskDecisionRecord[]> {
+  async listDecisionsForThread(
+    threadId: string,
+  ): Promise<TaskDecisionRecord[]> {
     const rows = await executeRawSql(
       this.runtime,
       `SELECT *
@@ -1841,7 +3175,9 @@ export class TaskRegistry {
     const thread = await this.getThreadRecord(threadId);
     if (!thread) return;
     if (thread.archivedAt) return;
-    const controlState = toText(thread.metadata.controlState).trim().toLowerCase();
+    const controlState = toText(thread.metadata.controlState)
+      .trim()
+      .toLowerCase();
 
     const sessions = await this.listSessionsForThread(threadId);
     const nowIso = isoNow();
@@ -1854,11 +3190,15 @@ export class TaskRegistry {
     const waitingOnUserCount = sessions.filter(
       (session) => session.status === "waiting_on_user",
     ).length;
-    const blockedCount = sessions.filter((session) => session.status === "blocked").length;
+    const blockedCount = sessions.filter(
+      (session) => session.status === "blocked",
+    ).length;
     const interruptedCount = sessions.filter((session) =>
       ["interrupted", "stopped"].includes(session.status),
     ).length;
-    const errorCount = sessions.filter((session) => session.status === "error").length;
+    const errorCount = sessions.filter(
+      (session) => session.status === "error",
+    ).length;
     const completedCount = sessions.filter(
       (session) => session.status === "completed",
     ).length;

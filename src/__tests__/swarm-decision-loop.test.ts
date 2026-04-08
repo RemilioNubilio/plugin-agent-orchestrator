@@ -5,16 +5,14 @@
  * and the out-of-scope path escalation guard.
  */
 
-import { beforeEach, describe, expect, it, jest } from "bun:test";
+import { describe, expect, it, jest } from "bun:test";
 
 const {
   POST_SEND_COOLDOWN_MS,
   handleBlocked,
   handleTurnComplete,
   executeDecision,
-} = await import(
-  "../services/swarm-decision-loop.js"
-);
+} = await import("../services/swarm-decision-loop.js");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -26,10 +24,7 @@ function createMockCtx(overrides: Record<string, unknown> = {}) {
       useModel: jest
         .fn()
         .mockImplementation(
-          async (
-            _modelType: string,
-            options?: { prompt?: string },
-          ) => {
+          async (_modelType: string, options?: { prompt?: string }) => {
             if (options?.prompt?.includes("Return strict JSON only")) {
               return '{"verdict":"pass","summary":"Validation confirmed the task is complete."}';
             }
@@ -93,6 +88,11 @@ function createMockCtx(overrides: Record<string, unknown> = {}) {
       }),
       appendEvent: jest.fn().mockResolvedValue(undefined),
       recordArtifact: jest.fn().mockResolvedValue(undefined),
+      createTaskVerifierJob: jest.fn().mockResolvedValue({
+        id: "verify-1",
+      }),
+      updateTaskVerifierJob: jest.fn().mockResolvedValue(undefined),
+      recordTaskEvidence: jest.fn().mockResolvedValue(undefined),
       updateThreadSummary: jest.fn().mockResolvedValue(undefined),
     },
     broadcast: jest.fn(),
@@ -106,6 +106,7 @@ function createTaskCtx(overrides: Record<string, unknown> = {}) {
   return {
     sessionId: "s-1",
     threadId: "thread-1",
+    taskNodeId: "node-1",
     agentType: "claude",
     label: "test-agent",
     originalTask: "Fix bug",
@@ -221,7 +222,8 @@ describe("handleBlocked", () => {
 
     await handleBlocked(ctx as never, "s-1", taskCtx as never, {
       promptInfo: {
-        prompt: "The page is accessible. Should I open the page in a new tab instead?",
+        prompt:
+          "The page is accessible. Should I open the page in a new tab instead?",
         type: "unknown",
         canAutoRespond: false,
       },
@@ -293,8 +295,7 @@ describe("handleBlocked", () => {
       "s-1",
       expect.stringContaining("outside your workspace"),
     );
-    const lastDecision =
-      taskCtx.decisions[taskCtx.decisions.length - 1];
+    const lastDecision = taskCtx.decisions[taskCtx.decisions.length - 1];
     expect(lastDecision.decision).toBe("respond");
     expect(lastDecision.reasoning).toContain("Declined out-of-scope");
 
@@ -443,10 +444,7 @@ describe("handleBlocked", () => {
       bufferedTurnComplete,
     );
 
-    expect(ctx.ptyService.sendToSession.mock.calls[1]).toEqual([
-      "s-1",
-      "y",
-    ]);
+    expect(ctx.ptyService.sendToSession.mock.calls[1]).toEqual(["s-1", "y"]);
   });
 });
 
@@ -520,7 +518,8 @@ describe("executeDecision", () => {
           return JSON.stringify({
             verdict: "revise",
             summary: "Tests and verification evidence are still missing.",
-            followUpPrompt: "Run the full test suite, verify the output, and report the evidence.",
+            followUpPrompt:
+              "Run the full test suite, verify the output, and report the evidence.",
           });
         }
         return '{"action":"respond","response":"y","reasoning":"Approve"}';

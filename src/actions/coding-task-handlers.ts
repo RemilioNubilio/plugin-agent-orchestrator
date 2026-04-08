@@ -17,6 +17,8 @@ import {
   type State,
 } from "@elizaos/core";
 import type { AgentCredentials, ApprovalPreset } from "coding-agent-adapters";
+import type { AgentSelectionStrategy } from "../services/agent-selection.js";
+import { readConfigEnvKey } from "../services/config-env.js";
 import type { PTYService } from "../services/pty-service.js";
 import { getCoordinator } from "../services/pty-service.js";
 import {
@@ -26,14 +28,12 @@ import {
   type SessionInfo,
   toPiCommand,
 } from "../services/pty-types.js";
-import { readConfigEnvKey } from "../services/config-env.js";
-import type { CodingWorkspaceService } from "../services/workspace-service.js";
-import type { AgentSelectionStrategy } from "../services/agent-selection.js";
 import { withTrajectoryContext } from "../services/trajectory-context.js";
 import {
   formatPastExperience,
   queryPastExperience,
 } from "../services/trajectory-feedback.js";
+import type { CodingWorkspaceService } from "../services/workspace-service.js";
 import {
   createScratchDir,
   generateLabel,
@@ -46,9 +46,21 @@ const MAX_CONCURRENT_AGENTS = 8;
 
 /** Known agent type prefixes used in "agentType:task" spec format. */
 const KNOWN_AGENT_PREFIXES = [
-  "claude", "claude-code", "claudecode", "codex", "openai",
-  "gemini", "google", "aider", "pi", "pi-ai", "piai",
-  "pi-coding-agent", "picodingagent", "shell", "bash",
+  "claude",
+  "claude-code",
+  "claudecode",
+  "codex",
+  "openai",
+  "gemini",
+  "google",
+  "aider",
+  "pi",
+  "pi-ai",
+  "piai",
+  "pi-coding-agent",
+  "picodingagent",
+  "shell",
+  "bash",
 ] as const;
 
 /**
@@ -112,9 +124,7 @@ async function generateSwarmContext(
   subtasks: string[],
   userRequest: string,
 ): Promise<string> {
-  const taskList = subtasks
-    .map((t, i) => `  ${i + 1}. ${t}`)
-    .join("\n");
+  const taskList = subtasks.map((t, i) => `  ${i + 1}. ${t}`).join("\n");
 
   const prompt =
     `You are an AI orchestrator about to launch ${subtasks.length} parallel agents. ` +
@@ -247,10 +257,12 @@ export async function handleMultiAgent(
   // Planning phase: generate shared context brief for multi-agent coordination.
   // Strip agent-type prefixes from specs to get clean subtask descriptions.
   const cleanSubtasks = agentSpecs.map(stripAgentPrefix);
-  const userRequest = (message.content as { text?: string })?.text ?? agentsParam;
-  const swarmContext = agentSpecs.length > 1
-    ? await generateSwarmContext(runtime, cleanSubtasks, userRequest)
-    : "";
+  const userRequest =
+    (message.content as { text?: string })?.text ?? agentsParam;
+  const swarmContext =
+    agentSpecs.length > 1
+      ? await generateSwarmContext(runtime, cleanSubtasks, userRequest)
+      : "";
 
   // Store swarm context on coordinator for use in decision prompts
   if (swarmContext) {
@@ -314,11 +326,7 @@ export async function handleMultiAgent(
         metadata: evalMetadata.metadata,
       })
     : null;
-
-  for (const [i, spec] of agentSpecs.entries()) {
-    // Parse optional "agentType:task" prefix.
-    // In fixed mode, ignore LLM-chosen prefixes — all agents use the
-    // configured default. Only ranked mode allows per-subtask overrides.
+  const plannedAgents = agentSpecs.map((spec, i) => {
     let specAgentType = defaultAgentType;
     let specPiRequested = isPiAgentType(rawAgentType);
     let specRequestedType = rawAgentType;
@@ -336,15 +344,52 @@ export async function handleMultiAgent(
         specAgentType = normalizeAgentType(prefix);
         specTask = spec.slice(colonIdx + 1).trim();
       }
-    } else if (ctx.agentSelectionStrategy === "fixed" && colonIdx > 0 && colonIdx < 20) {
-      // Strip the prefix from the task text but keep the default agent type
+    } else if (
+      ctx.agentSelectionStrategy === "fixed" &&
+      colonIdx > 0 &&
+      colonIdx < 20
+    ) {
       specTask = stripAgentPrefix(spec);
     }
 
-    // Generate label for this specific agent
     const specLabel = explicitLabel
       ? `${explicitLabel}-${i + 1}`
       : generateLabel(repo, specTask);
+
+    return {
+      specAgentType,
+      specPiRequested,
+      specRequestedType,
+      specTask,
+      specLabel,
+    };
+  });
+
+  const graphPlan =
+    coordinator && taskThread
+      ? await coordinator.planTaskThreadGraph({
+          threadId: taskThread.id,
+          title: threadTitle,
+          originalRequest: userRequest,
+          sharedContext: swarmContext || undefined,
+          subtasks: plannedAgents.map((agent) => ({
+            label: agent.specLabel,
+            originalTask: agent.specTask,
+            agentType: agent.specAgentType,
+            repo,
+          })),
+        })
+      : null;
+
+  for (const [i, plannedAgent] of plannedAgents.entries()) {
+    const {
+      specAgentType,
+      specPiRequested,
+      specRequestedType,
+      specTask,
+      specLabel,
+    } = plannedAgent;
+    const taskNodeId = graphPlan?.workerNodes[i]?.id;
 
     try {
       // Provision workspace (each agent gets its own clone or scratch dir)
@@ -385,17 +430,21 @@ export async function handleMultiAgent(
       const taskWithContext = swarmContext
         ? `${specTask}\n\n--- Shared Context (from project planning) ---\n${swarmContext}\n--- End Shared Context ---`
         : specTask;
-      const initialTask = specPiRequested ? toPiCommand(taskWithContext) : taskWithContext;
+      const initialTask = specPiRequested
+        ? toPiCommand(taskWithContext)
+        : taskWithContext;
       const displayType = specPiRequested ? "pi" : specAgentType;
 
       // Append swarm coordination instructions to agent memory so the agent
       // knows to surface design decisions explicitly for the orchestrator.
-      const swarmMemory = agentSpecs.length > 1 && swarmContext
-        ? buildSwarmMemoryInstructions(specLabel, specTask, cleanSubtasks, i)
-        : undefined;
-      const agentMemory = [memoryContent, swarmMemory, pastExperienceBlock]
-        .filter(Boolean)
-        .join("\n\n") || undefined;
+      const swarmMemory =
+        agentSpecs.length > 1 && swarmContext
+          ? buildSwarmMemoryInstructions(specLabel, specTask, cleanSubtasks, i)
+          : undefined;
+      const agentMemory =
+        [memoryContent, swarmMemory, pastExperienceBlock]
+          .filter(Boolean)
+          .join("\n\n") || undefined;
 
       const session: SessionInfo = await ptyService.spawnSession({
         name: `coding-${Date.now()}-${i}`,
@@ -413,6 +462,7 @@ export async function handleMultiAgent(
           : {}),
         metadata: {
           threadId: taskThread?.id,
+          taskNodeId,
           requestedType: specRequestedType,
           messageId: message.id,
           userId: (message as unknown as Record<string, unknown>).userId,
@@ -437,6 +487,7 @@ export async function handleMultiAgent(
       if (coordinator && specTask) {
         await coordinator.registerTask(session.id, {
           threadId: taskThread?.id ?? session.id,
+          taskNodeId,
           agentType: specAgentType,
           label: specLabel,
           originalTask: specTask,

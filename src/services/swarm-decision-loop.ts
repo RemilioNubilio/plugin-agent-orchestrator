@@ -19,19 +19,14 @@ import type {
 import {
   buildBlockedEventMessage,
   buildCoordinationPrompt,
-  buildTurnCompleteEventMessage,
   buildTurnCompletePrompt,
   type CoordinationLLMResponse,
   type DecisionHistoryEntry,
   parseCoordinationResponse,
-  type SharedDecision,
   type SiblingTaskSummary,
   type TaskContextSummary,
 } from "./swarm-coordinator-prompts.js";
-import {
-  classifyEventTier,
-  type TriageContext,
-} from "./swarm-event-triage.js";
+import { classifyEventTier, type TriageContext } from "./swarm-event-triage.js";
 import { validateTaskCompletion } from "./task-validation.js";
 import { withTrajectoryContext } from "./trajectory-context.js";
 
@@ -41,12 +36,25 @@ import { withTrajectoryContext } from "./trajectory-context.js";
 const DECISION_CB_TIMEOUT_MS = 30_000;
 
 /** Wrap a promise with a timeout. Rejects with an error if not resolved in time. */
-function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  label: string,
+): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    const timer = setTimeout(
+      () => reject(new Error(`${label} timed out after ${ms}ms`)),
+      ms,
+    );
     promise.then(
-      (val) => { clearTimeout(timer); resolve(val); },
-      (err) => { clearTimeout(timer); reject(err); },
+      (val) => {
+        clearTimeout(timer);
+        resolve(val);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
     );
   });
 }
@@ -60,7 +68,10 @@ const MAX_AUTO_RESPONSES = 10;
  * to give the agent time to process the input before re-assessment.
  */
 export const POST_SEND_COOLDOWN_MS = 15_000;
-const deferredTurnCompleteTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const deferredTurnCompleteTimers = new Map<
+  string,
+  ReturnType<typeof setTimeout>
+>();
 
 /** Clear all deferred turn-complete timers (used during coordinator shutdown). */
 export function clearDeferredTurnCompleteTimers(): void {
@@ -392,7 +403,9 @@ export function checkAllTasksComplete(ctx: SwarmCoordinatorContext): void {
     parts.push(`${errored.length} errored`);
   }
 
-  ctx.log(`checkAllTasksComplete: all ${tasks.length} tasks terminal (${parts.join(", ")}) — firing swarm_complete`);
+  ctx.log(
+    `checkAllTasksComplete: all ${tasks.length} tasks terminal (${parts.join(", ")}) — firing swarm_complete`,
+  );
 
   ctx.broadcast({
     type: "swarm_complete",
@@ -417,7 +430,9 @@ export function checkAllTasksComplete(ctx: SwarmCoordinatorContext): void {
   };
 
   if (swarmCompleteCb) {
-    ctx.log("checkAllTasksComplete: swarm complete callback is wired — calling synthesis");
+    ctx.log(
+      "checkAllTasksComplete: swarm complete callback is wired — calling synthesis",
+    );
     const taskSummaries = tasks.map((t) => {
       // Fold in shared decisions relevant to this task so the synthesis
       // prompt includes the agent's actual findings, not just PR URLs.
@@ -451,11 +466,15 @@ export function checkAllTasksComplete(ctx: SwarmCoordinatorContext): void {
       DECISION_CB_TIMEOUT_MS,
       "swarmCompleteCb",
     ).catch((err) => {
-      ctx.log(`Swarm complete callback failed: ${err} — falling back to generic summary`);
+      ctx.log(
+        `Swarm complete callback failed: ${err} — falling back to generic summary`,
+      );
       sendFallbackSummary();
     });
   } else {
-    ctx.log("checkAllTasksComplete: no synthesis callback — sending generic message");
+    ctx.log(
+      "checkAllTasksComplete: no synthesis callback — sending generic message",
+    );
     sendFallbackSummary();
   }
 }
@@ -537,7 +556,9 @@ export async function executeDecision(
       } else if (decision.response !== undefined) {
         // Proactive injection: append unseen shared decisions to text responses
         const { response: enriched, snapshotIndex } = enrichWithSharedDecisions(
-          ctx, sessionId, decision.response,
+          ctx,
+          sessionId,
+          decision.response,
         );
         await ctx.ptyService.sendToSession(sessionId, enriched);
         // Only advance the high-water mark after send succeeds — if the send
@@ -576,7 +597,9 @@ export async function executeDecision(
           data: { reasoning: decision.reasoning },
         });
         ctx.ptyService.stopSession(sessionId, /* force */ true).catch((err) => {
-          ctx.log(`Failed to stop session after LLM-detected completion: ${err}`);
+          ctx.log(
+            `Failed to stop session after LLM-detected completion: ${err}`,
+          );
         });
         break;
       }
@@ -604,6 +627,33 @@ export async function executeDecision(
           description: "validation",
         },
       });
+
+      const verifierJob = taskCtx.taskNodeId
+        ? await ctx.taskRegistry.createTaskVerifierJob({
+            threadId: taskCtx.threadId,
+            nodeId: taskCtx.taskNodeId,
+            status: "running",
+            verifierType: "task_completion",
+            title: `Validate ${taskCtx.label}`,
+            instructions: [
+              `Task: ${taskCtx.originalTask}`,
+              taskCtx.completionSummary
+                ? `Completion summary: ${taskCtx.completionSummary}`
+                : "",
+              decision.reasoning ? `Reasoning: ${decision.reasoning}` : "",
+            ]
+              .filter(Boolean)
+              .join("\n"),
+            config: {
+              sessionId,
+              agentType: taskCtx.agentType,
+            },
+            metadata: {
+              source: "swarm-decision-loop",
+            },
+            startedAt: new Date().toISOString(),
+          })
+        : null;
 
       const validation = await validateTaskCompletion(ctx, {
         sessionId,
@@ -636,16 +686,69 @@ export async function executeDecision(
           mimeType: artifact.mimeType ?? null,
           metadata: artifact.metadata ?? {},
         });
+        if (taskCtx.taskNodeId && verifierJob) {
+          await ctx.taskRegistry.recordTaskEvidence({
+            threadId: taskCtx.threadId,
+            nodeId: taskCtx.taskNodeId,
+            sessionId,
+            verifierJobId: verifierJob.id,
+            evidenceType: artifact.artifactType,
+            title: artifact.title,
+            summary: validation.summary,
+            path: artifact.path ?? null,
+            uri: artifact.uri ?? null,
+            content:
+              artifact.metadata &&
+              typeof artifact.metadata === "object" &&
+              !Array.isArray(artifact.metadata)
+                ? (artifact.metadata as Record<string, unknown>)
+                : {},
+            metadata: {
+              mimeType: artifact.mimeType ?? null,
+            },
+          });
+        }
       }
 
       if (validation.verdict !== "pass") {
         const followUpPrompt =
           validation.followUpPrompt?.trim() ||
           `Validation found the task incomplete. Continue working until this is resolved:\n\n${validation.summary}`;
-        const nextStatus = validation.verdict === "escalate" ? "blocked" : "active";
+        const nextStatus =
+          validation.verdict === "escalate" ? "blocked" : "active";
         taskCtx.status = nextStatus;
         await Promise.all([
           ctx.syncTaskContext(taskCtx),
+          verifierJob
+            ? ctx.taskRegistry.updateTaskVerifierJob(verifierJob.id, {
+                status: "failed",
+                completedAt: new Date().toISOString(),
+                metadata: {
+                  verdict: validation.verdict,
+                  summary: validation.summary,
+                },
+              })
+            : Promise.resolve(),
+          taskCtx.taskNodeId && verifierJob
+            ? ctx.taskRegistry.recordTaskEvidence({
+                threadId: taskCtx.threadId,
+                nodeId: taskCtx.taskNodeId,
+                sessionId,
+                verifierJobId: verifierJob.id,
+                evidenceType: "validation_summary",
+                title: `Validation ${validation.verdict} for ${taskCtx.label}`,
+                summary: validation.summary,
+                content: {
+                  followUpPrompt:
+                    validation.verdict === "revise" ? followUpPrompt : null,
+                  reportPath: validation.reportPath || null,
+                  verdict: validation.verdict,
+                },
+                metadata: {
+                  source: "task-validation",
+                },
+              })
+            : Promise.resolve(),
           ctx.taskRegistry.appendEvent({
             threadId: taskCtx.threadId,
             sessionId,
@@ -690,6 +793,34 @@ export async function executeDecision(
       taskCtx.status = "completed";
       await Promise.all([
         ctx.syncTaskContext(taskCtx),
+        verifierJob
+          ? ctx.taskRegistry.updateTaskVerifierJob(verifierJob.id, {
+              status: "passed",
+              completedAt: new Date().toISOString(),
+              metadata: {
+                summary: validation.summary,
+                reportPath: validation.reportPath || null,
+              },
+            })
+          : Promise.resolve(),
+        taskCtx.taskNodeId && verifierJob
+          ? ctx.taskRegistry.recordTaskEvidence({
+              threadId: taskCtx.threadId,
+              nodeId: taskCtx.taskNodeId,
+              sessionId,
+              verifierJobId: verifierJob.id,
+              evidenceType: "validation_summary",
+              title: `Validation passed for ${taskCtx.label}`,
+              summary: validation.summary,
+              content: {
+                completionSummary: taskCtx.completionSummary,
+                reportPath: validation.reportPath || null,
+              },
+              metadata: {
+                source: "task-validation",
+              },
+            })
+          : Promise.resolve(),
         ctx.taskRegistry.updateThreadSummary(
           taskCtx.threadId,
           taskCtx.completionSummary,
@@ -718,19 +849,23 @@ export async function executeDecision(
       ]);
 
       // Log to persistent history (non-blocking but observed)
-      (ctx as { history?: { append: (e: unknown) => Promise<void> } }).history?.append({
-        timestamp: Date.now(),
-        type: "task_completed",
-        sessionId,
-        label: taskCtx.label,
-        agentType: taskCtx.agentType,
-        repo: taskCtx.repo,
-        workdir: taskCtx.workdir,
-        completionSummary: taskCtx.completionSummary,
-        validationSummary: validation.summary,
-      }).catch((err) => {
-        ctx.log(`Failed to persist task completion for "${taskCtx.label}" (${sessionId}): ${err}`);
-      });
+      (ctx as { history?: { append: (e: unknown) => Promise<void> } }).history
+        ?.append({
+          timestamp: Date.now(),
+          type: "task_completed",
+          sessionId,
+          label: taskCtx.label,
+          agentType: taskCtx.agentType,
+          repo: taskCtx.repo,
+          workdir: taskCtx.workdir,
+          completionSummary: taskCtx.completionSummary,
+          validationSummary: validation.summary,
+        })
+        .catch((err) => {
+          ctx.log(
+            `Failed to persist task completion for "${taskCtx.label}" (${sessionId}): ${err}`,
+          );
+        });
 
       ctx.broadcast({
         type: "task_complete",
@@ -935,11 +1070,15 @@ export async function handleBlocked(
   const promptFingerprint = promptText.slice(0, 200);
   if (ctx.inFlightDecisions.has(sessionId)) {
     if (ctx.lastBlockedPromptFingerprint.get(sessionId) === promptFingerprint) {
-      ctx.log(`Skipping duplicate blocked event for ${taskCtx.label} (decision in-flight, same prompt)`);
+      ctx.log(
+        `Skipping duplicate blocked event for ${taskCtx.label} (decision in-flight, same prompt)`,
+      );
       return;
     }
     // Different prompt — buffer it so it's replayed after the current decision completes.
-    ctx.log(`New blocked prompt for ${taskCtx.label} while decision in-flight — buffering`);
+    ctx.log(
+      `New blocked prompt for ${taskCtx.label} while decision in-flight — buffering`,
+    );
     ctx.pendingBlocked.set(sessionId, data);
     ctx.lastBlockedPromptFingerprint.set(sessionId, promptFingerprint);
     return;
@@ -984,11 +1123,25 @@ export async function handleBlocked(
   // Route based on supervision level
   switch (ctx.getSupervisionLevel()) {
     case "autonomous":
-      await handleAutonomousDecision(ctx, sessionId, taskCtx, promptText, "", eventData.promptInfo?.type);
+      await handleAutonomousDecision(
+        ctx,
+        sessionId,
+        taskCtx,
+        promptText,
+        "",
+        eventData.promptInfo?.type,
+      );
       break;
 
     case "confirm":
-      await handleConfirmDecision(ctx, sessionId, taskCtx, promptText, "", eventData.promptInfo?.type);
+      await handleConfirmDecision(
+        ctx,
+        sessionId,
+        taskCtx,
+        promptText,
+        "",
+        eventData.promptInfo?.type,
+      );
       break;
 
     case "notify":
@@ -1022,7 +1175,9 @@ export async function handleTurnComplete(
   // buffer the task_complete event so it's processed when the lock releases.
   // Without this, task_complete events are silently lost and sessions hang.
   if (ctx.inFlightDecisions.has(sessionId)) {
-    ctx.log(`Buffering turn-complete for ${sessionId} (in-flight decision running)`);
+    ctx.log(
+      `Buffering turn-complete for ${sessionId} (in-flight decision running)`,
+    );
     ctx.pendingTurnComplete.set(sessionId, data);
     return;
   }
@@ -1052,14 +1207,16 @@ export async function handleTurnComplete(
             currentTask,
             pendingData,
           ).catch((err) => {
-            ctx.log(`Deferred turn-complete replay failed for ${sessionId}: ${err}`);
+            ctx.log(
+              `Deferred turn-complete replay failed for ${sessionId}: ${err}`,
+            );
           });
         }, delayMs);
         deferredTurnCompleteTimers.set(sessionId, timer);
       }
       ctx.log(
         `Suppressing turn-complete for "${taskCtx.label}" — ` +
-        `${Math.round(elapsed / 1000)}s since last input (cooldown ${POST_SEND_COOLDOWN_MS / 1000}s)`,
+          `${Math.round(elapsed / 1000)}s since last input (cooldown ${POST_SEND_COOLDOWN_MS / 1000}s)`,
       );
       return;
     }
@@ -1162,7 +1319,8 @@ export async function handleTurnComplete(
       );
       decision = {
         action: "escalate",
-        reasoning: "All decision paths returned invalid response — escalating for human review",
+        reasoning:
+          "All decision paths returned invalid response — escalating for human review",
       };
     }
 
@@ -1304,7 +1462,9 @@ export async function handleAutonomousDecision(
           );
           if (decision) decisionFromPipeline = true;
         } catch (err) {
-          ctx.log(`Agent decision callback failed: ${err} — falling back to small LLM`);
+          ctx.log(
+            `Agent decision callback failed: ${err} — falling back to small LLM`,
+          );
         }
       }
 
@@ -1481,7 +1641,9 @@ export async function handleConfirmDecision(
           );
           if (decision) decisionFromPipeline = true;
         } catch (err) {
-          ctx.log(`Agent decision callback failed (confirm): ${err} — falling back to small LLM`);
+          ctx.log(
+            `Agent decision callback failed (confirm): ${err} — falling back to small LLM`,
+          );
         }
       }
 
@@ -1505,7 +1667,8 @@ export async function handleConfirmDecision(
         recentOutput: output,
         llmDecision: {
           action: "escalate",
-          reasoning: "All decision paths returned invalid response — needs human review",
+          reasoning:
+            "All decision paths returned invalid response — needs human review",
         },
         taskContext: taskCtx,
         createdAt: Date.now(),
@@ -1516,7 +1679,10 @@ export async function handleConfirmDecision(
         threadId: taskCtx.threadId,
         promptText,
         recentOutput: output,
-        llmDecision: pendingDecision.llmDecision as unknown as Record<string, unknown>,
+        llmDecision: pendingDecision.llmDecision as unknown as Record<
+          string,
+          unknown
+        >,
         taskContext: taskCtx as unknown as Record<string, unknown>,
         createdAt: pendingDecision.createdAt,
       });

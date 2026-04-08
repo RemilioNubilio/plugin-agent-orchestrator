@@ -12,12 +12,12 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { SwarmCoordinator } from "../services/swarm-coordinator.js";
-import { discoverTaskShareOptions } from "../services/task-share.js";
+import { getTaskAgentFrameworkState } from "../services/task-agent-frameworks.js";
 import type {
   TaskThreadKind,
   TaskThreadStatus,
 } from "../services/task-registry.js";
-import { getTaskAgentFrameworkState } from "../services/task-agent-frameworks.js";
+import { discoverTaskShareOptions } from "../services/task-share.js";
 import type { RouteContext } from "./routes.js";
 import { parseBody, sendError, sendJson } from "./routes.js";
 
@@ -99,7 +99,10 @@ export async function handleCoordinatorRoutes(
     // Only return active tasks — stopped/completed/error are terminal states
     // and should not appear in the UI after refresh.
     const tasks = allTasks.filter(
-      (t) => t.status !== "stopped" && t.status !== "completed" && t.status !== "error",
+      (t) =>
+        t.status !== "stopped" &&
+        t.status !== "completed" &&
+        t.status !== "error",
     );
     const recentTasks = allTasks
       .slice()
@@ -114,6 +117,7 @@ export async function handleCoordinatorRoutes(
       taskCount: tasks.length,
       tasks: tasks.map((t) => ({
         threadId: t.threadId,
+        taskNodeId: t.taskNodeId ?? null,
         sessionId: t.sessionId,
         agentType: t.agentType,
         label: t.label,
@@ -127,6 +131,7 @@ export async function handleCoordinatorRoutes(
       })),
       recentTasks: recentTasks.map((t) => ({
         threadId: t.threadId,
+        taskNodeId: t.taskNodeId ?? null,
         sessionId: t.sessionId,
         agentType: t.agentType,
         label: t.label,
@@ -154,6 +159,10 @@ export async function handleCoordinatorRoutes(
         latestRepo: thread.latestRepo,
         latestActivityAt: thread.latestActivityAt,
         decisionCount: thread.decisionCount,
+        nodeCount: thread.nodeCount,
+        completedNodeCount: thread.completedNodeCount,
+        verifierJobCount: thread.verifierJobCount,
+        evidenceCount: thread.evidenceCount,
         createdAt: thread.createdAt,
         updatedAt: thread.updatedAt,
         closedAt: thread.closedAt,
@@ -190,10 +199,10 @@ export async function handleCoordinatorRoutes(
     const createdBefore = url.searchParams.get("createdBefore") ?? undefined;
     const updatedAfter = url.searchParams.get("updatedAfter") ?? undefined;
     const updatedBefore = url.searchParams.get("updatedBefore") ?? undefined;
-    const latestActivityAfterRaw =
-      url.searchParams.get("latestActivityAfter");
-    const latestActivityBeforeRaw =
-      url.searchParams.get("latestActivityBefore");
+    const latestActivityAfterRaw = url.searchParams.get("latestActivityAfter");
+    const latestActivityBeforeRaw = url.searchParams.get(
+      "latestActivityBefore",
+    );
     const latestActivityAfter =
       latestActivityAfterRaw && Number.isFinite(Number(latestActivityAfterRaw))
         ? Number(latestActivityAfterRaw)
@@ -205,13 +214,13 @@ export async function handleCoordinatorRoutes(
         : undefined;
     const hasActiveSessionRaw = url.searchParams.get("hasActiveSession");
     const hasActiveSession =
-      hasActiveSessionRaw === null
-        ? undefined
-        : hasActiveSessionRaw === "true";
+      hasActiveSessionRaw === null ? undefined : hasActiveSessionRaw === "true";
     const search = url.searchParams.get("search") ?? undefined;
     const limitRaw = url.searchParams.get("limit");
     const limit =
-      limitRaw && Number.isFinite(Number(limitRaw)) ? Number(limitRaw) : undefined;
+      limitRaw && Number.isFinite(Number(limitRaw))
+        ? Number(limitRaw)
+        : undefined;
 
     const threads = await coordinator.listTaskThreads({
       includeArchived,
@@ -258,10 +267,10 @@ export async function handleCoordinatorRoutes(
     const createdBefore = url.searchParams.get("createdBefore") ?? undefined;
     const updatedAfter = url.searchParams.get("updatedAfter") ?? undefined;
     const updatedBefore = url.searchParams.get("updatedBefore") ?? undefined;
-    const latestActivityAfterRaw =
-      url.searchParams.get("latestActivityAfter");
-    const latestActivityBeforeRaw =
-      url.searchParams.get("latestActivityBefore");
+    const latestActivityAfterRaw = url.searchParams.get("latestActivityAfter");
+    const latestActivityBeforeRaw = url.searchParams.get(
+      "latestActivityBefore",
+    );
     const latestActivityAfter =
       latestActivityAfterRaw && Number.isFinite(Number(latestActivityAfterRaw))
         ? Number(latestActivityAfterRaw)
@@ -273,9 +282,7 @@ export async function handleCoordinatorRoutes(
         : undefined;
     const hasActiveSessionRaw = url.searchParams.get("hasActiveSession");
     const hasActiveSession =
-      hasActiveSessionRaw === null
-        ? undefined
-        : hasActiveSessionRaw === "true";
+      hasActiveSessionRaw === null ? undefined : hasActiveSessionRaw === "true";
     const search = url.searchParams.get("search") ?? undefined;
 
     const total = await coordinator.countTaskThreads({
@@ -328,7 +335,11 @@ export async function handleCoordinatorRoutes(
   const archiveMatch = subPath.match(/^\/threads\/([^/]+)\/archive$/);
   if (method === "POST" && archiveMatch) {
     await coordinator.archiveTaskThread(archiveMatch[1]);
-    sendJson(res, { success: true, threadId: archiveMatch[1], status: "archived" });
+    sendJson(res, {
+      success: true,
+      threadId: archiveMatch[1],
+      status: "archived",
+    });
     return true;
   }
 
@@ -388,7 +399,9 @@ export async function handleCoordinatorRoutes(
     } catch (error) {
       sendError(
         res,
-        error instanceof Error ? error.message : "Failed to control task thread",
+        error instanceof Error
+          ? error.message
+          : "Failed to control task thread",
         500,
       );
     }
