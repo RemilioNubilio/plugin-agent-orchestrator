@@ -22,6 +22,7 @@ import {
   type WorkerSessionHandle,
 } from "pty-manager";
 import { captureTaskResponse } from "./ansi-utils.js";
+import type { CompletionMethod } from "./agent-metrics.js";
 import type { PTYServiceConfig } from "./pty-types.js";
 
 // Resolve absolute path to coding-agent-adapters so the Node worker process
@@ -51,7 +52,11 @@ export interface InitContext {
   sessionOutputBuffers: Map<string, string[]>;
   taskResponseMarkers: Map<string, number>;
   metricsTracker: {
-    recordCompletion(type: string, method: string, durationMs: number): void;
+    recordCompletion(
+      type: string,
+      method: CompletionMethod,
+      durationMs: number,
+    ): void;
   };
   traceEntries: Array<string | Record<string, unknown>>;
   maxTraceEntries: number;

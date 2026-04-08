@@ -70,7 +70,7 @@ function getTrajectoryLogger(runtime: IAgentRuntime): TrajectoryLoggerRef | null
 
   // Try getService first (direct lookup)
   if (typeof runtimeAny.getService === "function") {
-    const svc = runtimeAny.getService("trajectory_logger");
+    const svc = runtimeAny.getService("trajectories");
     if (svc && typeof svc === "object" && hasListMethod(svc)) {
       return svc as TrajectoryLoggerRef;
     }
@@ -78,7 +78,7 @@ function getTrajectoryLogger(runtime: IAgentRuntime): TrajectoryLoggerRef | null
 
   // Fallback: getServicesByType
   if (typeof runtimeAny.getServicesByType === "function") {
-    const services = runtimeAny.getServicesByType("trajectory_logger");
+    const services = runtimeAny.getServicesByType("trajectories");
     if (Array.isArray(services)) {
       for (const svc of services) {
         if (svc && typeof svc === "object" && hasListMethod(svc)) {

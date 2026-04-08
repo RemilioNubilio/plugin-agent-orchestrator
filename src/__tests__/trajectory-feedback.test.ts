@@ -95,7 +95,7 @@ describe("trajectory-feedback", () => {
     it("returns empty array when no trajectories found", async () => {
       const mockRuntime = {
         getService: (type: string) => {
-          if (type === "trajectory_logger") {
+          if (type === "trajectories") {
             return {
               listTrajectories: async () => ({
                 trajectories: [],
@@ -115,7 +115,7 @@ describe("trajectory-feedback", () => {
     it("extracts DECISION markers from trajectory responses", async () => {
       const mockRuntime = {
         getService: (type: string) => {
-          if (type === "trajectory_logger") {
+          if (type === "trajectories") {
             return {
               listTrajectories: async () => ({
                 trajectories: [
@@ -172,7 +172,7 @@ describe("trajectory-feedback", () => {
     it("extracts explicit DECISION: markers", async () => {
       const mockRuntime = {
         getService: (type: string) => {
-          if (type === "trajectory_logger") {
+          if (type === "trajectories") {
             return {
               listTrajectories: async () => ({
                 trajectories: [
@@ -225,7 +225,7 @@ describe("trajectory-feedback", () => {
     it("deduplicates identical insights", async () => {
       const mockRuntime = {
         getService: (type: string) => {
-          if (type === "trajectory_logger") {
+          if (type === "trajectories") {
             return {
               listTrajectories: async () => ({
                 trajectories: [
@@ -278,7 +278,7 @@ describe("trajectory-feedback", () => {
     it("handles errors gracefully", async () => {
       const mockRuntime = {
         getService: (type: string) => {
-          if (type === "trajectory_logger") {
+          if (type === "trajectories") {
             return {
               listTrajectories: async () => {
                 throw new Error("DB connection failed");

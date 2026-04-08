@@ -148,7 +148,7 @@ describe("validateTaskCompletion", () => {
         );
       }),
       getService: jest.fn((name: string) =>
-        name === "trajectory_logger"
+        name === "trajectories"
           ? {
               listTrajectories: jest.fn().mockResolvedValue({
                 trajectories: [
@@ -522,7 +522,7 @@ describe("validateTaskCompletion", () => {
         );
       }),
       getService: jest.fn((name: string) =>
-        name === "trajectory_logger"
+        name === "trajectories"
           ? {
               listTrajectories: jest.fn().mockResolvedValue({
                 trajectories: [

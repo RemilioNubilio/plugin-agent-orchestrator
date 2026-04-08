@@ -230,7 +230,7 @@ async function listRelevantTrajectories(
   task: TaskContext,
   thread: TaskThreadDetail | null,
 ): Promise<TrajectoryListItem[]> {
-  const logger = runtime.getService("trajectory_logger") as
+  const logger = runtime.getService("trajectories") as
     | TrajectoryLoggerLike
     | null
     | undefined;

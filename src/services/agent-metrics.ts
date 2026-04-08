@@ -11,10 +11,16 @@ export interface AgentMetrics {
   completed: number;
   completedViaFastPath: number;
   completedViaClassifier: number;
+  completedViaOutputReconcile: number;
   stallCount: number;
   avgCompletionMs: number;
   totalCompletionMs: number;
 }
+
+export type CompletionMethod =
+  | "fast-path"
+  | "classifier"
+  | "output-reconcile";
 
 export class AgentMetricsTracker {
   private metrics: Map<string, AgentMetrics> = new Map();
@@ -28,6 +34,7 @@ export class AgentMetricsTracker {
         completed: 0,
         completedViaFastPath: 0,
         completedViaClassifier: 0,
+        completedViaOutputReconcile: 0,
         stallCount: 0,
         avgCompletionMs: 0,
         totalCompletionMs: 0,
@@ -40,13 +47,14 @@ export class AgentMetricsTracker {
   /** Record a task completion and update rolling average duration. */
   recordCompletion(
     agentType: string,
-    method: "fast-path" | "classifier",
+    method: CompletionMethod,
     durationMs: number,
   ): void {
     const m = this.get(agentType);
     m.completed++;
     if (method === "fast-path") m.completedViaFastPath++;
-    else m.completedViaClassifier++;
+    else if (method === "classifier") m.completedViaClassifier++;
+    else m.completedViaOutputReconcile++;
     m.totalCompletionMs += durationMs;
     m.avgCompletionMs = Math.round(m.totalCompletionMs / m.completed);
   }
