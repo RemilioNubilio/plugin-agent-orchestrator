@@ -402,7 +402,16 @@ export async function handleMultiAgent(
           (approvalPreset as ApprovalPreset | undefined) ??
           ptyService.defaultApprovalPreset,
         customCredentials,
-        ...(coordinator ? { skipAdapterAutoResponse: true } : {}),
+        // NOTE: skipAdapterAutoResponse was removed here. When enabled, the
+        // swarm coordinator takes over task delivery to the PTY — but it races
+        // with its own idle watchdog, which evaluates session state BEFORE the
+        // task text is sent. Result: sessions get marked "interrupted" and
+        // killed before the agent ever receives its instructions. 28/28
+        // sessions showed "interrupted" in production (milady Apr 8 2026).
+        // Letting the adapter handle delivery via its simpler session_ready →
+        // send-task flow avoids the race entirely. The coordinator still
+        // monitors, records decisions, and tracks lifecycle — it just doesn't
+        // own the initial task delivery anymore.
         metadata: {
           threadId: taskThread?.id,
           requestedType: specRequestedType,
