@@ -7,7 +7,10 @@
  * @module services/pty-init
  */
 
+import { existsSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
+import os from "node:os";
+import path from "node:path";
 import { createAllAdapters } from "coding-agent-adapters";
 import {
   BunCompatiblePTYManager,
@@ -35,6 +38,41 @@ try {
   resolvedAdapterModule = _require.resolve("coding-agent-adapters");
 } catch {
   // Fallback to bare specifier if resolve fails (shouldn't happen)
+}
+
+function resolveNodeWorkerPath(): string {
+  const explicitCandidates = [
+    process.env.NODE,
+    process.env.NODE_BINARY,
+    "/opt/homebrew/bin/node",
+    "/usr/local/bin/node",
+  ].filter((value): value is string => Boolean(value?.trim()));
+
+  for (const candidate of explicitCandidates) {
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  const nvmVersionsDir = path.join(os.homedir(), ".nvm", "versions", "node");
+  if (existsSync(nvmVersionsDir)) {
+    const versions = readdirSync(nvmVersionsDir)
+      .filter((entry) => entry.startsWith("v"))
+      .sort((a, b) =>
+        b.localeCompare(a, undefined, {
+          numeric: true,
+          sensitivity: "base",
+        }),
+      );
+    for (const version of versions) {
+      const candidate = path.join(nvmVersionsDir, version, "bin", "node");
+      if (existsSync(candidate)) {
+        return candidate;
+      }
+    }
+  }
+
+  return "node";
 }
 
 /**
@@ -129,6 +167,7 @@ export async function initializePTYManager(
     ctx.log(`Resolved adapter module: ${resolvedAdapterModule}`);
     const bunManager = new BunCompatiblePTYManager({
       adapterModules: [resolvedAdapterModule],
+      nodePath: resolveNodeWorkerPath(),
       stallDetectionEnabled: true,
       stallTimeoutMs: 4000,
       onStallClassify: async (

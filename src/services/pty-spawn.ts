@@ -272,7 +272,7 @@ export function setupDeferredTaskDelivery(
       }
     }, READY_TIMEOUT_MS);
 
-    if (ctx.usingBunWorker && isAdapterBackedAgent) {
+    if (ctx.usingBunWorker && isAdapterBackedAgent && adapter) {
       readyProbe = setInterval(() => {
         if (taskSent) return;
         const buffer = ctx.sessionOutputBuffers.get(sid);

@@ -1,19 +1,12 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import type { AgentRuntime } from "@elizaos/core";
+import { createTestRuntime } from "../../../../test/helpers/pglite-runtime";
 import { TaskRegistry } from "../services/task-registry.js";
 
-// TODO: This integration test requires a pglite test runtime helper
-// (`test/helpers/pglite-runtime`) that is not present in the repo. The test
-// was added in commit 989c14d but the helper module was never committed.
-// Skipping until the helper is restored or the test is rewritten with mocks.
-// biome-ignore lint/suspicious/noExplicitAny: stub for missing helper
-const createTestRuntime: any = async () => {
-  throw new Error(
-    "createTestRuntime helper is missing — see test/helpers/pglite-runtime",
-  );
-};
-
-describe.skip("TaskRegistry", () => {
+describe("TaskRegistry", () => {
   let runtime: AgentRuntime;
   let cleanup: () => Promise<void>;
   let registry: TaskRegistry;
@@ -103,7 +96,9 @@ describe.skip("TaskRegistry", () => {
       true,
     );
 
-    const searchResults = await registry.listThreads({ search: "validation evidence" });
+    const searchResults = await registry.listThreads({
+      search: "validation evidence",
+    });
     expect(searchResults.map((entry) => entry.id)).toContain(thread.id);
   });
 
@@ -190,4 +185,104 @@ describe.skip("TaskRegistry", () => {
     await reloadedRegistry.deletePendingDecision("session-registry-3");
     expect(await registry.listPendingDecisions()).toHaveLength(0);
   });
+
+  it("persists task state across a full runtime restart on the same database", async () => {
+    const pgliteDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "milady-task-registry-restart-"),
+    );
+
+    const first = await createTestRuntime({
+      pgliteDir,
+      removePgliteDirOnCleanup: false,
+    });
+    const firstRegistry = new TaskRegistry(first.runtime);
+    await firstRegistry.ensureSchema();
+
+    const thread = await firstRegistry.createThread({
+      id: "thread-registry-restart",
+      title: "Survive runtime restart",
+      originalRequest: "Persist the task thread even if the agent shuts down",
+      kind: "coding",
+      summary: "Runtime A created the task",
+      acceptanceCriteria: [
+        "Task thread still exists after restart",
+        "Pending confirmation survives restart",
+      ],
+      metadata: { source: "restart-test" },
+    });
+
+    await firstRegistry.registerSession({
+      threadId: thread.id,
+      sessionId: "session-registry-restart",
+      framework: "codex",
+      label: "restart-worker",
+      originalTask: "Write persistent task state",
+      workdir: "/tmp/milady-restart",
+      status: "active",
+      decisionCount: 0,
+      autoResolvedCount: 0,
+    });
+
+    await firstRegistry.recordTranscript({
+      threadId: thread.id,
+      sessionId: "session-registry-restart",
+      direction: "stdout",
+      content: "persistent restart sentinel",
+    });
+
+    await firstRegistry.upsertPendingDecision({
+      sessionId: "session-registry-restart",
+      threadId: thread.id,
+      promptText: "Resume the task after restart?",
+      recentOutput: "The task is waiting to be resumed",
+      llmDecision: {
+        action: "respond",
+        response: "resume",
+        reasoning: "The task should continue after restart.",
+      },
+      taskContext: {
+        threadId: thread.id,
+        sessionId: "session-registry-restart",
+        agentType: "codex",
+        label: "restart-worker",
+        originalTask: "Write persistent task state",
+        workdir: "/tmp/milady-restart",
+        status: "blocked",
+      },
+    });
+
+    await first.cleanup();
+
+    const second = await createTestRuntime({
+      pgliteDir,
+      removePgliteDirOnCleanup: true,
+    });
+    try {
+      const secondRegistry = new TaskRegistry(second.runtime);
+      await secondRegistry.ensureSchema();
+      await secondRegistry.recoverInterruptedTasks();
+
+      const detail = await secondRegistry.getThread(thread.id);
+      expect(detail).not.toBeNull();
+      expect(detail?.status).toBe("interrupted");
+      expect(detail?.sessions).toHaveLength(1);
+      expect(detail?.sessions[0]?.status).toBe("interrupted");
+      expect(
+        detail?.transcripts.some((entry) =>
+          entry.content.includes("persistent restart sentinel"),
+        ),
+      ).toBe(true);
+      expect(detail?.pendingDecisions).toHaveLength(1);
+      expect(detail?.pendingDecisions[0]?.promptText).toBe(
+        "Resume the task after restart?",
+      );
+
+      const threads = await secondRegistry.listThreads({
+        search: "survive runtime restart",
+      });
+      expect(threads.map((entry) => entry.id)).toContain(thread.id);
+    } finally {
+      await second.cleanup();
+    }
+  }, 180_000);
 });
