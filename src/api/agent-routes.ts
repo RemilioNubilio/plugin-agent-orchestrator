@@ -16,6 +16,11 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import {
+  buildAgentCredentials,
+  isAnthropicOAuthToken,
+  sanitizeCustomCredentials,
+} from "../services/agent-credentials.js";
 import { getCoordinator } from "../services/pty-service.js";
 import {
   isPiAgentType,
@@ -581,20 +586,18 @@ export async function handleAgentRoutes(
       }
 
       // Build credentials from runtime
-      const credentials = {
-        anthropicKey: ctx.runtime.getSetting("ANTHROPIC_API_KEY") as
-          | string
-          | undefined,
-        openaiKey: ctx.runtime.getSetting("OPENAI_API_KEY") as
-          | string
-          | undefined,
-        googleKey: ctx.runtime.getSetting("GOOGLE_GENERATIVE_AI_API_KEY") as
-          | string
-          | undefined,
-        githubToken: ctx.runtime.getSetting("GITHUB_TOKEN") as
-          | string
-          | undefined,
-      };
+      const rawAnthropicKey = ctx.runtime.getSetting("ANTHROPIC_API_KEY") as
+        | string
+        | undefined;
+      let credentials;
+      try {
+        credentials = buildAgentCredentials(ctx.runtime);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Failed to build credentials";
+        sendError(res, message, 400);
+        return true;
+      }
 
       // Read model preferences from runtime settings
       const agentStr = agentType
@@ -665,9 +668,10 @@ export async function handleAgentRoutes(
         approvalPreset: approvalPreset as
           | import("coding-agent-adapters").ApprovalPreset
           | undefined,
-        customCredentials: customCredentials as
-          | Record<string, string>
-          | undefined,
+        customCredentials: sanitizeCustomCredentials(
+          customCredentials as Record<string, string> | undefined,
+          isAnthropicOAuthToken(rawAnthropicKey) ? [rawAnthropicKey] : [],
+        ),
         // Let adapter auto-response handle known prompts (permissions, trust, etc.)
         // instantly. The coordinator handles only unrecognized prompts via LLM.
         metadata: {

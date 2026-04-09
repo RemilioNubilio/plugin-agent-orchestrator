@@ -459,6 +459,9 @@ export async function handleMultiAgent(
         [memoryContent, swarmMemory, pastExperienceBlock]
           .filter(Boolean)
           .join("\n\n") || undefined;
+      const coordinatorManagedSession =
+        !!coordinator && llmProvider === "subscription";
+      const useDirectCallbackResponses = Boolean(callback);
 
       const session: SessionInfo = await ptyService.spawnSession({
         name: `coding-${Date.now()}-${i}`,
@@ -471,9 +474,7 @@ export async function handleMultiAgent(
           (approvalPreset as ApprovalPreset | undefined) ??
           ptyService.defaultApprovalPreset,
         customCredentials,
-        ...(coordinator && llmProvider === "subscription"
-          ? { skipAdapterAutoResponse: true }
-          : {}),
+        ...(coordinatorManagedSession ? { skipAdapterAutoResponse: true } : {}),
         metadata: {
           threadId: taskThread?.id,
           taskNodeId,
@@ -483,12 +484,24 @@ export async function handleMultiAgent(
           workspaceId,
           label: specLabel,
           multiAgentIndex: i,
+          // Carry the originating message routing context so deployments can
+          // post async session updates back to the originating channel.
+          roomId: message.roomId,
+          worldId: message.worldId,
+          source: (message.content as { source?: string } | undefined)?.source,
         },
       });
 
       // Register event handler
       const isScratch = !repo;
       const scratchDir = isScratch ? workdir : null;
+      // Pass coordinatorActive=false so the session event handler uses the
+      // DIRECT callback path for chat responses. The coordinator still monitors
+      // lifecycle via its own subscriptions — this only affects who sends the
+      // "done" message to discord. When coordinatorActive=true, the coordinator
+      // generates the reply from originalTask (the user's text), producing the
+      // "done — <echo of user message>" bug. When false, registerSessionEvents
+      // pulls data.response (the subagent's ACTUAL output) and sends that.
       registerSessionEvents(
         ptyService,
         runtime,
@@ -496,7 +509,7 @@ export async function handleMultiAgent(
         specLabel,
         scratchDir,
         callback,
-        !!coordinator,
+        coordinatorManagedSession && !useDirectCallbackResponses,
       );
       if (coordinator && specTask) {
         await coordinator.registerTask(session.id, {

@@ -42,6 +42,41 @@ function buildCodexCloudProviderToml(baseUrl: string): string {
   );
 }
 
+type ExtendedAgentCredentials = AgentCredentials & {
+  anthropicBaseUrl?: string;
+  openaiBaseUrl?: string;
+  extraConfigToml?: string;
+};
+
+function compactCredentials(
+  credentials: ExtendedAgentCredentials,
+): ExtendedAgentCredentials {
+  return Object.fromEntries(
+    Object.entries(credentials).filter(([, value]) => value !== undefined),
+  ) as ExtendedAgentCredentials;
+}
+
+export function isAnthropicOAuthToken(
+  value: string | undefined,
+): value is string {
+  return typeof value === "string" && value.startsWith("sk-ant-oat");
+}
+
+export function sanitizeCustomCredentials(
+  customCredentials: Record<string, string> | undefined,
+  blockedValues: string[] = [],
+): Record<string, string> | undefined {
+  if (!customCredentials) {
+    return undefined;
+  }
+
+  const blocked = new Set(blockedValues.filter(Boolean));
+  const filtered = Object.entries(customCredentials).filter(
+    ([, value]) => !blocked.has(value),
+  );
+  return filtered.length > 0 ? Object.fromEntries(filtered) : undefined;
+}
+
 export function buildAgentCredentials(
   runtime: IAgentRuntime,
 ): AgentCredentials {
@@ -55,7 +90,7 @@ export function buildAgentCredentials(
         "Eliza Cloud is selected as the LLM provider but no cloud.apiKey is paired. Pair your account in the Cloud settings section first.",
       );
     }
-    const cloudCredentials = {
+    const cloudCredentials = compactCredentials({
       anthropicKey: cloudKey,
       openaiKey: cloudKey,
       googleKey: undefined,
@@ -66,18 +101,21 @@ export function buildAgentCredentials(
       // through cloud — see buildCodexCloudProviderToml doc for why this
       // requires a custom provider definition rather than [features].
       extraConfigToml: buildCodexCloudProviderToml(ELIZA_CLOUD_OPENAI_BASE),
-    } as AgentCredentials & {
-      anthropicBaseUrl?: string;
-      openaiBaseUrl?: string;
-    };
+    });
     return cloudCredentials;
   }
 
   const subscriptionMode = llmProvider === "subscription";
-  const directCredentials = {
+  const rawAnthropicKey = runtime.getSetting("ANTHROPIC_API_KEY") as
+    | string
+    | undefined;
+  const anthropicKey = isAnthropicOAuthToken(rawAnthropicKey)
+    ? undefined
+    : rawAnthropicKey;
+  const directCredentials = compactCredentials({
     anthropicKey: subscriptionMode
       ? undefined
-      : (runtime.getSetting("ANTHROPIC_API_KEY") as string | undefined),
+      : anthropicKey,
     openaiKey: runtime.getSetting("OPENAI_API_KEY") as string | undefined,
     googleKey: runtime.getSetting("GOOGLE_GENERATIVE_AI_API_KEY") as
       | string
@@ -85,13 +123,12 @@ export function buildAgentCredentials(
     githubToken: runtime.getSetting("GITHUB_TOKEN") as string | undefined,
     anthropicBaseUrl: subscriptionMode
       ? undefined
-      : (runtime.getSetting("ANTHROPIC_BASE_URL") as string | undefined),
+      : anthropicKey
+        ? (runtime.getSetting("ANTHROPIC_BASE_URL") as string | undefined)
+        : undefined,
     openaiBaseUrl: runtime.getSetting("OPENAI_BASE_URL") as
       | string
       | undefined,
-  } as AgentCredentials & {
-    anthropicBaseUrl?: string;
-    openaiBaseUrl?: string;
-  };
+  });
   return directCredentials;
 }

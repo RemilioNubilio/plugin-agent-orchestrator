@@ -69,6 +69,10 @@ function normalizeConnectorPolicy(
 }
 
 function parseTaskAgentPolicy(runtime: IAgentRuntime): TaskAgentPolicyConfig {
+  if (typeof runtime.getSetting !== "function") {
+    return DEFAULT_POLICY;
+  }
+
   const configured =
     runtime.getSetting("TASK_AGENT_ROLE_POLICY") ??
     runtime.getSetting("TASK_AGENT_CONNECTOR_ROLE_POLICY");

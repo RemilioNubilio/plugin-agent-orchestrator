@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import type { AgentRuntime } from "@elizaos/core";
-import { createTestRuntime } from "../../../../test/helpers/pglite-runtime";
+import { createTestRuntime } from "./helpers/pglite-runtime";
 import { TaskRegistry } from "../services/task-registry.js";
 
 describe("TaskRegistry", () => {

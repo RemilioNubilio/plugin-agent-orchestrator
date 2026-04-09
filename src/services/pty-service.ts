@@ -84,6 +84,28 @@ import {
   type CoordinatorNormalizedEvent,
 } from "./coordinator-event-normalizer.js";
 
+/**
+ * Portable safety floor injected into every spawned coding-agent's memory
+ * file. Locks the agent to its allocated workspace dir so it never wanders
+ * into $HOME or /tmp regardless of caller-supplied memoryContent. Deployment-
+ * specific conventions (hosting, URLs, etc.) belong in caller memoryContent.
+ */
+function buildWorkspaceLockMemory(workdir: string): string {
+  return `# Workspace
+
+Your working directory is \`${workdir}\`. Stay inside it: do not \`cd\` to \`/tmp\`, \`/\`, \`$HOME\`, or any other path outside the workspace. Create all files, run all builds, and start all servers from this directory. If you need scratch space, make a subdirectory here.`;
+}
+
+function prependWorkspaceLockToTask(
+  task: string | undefined,
+  workspaceLock: string,
+): string | undefined {
+  if (!task?.trim()) {
+    return undefined;
+  }
+  return `${workspaceLock}\n\n---\n\n${task}`;
+}
+
 export type {
   CodingAgentType,
   PTYServiceConfig,
@@ -334,9 +356,6 @@ export class PTYService {
     const resolvedAgentType: CodingAgentType = piRequested
       ? "shell"
       : options.agentType;
-    const resolvedInitialTask = piRequested
-      ? toPiCommand(options.initialTask)
-      : options.initialTask;
     const effectiveApprovalPreset =
       options.approvalPreset ??
       (resolvedAgentType !== "shell" ? this.defaultApprovalPreset : undefined);
@@ -349,17 +368,31 @@ export class PTYService {
 
     const sessionId = this.generateSessionId();
     const workdir = options.workdir ?? process.cwd();
+    const workspaceLock = buildWorkspaceLockMemory(workdir);
+    const shouldWriteMemoryFile =
+      resolvedAgentType !== "shell" && Boolean(options.memoryContent?.trim());
+    const effectiveInitialTask = shouldWriteMemoryFile
+      ? options.initialTask
+      : prependWorkspaceLockToTask(options.initialTask, workspaceLock);
+    const resolvedInitialTask = piRequested
+      ? toPiCommand(effectiveInitialTask)
+      : effectiveInitialTask;
 
     // Store workdir for later retrieval
     this.sessionWorkdirs.set(sessionId, workdir);
 
-    // Write memory content before spawning so the agent reads it on startup
-    if (options.memoryContent && resolvedAgentType !== "shell") {
+    // Write memory content before spawning so the agent reads it on startup.
+    // Always prepend the workspace lock so the spawned agent stays inside its
+    // allocated workdir even when the caller passes nothing or unrelated rules.
+    if (shouldWriteMemoryFile) {
+      const fullMemory = options.memoryContent
+        ? `${workspaceLock}\n\n---\n\n${options.memoryContent}`
+        : workspaceLock;
       try {
         const writtenPath = await this.writeMemoryFile(
           resolvedAgentType as AdapterType,
           workdir,
-          options.memoryContent,
+          fullMemory,
         );
         this.log(`Wrote memory file for ${resolvedAgentType}: ${writtenPath}`);
       } catch (err) {
@@ -486,25 +519,6 @@ export class PTYService {
       },
       workdir,
     );
-    // DEBUG: log credentials reaching the spawn (remove after fixing cloud)
-    {
-      const ac = spawnConfig.adapterConfig as
-        | Record<string, unknown>
-        | undefined;
-      const mask = (v: unknown) =>
-        typeof v === "string" && v.length > 12
-          ? `${v.slice(0, 8)}...${v.slice(-4)}`
-          : String(v);
-      const parts: string[] = [];
-      if (ac?.anthropicKey) parts.push(`anthropicKey=${mask(ac.anthropicKey)}`);
-      if (ac?.anthropicBaseUrl)
-        parts.push(`anthropicBaseUrl=${ac.anthropicBaseUrl}`);
-      if (ac?.openaiKey) parts.push(`openaiKey=${mask(ac.openaiKey)}`);
-      if (ac?.openaiBaseUrl) parts.push(`openaiBaseUrl=${ac.openaiBaseUrl}`);
-      this.log(
-        `[DEBUG] PTY spawn ${resolvedAgentType} adapterConfig credentials: ${parts.join(", ") || "(none)"}`,
-      );
-    }
     const session = await this.manager.spawn(spawnConfig);
     this.terminalSessionStates.delete(session.id);
     this.sessionNames.set(session.id, options.name);

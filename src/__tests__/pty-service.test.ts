@@ -188,7 +188,48 @@ describe("PTYService", () => {
 
       // The initial task is deferred via setTimeout(300ms) settle delay
       await new Promise((r) => setTimeout(r, 400));
-      expect(mockManager.send).toHaveBeenCalledWith(session.id, "Fix the bug");
+      expect(mockManager.send).toHaveBeenCalledWith(
+        session.id,
+        expect.stringContaining("Your working directory is `/test/path`"),
+      );
+      expect(mockManager.send).toHaveBeenCalledWith(
+        session.id,
+        expect.stringContaining("Fix the bug"),
+      );
+    });
+
+    it("wraps Pi initial tasks with the workspace lock before sending", async () => {
+      mockManager.spawn.mockImplementation(() =>
+        Promise.resolve({
+          id: `session-${++sessionCounter}`,
+          name: "test-session",
+          type: "shell",
+          status: "ready",
+          startedAt: new Date(),
+          lastActivityAt: new Date(),
+        }),
+      );
+
+      const session = await service.spawnSession({
+        name: "pi-session",
+        agentType: "pi",
+        workdir: "/test/pi",
+        initialTask: "Fix flaky tests",
+      });
+
+      await new Promise((r) => setTimeout(r, 400));
+      expect(mockManager.send).toHaveBeenCalledWith(
+        session.id,
+        expect.stringMatching(/^pi '/),
+      );
+      expect(mockManager.send).toHaveBeenCalledWith(
+        session.id,
+        expect.stringContaining("Your working directory is `/test/pi`"),
+      );
+      expect(mockManager.send).toHaveBeenCalledWith(
+        session.id,
+        expect.stringContaining("Fix flaky tests"),
+      );
     });
 
     it("should track session metadata", async () => {
