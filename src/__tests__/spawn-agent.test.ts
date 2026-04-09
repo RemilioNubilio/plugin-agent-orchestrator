@@ -413,5 +413,37 @@ describe("spawnAgentAction", () => {
         }),
       );
     });
+
+    it("filters Anthropic OAuth tokens out of custom credentials", async () => {
+      const runtime = createMockRuntime(createMockPTYService());
+      runtime.getSetting.mockImplementation((key: string) => {
+        const map: Record<string, string> = {
+          CUSTOM_CREDENTIAL_KEYS: "ANTHROPIC_API_KEY,GITHUB_TOKEN",
+          ANTHROPIC_API_KEY: "sk-ant-oat-demo",
+          GITHUB_TOKEN: "ghp-demo",
+        };
+        return map[key] ?? undefined;
+      });
+
+      await spawnAgentAction.handler(
+        runtime as unknown as IAgentRuntime,
+        createMockMessage({
+          agentType: "claude",
+          workdir: validWorkdir,
+          task: "Fix the bug",
+        }) as unknown as Memory,
+        undefined,
+        {},
+        jest.fn(),
+      );
+
+      expect(mockSpawnSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          customCredentials: {
+            GITHUB_TOKEN: "ghp-demo",
+          },
+        }),
+      );
+    });
   });
 });

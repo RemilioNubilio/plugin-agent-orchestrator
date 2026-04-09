@@ -24,7 +24,11 @@ import {
   type State,
 } from "@elizaos/core";
 import type { AgentCredentials } from "coding-agent-adapters";
-import { buildAgentCredentials } from "../services/agent-credentials.js";
+import {
+  buildAgentCredentials,
+  isAnthropicOAuthToken,
+  sanitizeCustomCredentials,
+} from "../services/agent-credentials.js";
 import type { PTYService } from "../services/pty-service.js";
 import { getCoordinator } from "../services/pty-service.js";
 import { normalizeAgentType } from "../services/pty-types.js";
@@ -225,6 +229,13 @@ export const startCodingTaskAction: BackgroundAction = {
         if (val) customCredentials[key] = val;
       }
     }
+    const rawAnthropicKey = runtime.getSetting("ANTHROPIC_API_KEY") as
+      | string
+      | undefined;
+    customCredentials = sanitizeCustomCredentials(
+      customCredentials,
+      isAnthropicOAuthToken(rawAnthropicKey) ? [rawAnthropicKey] : [],
+    );
 
     let credentials: AgentCredentials;
     try {

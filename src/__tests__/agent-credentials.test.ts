@@ -3,7 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import type { IAgentRuntime } from "@elizaos/core";
 import { afterEach, describe, expect, it } from "bun:test";
-import { buildAgentCredentials } from "../services/agent-credentials.js";
+import {
+  buildAgentCredentials,
+  sanitizeCustomCredentials,
+} from "../services/agent-credentials.js";
 
 function createRuntime(
   settings: Record<string, string | undefined>,
@@ -77,6 +80,12 @@ describe("buildAgentCredentials", () => {
 
     expect(credentials.anthropicKey).toBeUndefined();
     expect(credentials.anthropicBaseUrl).toBeUndefined();
+    expect(
+      Object.prototype.hasOwnProperty.call(credentials, "anthropicKey"),
+    ).toBe(false);
+    expect(
+      Object.prototype.hasOwnProperty.call(credentials, "anthropicBaseUrl"),
+    ).toBe(false);
     expect(credentials.openaiKey).toBe("openai-key");
     expect(credentials.openaiBaseUrl).toBe("https://openai.example");
     expect(credentials.googleKey).toBe("google-key");
@@ -103,6 +112,30 @@ describe("buildAgentCredentials", () => {
     expect(credentials.openaiKey).toBe("openai-key");
   });
 
+  it("drops Anthropic OAuth tokens in api_keys mode", () => {
+    const stateDir = writeConfig("api_keys");
+    stateDirs.push(stateDir);
+    process.env.MILADY_STATE_DIR = stateDir;
+    delete process.env.ELIZA_STATE_DIR;
+    process.env.ELIZA_NAMESPACE = "milady";
+
+    const credentials = buildAgentCredentials(
+      createRuntime({
+        ANTHROPIC_API_KEY: "sk-ant-oat-demo",
+        ANTHROPIC_BASE_URL: "https://anthropic.example",
+      }) as IAgentRuntime,
+    );
+
+    expect(credentials.anthropicKey).toBeUndefined();
+    expect(credentials.anthropicBaseUrl).toBeUndefined();
+    expect(
+      Object.prototype.hasOwnProperty.call(credentials, "anthropicKey"),
+    ).toBe(false);
+    expect(
+      Object.prototype.hasOwnProperty.call(credentials, "anthropicBaseUrl"),
+    ).toBe(false);
+  });
+
   it("uses the paired Eliza Cloud key in cloud mode", () => {
     const stateDir = writeConfig("cloud", "cloud-key");
     stateDirs.push(stateDir);
@@ -125,5 +158,21 @@ describe("buildAgentCredentials", () => {
       "https://www.elizacloud.ai/api/v1",
     );
     expect(credentials.githubToken).toBe("github-token");
+  });
+});
+
+describe("sanitizeCustomCredentials", () => {
+  it("removes blocked values and preserves unrelated credentials", () => {
+    expect(
+      sanitizeCustomCredentials(
+        {
+          ANTHROPIC_API_KEY: "sk-ant-oat-demo",
+          OPENAI_API_KEY: "sk-openai-demo",
+        },
+        ["sk-ant-oat-demo"],
+      ),
+    ).toEqual({
+      OPENAI_API_KEY: "sk-openai-demo",
+    });
   });
 });

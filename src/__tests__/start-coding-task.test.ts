@@ -538,5 +538,34 @@ describe("startCodingTaskAction", () => {
       );
       expect(mockSpawnSession.mock.calls[0]?.[0]?.credentials?.anthropicKey).toBeUndefined();
     });
+
+    it("strips Anthropic OAuth tokens from custom credentials before spawn", async () => {
+      const ptyService = createMockPTYService();
+      const runtime = createMockRuntime(ptyService);
+      runtime.getSetting.mockImplementation((key: string) => {
+        const map: Record<string, string> = {
+          CUSTOM_CREDENTIAL_KEYS: "ANTHROPIC_API_KEY,OPENAI_API_KEY",
+          ANTHROPIC_API_KEY: "sk-ant-oat-demo",
+          OPENAI_API_KEY: "sk-oai-test",
+        };
+        return map[key] ?? undefined;
+      });
+
+      await startCodingTaskAction.handler(
+        runtime as unknown as IAgentRuntime,
+        createMockMessage({ text: "Do something" }) as unknown as Memory,
+        undefined,
+        { parameters: { task: "Do something" } },
+        jest.fn(),
+      );
+
+      expect(mockSpawnSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          customCredentials: {
+            OPENAI_API_KEY: "sk-oai-test",
+          },
+        }),
+      );
+    });
   });
 });

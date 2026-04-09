@@ -30,7 +30,11 @@ import {
   toPiCommand,
 } from "../services/pty-types.js";
 import { readConfigEnvKey } from "../services/config-env.js";
-import { buildAgentCredentials } from "../services/agent-credentials.js";
+import {
+  buildAgentCredentials,
+  isAnthropicOAuthToken,
+  sanitizeCustomCredentials,
+} from "../services/agent-credentials.js";
 import { requireTaskAgentAccess } from "../services/task-policy.js";
 import type { CodingWorkspaceService } from "../services/workspace-service.js";
 import { mergeTaskThreadEvalMetadata } from "./eval-metadata.js";
@@ -213,6 +217,13 @@ export const spawnAgentAction: Action = {
         if (val) customCredentials[key] = val;
       }
     }
+    const rawAnthropicKey = runtime.getSetting("ANTHROPIC_API_KEY") as
+      | string
+      | undefined;
+    customCredentials = sanitizeCustomCredentials(
+      customCredentials,
+      isAnthropicOAuthToken(rawAnthropicKey) ? [rawAnthropicKey] : [],
+    );
 
     // Build credentials based on the user's configured LLM provider.
     // Throws if cloud mode is selected but no cloud API key is paired.
