@@ -18,7 +18,6 @@ import {
 } from "@elizaos/core";
 import type { AgentCredentials, ApprovalPreset } from "coding-agent-adapters";
 import type { AgentSelectionStrategy } from "../services/agent-selection.js";
-import { readConfigEnvKey } from "../services/config-env.js";
 import type { PTYService } from "../services/pty-service.js";
 import { getCoordinator } from "../services/pty-service.js";
 import {
@@ -250,12 +249,6 @@ export async function handleMultiAgent(
     return { success: false, error: "WORKSPACE_SERVICE_UNAVAILABLE" };
   }
 
-  if (callback) {
-    await callback({
-      text: `Launching ${agentSpecs.length} agents${repo ? ` on ${repo}` : ""}...`,
-    });
-  }
-
   // Planning phase: generate shared context brief for multi-agent coordination.
   // Strip agent-type prefixes from specs to get clean subtask descriptions.
   const cleanSubtasks = agentSpecs.map(stripAgentPrefix);
@@ -293,11 +286,6 @@ export async function handleMultiAgent(
     status: string;
     error?: string;
   }> = [];
-
-  // Read LLM provider once before the spawn loop to avoid repeated sync I/O
-  // and ensure consistent provider selection across all agents in this swarm.
-  const llmProvider =
-    readConfigEnvKey("PARALLAX_LLM_PROVIDER") || "subscription";
 
   const coordinator = getCoordinator(runtime);
   const threadTitle = explicitLabel || generateLabel(repo, userRequest);
@@ -459,10 +447,6 @@ export async function handleMultiAgent(
         [memoryContent, swarmMemory, pastExperienceBlock]
           .filter(Boolean)
           .join("\n\n") || undefined;
-      const coordinatorManagedSession =
-        !!coordinator && llmProvider === "subscription";
-      const useDirectCallbackResponses = Boolean(callback);
-
       const session: SessionInfo = await ptyService.spawnSession({
         name: `coding-${Date.now()}-${i}`,
         agentType: specAgentType,
@@ -474,7 +458,6 @@ export async function handleMultiAgent(
           (approvalPreset as ApprovalPreset | undefined) ??
           ptyService.defaultApprovalPreset,
         customCredentials,
-        ...(coordinatorManagedSession ? { skipAdapterAutoResponse: true } : {}),
         metadata: {
           threadId: taskThread?.id,
           taskNodeId,
@@ -495,13 +478,6 @@ export async function handleMultiAgent(
       // Register event handler
       const isScratch = !repo;
       const scratchDir = isScratch ? workdir : null;
-      // Pass coordinatorActive=false so the session event handler uses the
-      // DIRECT callback path for chat responses. The coordinator still monitors
-      // lifecycle via its own subscriptions — this only affects who sends the
-      // "done" message to discord. When coordinatorActive=true, the coordinator
-      // generates the reply from originalTask (the user's text), producing the
-      // "done — <echo of user message>" bug. When false, registerSessionEvents
-      // pulls data.response (the subagent's ACTUAL output) and sends that.
       registerSessionEvents(
         ptyService,
         runtime,
@@ -509,7 +485,7 @@ export async function handleMultiAgent(
         specLabel,
         scratchDir,
         callback,
-        coordinatorManagedSession && !useDirectCallbackResponses,
+        !!coordinator,
       );
       if (coordinator && specTask) {
         await coordinator.registerTask(session.id, {
@@ -539,11 +515,6 @@ export async function handleMultiAgent(
         status: session.status,
       });
 
-      if (callback) {
-        await callback({
-          text: `[${i + 1}/${agentSpecs.length}] Spawned ${displayType} agent as "${specLabel}"`,
-        });
-      }
     } catch (error) {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
@@ -578,10 +549,6 @@ export async function handleMultiAgent(
       ? [`Failed: ${failed.map((r) => `"${r.label}": ${r.error}`).join(", ")}`]
       : []),
   ].join("\n");
-
-  if (callback) {
-    await callback({ text: summary });
-  }
 
   return {
     success: failed.length === 0,

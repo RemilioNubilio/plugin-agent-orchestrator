@@ -368,6 +368,46 @@ describe("startCodingTaskAction", () => {
       expect(mockSpawnSession).toHaveBeenCalledTimes(3);
     });
 
+    it("lets the adapter deliver coordinator-managed tasks without launch spam", async () => {
+      const ptyService = createMockPTYService() as ReturnType<
+        typeof createMockPTYService
+      > & {
+        coordinator: {
+          createTaskThread: ReturnType<typeof jest.fn>;
+          registerTask: ReturnType<typeof jest.fn>;
+          setSwarmContext: ReturnType<typeof jest.fn>;
+        };
+      };
+      ptyService.coordinator = {
+        createTaskThread: jest.fn().mockResolvedValue(null),
+        registerTask: jest.fn().mockResolvedValue(undefined),
+        setSwarmContext: jest.fn(),
+      };
+      const runtime = createMockRuntime(ptyService);
+      const message = createMockMessage({
+        text: "Launch two review agents and report back when they're done",
+      });
+      const callback = jest.fn();
+
+      await startCodingTaskAction.handler(
+        runtime as unknown as IAgentRuntime,
+        message as unknown as Memory,
+        undefined,
+        {
+          parameters: {
+            agents: "Review the auth flow | Review the test coverage",
+          },
+        },
+        callback,
+      );
+
+      expect(mockSpawnSession).toHaveBeenCalledTimes(2);
+      for (const [call] of mockSpawnSession.mock.calls) {
+        expect(call).not.toHaveProperty("skipAdapterAutoResponse");
+      }
+      expect(callback).not.toHaveBeenCalled();
+    });
+
     it("should handle agent type prefix in pipe-delimited specs", async () => {
       const ptyService = createMockPTYService();
       const runtime = createMockRuntime(ptyService);
@@ -490,11 +530,7 @@ describe("startCodingTaskAction", () => {
       // handleMultiAgent returns errors per-agent in data.agents, not at top level
       const agents = (result as { data?: { agents?: Array<{ error?: string }> } })?.data?.agents;
       expect(agents?.[0]?.error).toContain("not installed");
-      expect(callback).toHaveBeenCalledWith(
-        expect.objectContaining({
-          text: expect.stringContaining("not installed"),
-        }),
-      );
+      expect(callback).not.toHaveBeenCalled();
     });
   });
 
