@@ -431,6 +431,13 @@ export async function handleMultiAgent(
       // Register event handler
       const isScratch = !repo;
       const scratchDir = isScratch ? workdir : null;
+      // Pass coordinatorActive=false so the session event handler uses the
+      // DIRECT callback path for chat responses. The coordinator still monitors
+      // lifecycle via its own subscriptions — this only affects who sends the
+      // "done" message to discord. When coordinatorActive=true, the coordinator
+      // generates the reply from originalTask (the user's text), producing the
+      // "done — <echo of user message>" bug. When false, registerSessionEvents
+      // pulls data.response (the subagent's ACTUAL output) and sends that.
       registerSessionEvents(
         ptyService,
         runtime,
@@ -438,7 +445,7 @@ export async function handleMultiAgent(
         specLabel,
         scratchDir,
         callback,
-        !!coordinator,
+        false,
       );
       if (coordinator && specTask) {
         await coordinator.registerTask(session.id, {
