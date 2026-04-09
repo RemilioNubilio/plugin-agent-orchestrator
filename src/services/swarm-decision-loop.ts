@@ -35,6 +35,8 @@ import { withTrajectoryContext } from "./trajectory-context.js";
 
 /** Timeout for agent decision pipeline callback (ms). */
 const DECISION_CB_TIMEOUT_MS = 30_000;
+const LOGIN_REQUIRED_PROMPT_RE =
+  /\b(?:requires authentication|needs (?:a )?provider login|run\s+"?claude login"?|claude code requires authentication|login required|authenticate|sign in)\b/i;
 
 /** Wrap a promise with a timeout. Rejects with an error if not resolved in time. */
 function withTimeout<T>(
@@ -272,6 +274,34 @@ function truncateForUser(text: string, max = 140): string {
   return `${trimmed.slice(0, max)}...`;
 }
 
+function extractLoginInstructions(eventData: {
+  promptInfo?: {
+    instructions?: string;
+    prompt?: string;
+  };
+}): string {
+  const instructions =
+    typeof eventData.promptInfo?.instructions === "string"
+      ? eventData.promptInfo.instructions.trim()
+      : "";
+  if (instructions) {
+    return instructions;
+  }
+  return typeof eventData.promptInfo?.prompt === "string"
+    ? eventData.promptInfo.prompt.trim()
+    : "";
+}
+
+function isLoginRequiredPrompt(
+  promptText: string,
+  promptType?: string,
+): boolean {
+  if (promptType === "login") {
+    return true;
+  }
+  return LOGIN_REQUIRED_PROMPT_RE.test(promptText);
+}
+
 function formatSuggestedAction(
   decision: CoordinationLLMResponse | null,
 ): string {
@@ -498,7 +528,9 @@ async function checkAllTasksCompleteAsync(
 
   if (failingThreads.length > 0) {
     if (ctx.swarmCompleteNotified) {
-      ctx.log("checkAllTasksComplete: failure notification already sent — skipping");
+      ctx.log(
+        "checkAllTasksComplete: failure notification already sent — skipping",
+      );
       return;
     }
     ctx.swarmCompleteNotified = true;
@@ -1087,6 +1119,7 @@ export async function handleBlocked(
       canAutoRespond?: boolean;
       suggestedResponse?: string;
       instructions?: string;
+      url?: string;
     };
     autoResponded?: boolean;
   };
@@ -1094,6 +1127,57 @@ export async function handleBlocked(
   // Extract prompt text from promptInfo (the actual blocking prompt info object)
   const promptText =
     eventData.promptInfo?.prompt ?? eventData.promptInfo?.instructions ?? "";
+
+  if (isLoginRequiredPrompt(promptText, eventData.promptInfo?.type)) {
+    const instructions = extractLoginInstructions(eventData);
+    const url =
+      typeof eventData.promptInfo?.url === "string" &&
+      eventData.promptInfo.url.trim().length > 0
+        ? eventData.promptInfo.url.trim()
+        : null;
+
+    taskCtx.status = "blocked";
+    await ctx.syncTaskContext(taskCtx);
+    await ctx.recordDecision(taskCtx, {
+      timestamp: Date.now(),
+      event: "blocked",
+      promptText,
+      decision: "escalate",
+      reasoning:
+        "Provider login is required before the task agent can continue.",
+    });
+    await ctx.taskRegistry.appendEvent({
+      threadId: taskCtx.threadId,
+      sessionId,
+      eventType: "task_status_changed",
+      summary: `Task "${taskCtx.label}" is waiting for login`,
+      data: {
+        status: "blocked",
+        reason: "login_required",
+        instructions: instructions || null,
+        url,
+        promptType: eventData.promptInfo?.type ?? null,
+      },
+    });
+    ctx.broadcast({
+      type: "login_required",
+      sessionId,
+      timestamp: Date.now(),
+      data: {
+        instructions: instructions || null,
+        url,
+        prompt: promptText,
+        promptType: eventData.promptInfo?.type,
+      },
+    });
+    const loginParts = [
+      `"${taskCtx.label}" needs a provider login before it can continue.`,
+      instructions || "",
+      url ? `Login link: ${url}` : "",
+    ].filter(Boolean);
+    ctx.sendChatMessage(loginParts.join(" "), "coding-agent");
+    return;
+  }
 
   // Auto-responded by rules — log and broadcast, no LLM needed
   if (eventData.autoResponded) {

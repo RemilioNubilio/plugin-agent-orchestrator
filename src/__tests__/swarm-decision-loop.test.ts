@@ -30,7 +30,9 @@ function createMockCtx(overrides: Record<string, unknown> = {}) {
           async (_modelType: string, options?: { prompt?: string }) => {
             if (
               options?.prompt?.includes("Return strict JSON only") ||
-              options?.prompt?.includes("Return JSON only with keys: verdict, summary, checklist.")
+              options?.prompt?.includes(
+                "Return JSON only with keys: verdict, summary, checklist.",
+              )
             ) {
               return '{"verdict":"pass","summary":"Validation confirmed the task is complete."}';
             }
@@ -176,6 +178,37 @@ describe("handleBlocked", () => {
     expect(taskCtx.decisions[0].decision).toBe("escalate");
     expect(ctx.broadcast).toHaveBeenCalledWith(
       expect.objectContaining({ type: "escalation" }),
+    );
+  });
+
+  it("treats login prompts as user-facing login_required events", async () => {
+    const ctx = createMockCtx();
+    const taskCtx = createTaskCtx();
+    ctx.tasks.set("s-1", taskCtx);
+
+    await handleBlocked(ctx as never, "s-1", taskCtx as never, {
+      promptInfo: {
+        prompt:
+          'Claude Code requires authentication. Run "claude login" in your terminal.',
+        type: "login",
+      },
+      autoResponded: false,
+    });
+
+    expect(taskCtx.status).toBe("blocked");
+    expect(ctx.runtime.useModel).not.toHaveBeenCalled();
+    expect(ctx.sendChatMessage).toHaveBeenCalledWith(
+      expect.stringContaining("needs a provider login"),
+      "coding-agent",
+    );
+    expect(ctx.broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "login_required" }),
+    );
+    expect(ctx.taskRegistry.appendEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "task_status_changed",
+        data: expect.objectContaining({ reason: "login_required" }),
+      }),
     );
   });
 
