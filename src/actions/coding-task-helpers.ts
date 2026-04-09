@@ -161,12 +161,12 @@ export function registerSessionEvents(
               : `Agent "${label}" completed the task.`,
           });
         }
-        // Force-kill the session after task completion — nothing to save.
-        ptyService.stopSession(sessionId, /* force */ true).catch((err) => {
-          logger.warn(
-            `[START_CODING_TASK] Failed to stop session for "${label}" after task complete: ${err}`,
-          );
-        });
+        // NOTE: do NOT force-kill the session here. task_complete fires after
+        // every tool call (when the prompt reappears), not only when the agent
+        // is truly finished. killing here causes the agent to be reaped mid-
+        // work (e.g. after WebSearch but before composing the answer). the
+        // session will be cleaned up by the idle watchdog after 5 minutes of
+        // real inactivity, or when the agent naturally exits.
       }
       if (event === "error" && callback) {
         callback({
