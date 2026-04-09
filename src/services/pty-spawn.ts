@@ -41,6 +41,11 @@ const ENV_ALLOWLIST = [
   "XDG_RUNTIME_DIR",
   "NODE_OPTIONS",
   "BUN_INSTALL",
+  // Forward the user's preferred Claude model so spawned `claude` inherits it
+  // (claude-cli reads ANTHROPIC_MODEL on startup). Without this, the subagent
+  // falls back to its default sonnet even when the parent runtime is on opus.
+  "ANTHROPIC_MODEL",
+  "ANTHROPIC_SMALL_FAST_MODEL",
 ];
 
 /**

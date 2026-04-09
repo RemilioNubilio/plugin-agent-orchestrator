@@ -84,6 +84,18 @@ import {
   type CoordinatorNormalizedEvent,
 } from "./coordinator-event-normalizer.js";
 
+/**
+ * Portable safety floor injected into every spawned coding-agent's memory
+ * file. Locks the agent to its allocated workspace dir so it never wanders
+ * into $HOME or /tmp regardless of caller-supplied memoryContent. Deployment-
+ * specific conventions (hosting, URLs, etc.) belong in caller memoryContent.
+ */
+function buildWorkspaceLockMemory(workdir: string): string {
+  return `# Workspace
+
+Your working directory is \`${workdir}\`. Stay inside it: do not \`cd\` to \`/tmp\`, \`/\`, \`$HOME\`, or any other path outside the workspace. Create all files, run all builds, and start all servers from this directory. If you need scratch space, make a subdirectory here.`;
+}
+
 export type {
   CodingAgentType,
   PTYServiceConfig,
@@ -353,13 +365,19 @@ export class PTYService {
     // Store workdir for later retrieval
     this.sessionWorkdirs.set(sessionId, workdir);
 
-    // Write memory content before spawning so the agent reads it on startup
-    if (options.memoryContent && resolvedAgentType !== "shell") {
+    // Write memory content before spawning so the agent reads it on startup.
+    // Always prepend the workspace lock so the spawned agent stays inside its
+    // allocated workdir even when the caller passes nothing or unrelated rules.
+    if (resolvedAgentType !== "shell") {
+      const workspaceLock = buildWorkspaceLockMemory(workdir);
+      const fullMemory = options.memoryContent
+        ? `${workspaceLock}\n\n---\n\n${options.memoryContent}`
+        : workspaceLock;
       try {
         const writtenPath = await this.writeMemoryFile(
           resolvedAgentType as AdapterType,
           workdir,
-          options.memoryContent,
+          fullMemory,
         );
         this.log(`Wrote memory file for ${resolvedAgentType}: ${writtenPath}`);
       } catch (err) {
