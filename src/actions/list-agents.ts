@@ -18,6 +18,7 @@ import type {
   State,
 } from "@elizaos/core";
 import { getCoordinator, type PTYService } from "../services/pty-service.js";
+import { requireTaskAgentAccess } from "../services/task-policy.js";
 import type { SessionInfo } from "../services/pty-types.js";
 import {
   formatTaskAgentStatus,
@@ -93,11 +94,21 @@ export const listAgentsAction: Action = {
 
   handler: async (
     runtime: IAgentRuntime,
-    _message: Memory,
+    message: Memory,
     _state?: State,
     _options?: HandlerOptions,
     callback?: HandlerCallback,
   ): Promise<ActionResult | undefined> => {
+    const access = await requireTaskAgentAccess(runtime, message, "interact");
+    if (!access.allowed) {
+      if (callback) {
+        await callback({
+          text: access.reason,
+        });
+      }
+      return { success: false, error: "FORBIDDEN", text: access.reason };
+    }
+
     const ptyService = runtime.getService("PTY_SERVICE") as unknown as
       | PTYService
       | undefined;

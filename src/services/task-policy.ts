@@ -228,7 +228,16 @@ export async function requireTaskAgentAccess(
       reason: string;
     }
 > {
-  if (message.entityId === runtime.agentId) {
+  const messageEntityId =
+    typeof message.entityId === "string" && message.entityId.length > 0
+      ? message.entityId
+      : null;
+  const runtimeAgentId =
+    typeof runtime.agentId === "string" && runtime.agentId.length > 0
+      ? runtime.agentId
+      : null;
+
+  if (messageEntityId && runtimeAgentId && messageEntityId === runtimeAgentId) {
     return {
       allowed: true,
       connector: null,

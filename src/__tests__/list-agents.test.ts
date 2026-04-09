@@ -110,6 +110,29 @@ describe("listAgentsAction", () => {
       );
     });
 
+    it("denies Discord users without task-agent access", async () => {
+      const callback = jest.fn();
+
+      const result = await listAgentsAction.handler(
+        createMockRuntime(createMockPTYService([])) as unknown as IAgentRuntime,
+        {
+          ...createMockMessage(),
+          content: { source: "discord" },
+        } as unknown as Memory,
+        undefined,
+        {},
+        callback,
+      );
+
+      expect(result?.success).toBe(false);
+      expect(result?.error).toBe("FORBIDDEN");
+      expect(callback).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: expect.stringContaining("requires a verified OWNER or ADMIN role"),
+        }),
+      );
+    });
+
     it("includes current task status from the coordinator", async () => {
       const tasks = [
         {

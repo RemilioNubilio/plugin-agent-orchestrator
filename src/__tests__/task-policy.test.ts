@@ -65,6 +65,23 @@ describe("requireTaskAgentAccess", () => {
     });
   });
 
+  it("does not auto-allow when entity identity is missing", async () => {
+    const runtime = createRuntime({
+      // biome-ignore lint/performance/noDelete: test fixture
+      agentId: undefined,
+      roomSource: "discord",
+    });
+    const message = createMessage({
+      // biome-ignore lint/performance/noDelete: test fixture
+      entityId: undefined,
+    });
+
+    const result = await requireTaskAgentAccess(runtime, message, "create");
+
+    expect(result.allowed).toBe(false);
+    expect(result.connector).toBe("discord");
+  });
+
   it("denies discord task creation when role context is unavailable", async () => {
     const runtime = createRuntime({ roomSource: "discord" });
     const message = createMessage();
@@ -110,5 +127,70 @@ describe("requireTaskAgentAccess", () => {
       requiredRole: "USER",
       actualRole: "USER",
     });
+  });
+
+  it("allows the Discord owner to create tasks under the default policy", async () => {
+    mockCheckSenderRole.mockResolvedValue({
+      role: "OWNER",
+      isAdmin: true,
+      isOwner: true,
+    });
+    const runtime = createRuntime();
+    const message = createMessage({
+      content: { source: "discord" },
+    });
+
+    const result = await requireTaskAgentAccess(runtime, message, "create");
+
+    expect(result).toEqual({
+      allowed: true,
+      connector: "discord",
+      requiredRole: "ADMIN",
+      actualRole: "OWNER",
+    });
+  });
+
+  it("allows Discord admins to interact with tasks under the default policy", async () => {
+    mockCheckSenderRole.mockResolvedValue({
+      role: "ADMIN",
+      isAdmin: true,
+      isOwner: false,
+    });
+    const runtime = createRuntime();
+    const message = createMessage({
+      content: { source: "discord" },
+    });
+
+    const result = await requireTaskAgentAccess(runtime, message, "interact");
+
+    expect(result).toEqual({
+      allowed: true,
+      connector: "discord",
+      requiredRole: "ADMIN",
+      actualRole: "ADMIN",
+    });
+  });
+
+  it("denies Discord users below admin under the default policy", async () => {
+    mockCheckSenderRole.mockResolvedValue({
+      role: "USER",
+      isAdmin: false,
+      isOwner: false,
+    });
+    const runtime = createRuntime();
+    const message = createMessage({
+      content: { source: "discord" },
+    });
+
+    const result = await requireTaskAgentAccess(runtime, message, "create");
+
+    expect(result.allowed).toBe(false);
+    expect(result.connector).toBe("discord");
+    expect(result.requiredRole).toBe("ADMIN");
+    expect(result.actualRole).toBe("USER");
+    if (result.allowed) {
+      throw new Error("expected access to be denied");
+    }
+    expect(result.reason).toContain("ADMIN or higher");
   });
 });

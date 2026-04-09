@@ -31,6 +31,7 @@ import {
 } from "../services/pty-types.js";
 import { readConfigEnvKey } from "../services/config-env.js";
 import { buildAgentCredentials } from "../services/agent-credentials.js";
+import { requireTaskAgentAccess } from "../services/task-policy.js";
 import type { CodingWorkspaceService } from "../services/workspace-service.js";
 import { mergeTaskThreadEvalMetadata } from "./eval-metadata.js";
 
@@ -107,6 +108,16 @@ export const spawnAgentAction: Action = {
     options?: HandlerOptions,
     callback?: HandlerCallback,
   ): Promise<ActionResult | undefined> => {
+    const access = await requireTaskAgentAccess(runtime, message, "create");
+    if (!access.allowed) {
+      if (callback) {
+        await callback({
+          text: access.reason,
+        });
+      }
+      return { success: false, error: "FORBIDDEN", text: access.reason };
+    }
+
     const ptyService = runtime.getService("PTY_SERVICE") as unknown as
       | PTYService
       | undefined;

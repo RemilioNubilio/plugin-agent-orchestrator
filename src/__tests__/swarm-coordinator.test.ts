@@ -624,6 +624,44 @@ describe("SwarmCoordinator", () => {
       expect(ctx.status).toBe("error");
     });
 
+    it("continues the same task on a recovery session after a non-quota error", async () => {
+      const sendChatSpy = jest.spyOn(coordinator, "sendChatMessage");
+
+      await coordinator.handleSessionEvent("s-1", "error", {
+        message: "worker crashed unexpectedly",
+      });
+
+      const failedTask = coordinator.getTaskContext("s-1");
+      const recoveryTask = coordinator.getTaskContext("s-failover");
+
+      expect(failedTask?.status).toBe("error");
+      expect(recoveryTask).toBeDefined();
+      expect(recoveryTask?.threadId).toBe("s-1");
+      expect(recoveryTask?.agentType).toBe("codex");
+      expect(recoveryTask?.label).toContain("recovery");
+      expect(mockPty.spawnSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentType: "codex",
+          workdir: "/workspace",
+          initialTask: expect.stringContaining(
+            "Failure reason: worker crashed unexpectedly",
+          ),
+          skipAdapterAutoResponse: true,
+        }),
+      );
+      expect(mockTaskRegistry.appendEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          threadId: "s-1",
+          sessionId: "s-failover",
+          eventType: "task_error_recovery_started",
+        }),
+      );
+      expect(sendChatSpy).toHaveBeenCalledWith(
+        expect.stringContaining("Milady is continuing the same task on codex"),
+        "coding-agent",
+      );
+    });
+
     it("continues the same task on a fallback framework after quota exhaustion", async () => {
       await coordinator.handleSessionEvent("s-1", "error", {
         message: "insufficient credits",
@@ -715,11 +753,86 @@ describe("SwarmCoordinator", () => {
       expect(mockPty.spawnSession).not.toHaveBeenCalled();
     });
 
+    it("alerts the user when a task error cannot be recovered automatically", async () => {
+      const sendChatSpy = jest.spyOn(coordinator, "sendChatMessage");
+      mockPty.getFrameworkState.mockResolvedValue({
+        preferred: {
+          id: "claude",
+          reason: "claude unavailable",
+        },
+        frameworks: [
+          {
+            id: "claude",
+            label: "Claude Code",
+            installed: true,
+            authReady: false,
+            subscriptionReady: false,
+            temporarilyDisabled: true,
+            recommended: false,
+            reason: "not available",
+          },
+          {
+            id: "codex",
+            label: "Codex",
+            installed: true,
+            authReady: false,
+            subscriptionReady: false,
+            temporarilyDisabled: true,
+            recommended: false,
+            reason: "not available",
+          },
+        ],
+      });
+
+      await coordinator.handleSessionEvent("s-1", "error", {
+        message: "401 Invalid authentication credentials",
+      });
+
+      expect(coordinator.getTaskContext("s-failover")).toBeUndefined();
+      expect(mockPty.spawnSession).not.toHaveBeenCalled();
+      expect(sendChatSpy).toHaveBeenCalledWith(
+        expect.stringContaining("needs your attention"),
+        "coding-agent",
+      );
+    });
+
+    it("blocks the task and notifies the user when provider login is required", async () => {
+      const sendChatSpy = jest.spyOn(coordinator, "sendChatMessage");
+
+      await coordinator.handleSessionEvent("s-1", "login_required", {
+        instructions: "Open Claude Code and finish login.",
+        url: "https://claude.example/login",
+      });
+
+      const ctx = coordinator.getTaskContext("s-1");
+      expect(ctx.status).toBe("blocked");
+      expect(mockTaskRegistry.appendEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          threadId: "s-1",
+          sessionId: "s-1",
+          eventType: "task_status_changed",
+          data: expect.objectContaining({
+            reason: "login_required",
+            url: "https://claude.example/login",
+          }),
+        }),
+      );
+      expect(sendChatSpy).toHaveBeenCalledWith(
+        expect.stringContaining("needs a provider login"),
+        "coding-agent",
+      );
+    });
+
     it("handles stopped by updating status", async () => {
+      const sendChatSpy = jest.spyOn(coordinator, "sendChatMessage");
       await coordinator.handleSessionEvent("s-1", "stopped", {});
 
       const ctx = coordinator.getTaskContext("s-1");
       expect(ctx.status).toBe("stopped");
+      expect(sendChatSpy).toHaveBeenCalledWith(
+        expect.stringContaining("stopped before completion"),
+        "coding-agent",
+      );
     });
 
     it("skips auto-responded blocked events", async () => {
@@ -789,6 +902,22 @@ describe("SwarmCoordinator", () => {
       const ctx = coordinator.getTaskContext("s-1");
       expect(ctx.lastActivityAt).toBeGreaterThan(before);
       expect(ctx.idleCheckCount).toBe(0);
+    });
+
+    it("sends a chat update when the agent starts running an external tool", async () => {
+      const sendChatSpy = jest.spyOn(coordinator, "sendChatMessage");
+      const ctx = coordinator.getTaskContext("s-1");
+      ctx.registeredAt = Date.now() - 20_000;
+
+      await coordinator.handleSessionEvent("s-1", "tool_running", {
+        description: "Playwright",
+        source: "pty_manager",
+      });
+
+      expect(sendChatSpy).toHaveBeenCalledWith(
+        expect.stringContaining("Running Playwright"),
+        "coding-agent",
+      );
     });
 
     it("skips events for stopped sessions", async () => {
@@ -1075,6 +1204,7 @@ describe("SwarmCoordinator", () => {
       mockRuntime.useModel.mockResolvedValue(
         '{"action":"respond","response":"y","reasoning":"Safe"}',
       );
+      const sendChatSpy = jest.spyOn(coordinator, "sendChatMessage");
 
       await coordinator.handleSessionEvent("s-1", "blocked", {
         promptInfo: { prompt: "Allow?" },
@@ -1085,12 +1215,17 @@ describe("SwarmCoordinator", () => {
 
       expect(mockPty.sendToSession).toHaveBeenCalledWith("s-1", "y");
       expect(coordinator.getPendingConfirmations().length).toBe(0);
+      expect(sendChatSpy).toHaveBeenCalledWith(
+        expect.stringContaining("was approved"),
+        "coding-agent",
+      );
     });
 
     it("does not execute when human rejects", async () => {
       mockRuntime.useModel.mockResolvedValue(
         '{"action":"respond","response":"y","reasoning":"Safe"}',
       );
+      const sendChatSpy = jest.spyOn(coordinator, "sendChatMessage");
 
       await coordinator.handleSessionEvent("s-1", "blocked", {
         promptInfo: { prompt: "Allow?" },
@@ -1101,6 +1236,10 @@ describe("SwarmCoordinator", () => {
 
       expect(mockPty.sendToSession).not.toHaveBeenCalled();
       expect(coordinator.getPendingConfirmations().length).toBe(0);
+      expect(sendChatSpy).toHaveBeenCalledWith(
+        expect.stringContaining("remains blocked"),
+        "coding-agent",
+      );
     });
 
     it("allows human to override the LLM response", async () => {

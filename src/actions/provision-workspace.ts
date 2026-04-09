@@ -16,6 +16,7 @@ import type {
   Memory,
   State,
 } from "@elizaos/core";
+import { requireTaskAgentAccess } from "../services/task-policy.js";
 import type {
   CodingWorkspaceService,
   WorkspaceResult,
@@ -83,6 +84,16 @@ export const provisionWorkspaceAction: Action = {
     _options?: HandlerOptions,
     callback?: HandlerCallback,
   ): Promise<ActionResult | undefined> => {
+    const access = await requireTaskAgentAccess(runtime, message, "create");
+    if (!access.allowed) {
+      if (callback) {
+        await callback({
+          text: access.reason,
+        });
+      }
+      return { success: false, error: "FORBIDDEN", text: access.reason };
+    }
+
     const workspaceService = runtime.getService(
       "CODING_WORKSPACE_SERVICE",
     ) as unknown as CodingWorkspaceService | undefined;

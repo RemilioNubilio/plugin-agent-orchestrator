@@ -36,6 +36,7 @@ const createMockRuntime = (workspaceService: unknown = null) => ({
     if (name === "CODING_WORKSPACE_SERVICE") return workspaceService;
     return null;
   }),
+  getSetting: jest.fn(),
 });
 
 const createMockMessage = (content: Record<string, unknown> = {}) => ({
@@ -71,6 +72,33 @@ describe("manageIssuesAction", () => {
   });
 
   describe("operation inference via handler", () => {
+    it("denies Discord users without task-agent access", async () => {
+      const ws = createMockWorkspaceService();
+      const runtime = createMockRuntime(ws);
+      const callback = jest.fn();
+
+      const result = await manageIssuesAction.handler(
+        runtime as unknown as IAgentRuntime,
+        createMockMessage({
+          source: "discord",
+          text: "list issues on owner/repo",
+          repo: "owner/repo",
+        }) as unknown as Memory,
+        undefined,
+        {},
+        callback,
+      );
+
+      expect(result?.success).toBe(false);
+      expect(result?.error).toBe("FORBIDDEN");
+      expect(mockListIssues).not.toHaveBeenCalled();
+      expect(callback).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: expect.stringContaining("ADMIN or higher"),
+        }),
+      );
+    });
+
     it("should infer create from 'create an issue on repo'", async () => {
       const ws = createMockWorkspaceService();
       const runtime = createMockRuntime(ws);

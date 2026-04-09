@@ -22,6 +22,7 @@ const createMockRuntime = (ptyService: unknown = null) => ({
     if (name === "PTY_SERVICE") return ptyService;
     return null;
   }),
+  getSetting: jest.fn(),
 });
 
 const createMockMessage = (content: Record<string, unknown> = {}) => ({
@@ -92,6 +93,30 @@ describe("stopAgentAction", () => {
       expect(callback).toHaveBeenCalledWith(
         expect.objectContaining({
           text: expect.stringContaining("Stopped"),
+        }),
+      );
+    });
+
+    it("denies Discord users without task-agent access", async () => {
+      const callback = jest.fn();
+
+      const result = await stopAgentAction.handler(
+        createMockRuntime(createMockPTYService([{ id: "session-123" }])) as unknown as IAgentRuntime,
+        createMockMessage({
+          source: "discord",
+          sessionId: "session-123",
+        }) as unknown as Memory,
+        undefined,
+        {},
+        callback,
+      );
+
+      expect(result?.success).toBe(false);
+      expect(result?.error).toBe("FORBIDDEN");
+      expect(mockStopSession).not.toHaveBeenCalled();
+      expect(callback).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: expect.stringContaining("ADMIN or higher"),
         }),
       );
     });

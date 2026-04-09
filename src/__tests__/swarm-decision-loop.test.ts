@@ -11,6 +11,8 @@ const {
   POST_SEND_COOLDOWN_MS,
   checkAllTasksComplete,
   handleBlocked,
+  handleConfirmDecision,
+  handleAutonomousDecision,
   handleTurnComplete,
   executeDecision,
 } = await import("../services/swarm-decision-loop.js");
@@ -104,6 +106,7 @@ function createMockCtx(overrides: Record<string, unknown> = {}) {
       }),
       appendEvent: jest.fn().mockResolvedValue(undefined),
       recordArtifact: jest.fn().mockResolvedValue(undefined),
+      upsertPendingDecision: jest.fn().mockResolvedValue(undefined),
       createTaskVerifierJob: jest.fn().mockResolvedValue({
         id: "verify-1",
       }),
@@ -438,6 +441,10 @@ describe("handleBlocked", () => {
     expect(taskCtx.decisions.length).toBe(1);
     expect(taskCtx.decisions[0].decision).toBe("escalate");
     expect(ctx.runtime.useModel).not.toHaveBeenCalled();
+    expect(ctx.sendChatMessage).toHaveBeenCalledWith(
+      expect.stringContaining("Waiting on a blocked prompt"),
+      "coding-agent",
+    );
   });
 
   it("replays buffered blocked prompts before buffered turn-complete events", async () => {
@@ -605,6 +612,10 @@ describe("handleTurnComplete", () => {
     );
     expect(taskCtx.decisions.length).toBe(1);
     expect(taskCtx.decisions[0].decision).toBe("respond");
+    expect(ctx.sendChatMessage).toHaveBeenCalledWith(
+      expect.stringContaining("Continuing work"),
+      "coding-agent",
+    );
   });
 
   it("completes session when LLM says complete", async () => {
@@ -640,6 +651,10 @@ describe("handleTurnComplete", () => {
 
     expect(taskCtx.decisions.length).toBe(1);
     expect(taskCtx.decisions[0].decision).toBe("escalate");
+    expect(ctx.sendChatMessage).toHaveBeenCalledWith(
+      expect.stringContaining("needs your attention"),
+      "coding-agent",
+    );
   });
 
   it("debounces concurrent assessments", async () => {
@@ -657,6 +672,57 @@ describe("handleTurnComplete", () => {
 
     // Should have been skipped
     expect(ctx.runtime.useModel).not.toHaveBeenCalled();
+  });
+});
+
+describe("handleAutonomousDecision", () => {
+  it("alerts the user when all decision paths fail", async () => {
+    const ctx = createMockCtx();
+    ctx.runtime.useModel.mockResolvedValue("not valid json");
+    const taskCtx = createTaskCtx();
+    ctx.tasks.set("s-1", taskCtx);
+
+    await handleAutonomousDecision(
+      ctx as never,
+      "s-1",
+      taskCtx as never,
+      "Should I proceed?",
+      "",
+    );
+
+    expect(taskCtx.decisions).toHaveLength(1);
+    expect(taskCtx.decisions[0]?.decision).toBe("escalate");
+    expect(ctx.sendChatMessage).toHaveBeenCalledWith(
+      expect.stringContaining("could not decide"),
+      "coding-agent",
+    );
+  });
+});
+
+describe("handleConfirmDecision", () => {
+  it("notifies the user when human approval is required", async () => {
+    const ctx = createMockCtx();
+    const taskCtx = createTaskCtx();
+    ctx.tasks.set("s-1", taskCtx);
+
+    await handleConfirmDecision(
+      ctx as never,
+      "s-1",
+      taskCtx as never,
+      "Allow write to auth.ts?",
+      "",
+      "permission",
+    );
+
+    expect(ctx.pendingDecisions.has("s-1")).toBe(true);
+    expect(ctx.sendChatMessage).toHaveBeenCalledWith(
+      expect.stringContaining("Waiting for your approval"),
+      "coding-agent",
+    );
+    expect(ctx.sendChatMessage).toHaveBeenCalledWith(
+      expect.stringContaining('Suggested action: reply "y".'),
+      "coding-agent",
+    );
   });
 });
 

@@ -139,6 +139,33 @@ describe("spawnAgentAction", () => {
       });
     });
 
+    it("denies Discord users without task-agent access", async () => {
+      const runtime = createMockRuntime(createMockPTYService());
+      const callback = jest.fn();
+
+      const result = await spawnAgentAction.handler(
+        runtime as unknown as IAgentRuntime,
+        createMockMessage({
+          source: "discord",
+          agentType: "claude",
+          workdir: validWorkdir,
+          task: "Fix the bug",
+        }) as unknown as Memory,
+        undefined,
+        {},
+        callback,
+      );
+
+      expect(result?.success).toBe(false);
+      expect(result?.error).toBe("FORBIDDEN");
+      expect(mockSpawnSession).not.toHaveBeenCalled();
+      expect(callback).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: expect.stringContaining("requires a verified OWNER or ADMIN role"),
+        }),
+      );
+    });
+
     it("should use the preferred agent type if not specified", async () => {
       const runtime = createMockRuntime(createMockPTYService());
       const message = createMockMessage({

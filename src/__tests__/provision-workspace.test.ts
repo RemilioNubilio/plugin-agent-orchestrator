@@ -27,6 +27,7 @@ const createMockRuntime = (workspaceService: unknown = null) => ({
     if (name === "CODING_WORKSPACE_SERVICE") return workspaceService;
     return null;
   }),
+  getSetting: jest.fn(),
 });
 
 const createMockMessage = (content: Record<string, unknown> = {}) => ({
@@ -119,6 +120,32 @@ describe("provisionWorkspaceAction", () => {
       expect(callback).toHaveBeenCalledWith(
         expect.objectContaining({
           text: expect.stringContaining("/tmp/workspaces"),
+        }),
+      );
+    });
+
+    it("denies Discord users without task-agent access", async () => {
+      const workspaceService = createMockWorkspaceService();
+      const runtime = createMockRuntime(workspaceService);
+      const callback = jest.fn();
+
+      const result = await provisionWorkspaceAction.handler(
+        runtime as unknown as IAgentRuntime,
+        createMockMessage({
+          source: "discord",
+          repo: "https://github.com/user/repo.git",
+        }) as unknown as Memory,
+        undefined,
+        {},
+        callback,
+      );
+
+      expect(result?.success).toBe(false);
+      expect(result?.error).toBe("FORBIDDEN");
+      expect(mockProvisionWorkspace).not.toHaveBeenCalled();
+      expect(callback).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: expect.stringContaining("ADMIN or higher"),
         }),
       );
     });

@@ -264,6 +264,31 @@ function formatDecisionResponse(
     : decision.response;
 }
 
+function truncateForUser(text: string, max = 140): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= max) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, max)}...`;
+}
+
+function formatSuggestedAction(
+  decision: CoordinationLLMResponse | null,
+): string {
+  if (!decision) {
+    return "Needs human review with no automatic suggestion.";
+  }
+  if (decision.action === "respond") {
+    if (decision.useKeys && decision.keys?.length) {
+      return `Suggested action: send keys ${decision.keys.join(", ")}.`;
+    }
+    if (decision.response?.trim()) {
+      return `Suggested action: reply "${truncateForUser(decision.response, 80)}".`;
+    }
+  }
+  return `Suggested action: ${decision.action}.`;
+}
+
 function decisionFromSuggestedResponse(
   suggestedResponse: string,
   reasoning = "Used adapter-provided auto-response for a routine blocking prompt.",
@@ -1247,6 +1272,10 @@ export async function handleBlocked(
         reason: "max_auto_responses_exceeded",
       },
     });
+    ctx.sendChatMessage(
+      `[${taskCtx.label}] Paused for your attention after ${MAX_AUTO_RESPONSES} consecutive automatic approvals. Prompt: ${truncateForUser(promptText, 180)}`,
+      "coding-agent",
+    );
     return;
   }
 
@@ -1283,6 +1312,10 @@ export async function handleBlocked(
         decision: "escalate",
         reasoning: "Supervision level is notify — broadcasting only",
       });
+      ctx.sendChatMessage(
+        `[${taskCtx.label}] Waiting on a blocked prompt: ${truncateForUser(promptText, 180)}`,
+        "coding-agent",
+      );
       break;
   }
 }
@@ -1504,6 +1537,10 @@ export async function handleTurnComplete(
             ? `${instruction.slice(0, 120)}...`
             : instruction;
         ctx.log(`[${taskCtx.label}] Turn done, continuing: ${preview}`);
+        ctx.sendChatMessage(
+          `[${taskCtx.label}] Continuing work: ${preview || "sent follow-up instructions."}`,
+          "coding-agent",
+        );
       } else if (decision.action === "escalate") {
         ctx.sendChatMessage(
           `[${taskCtx.label}] Turn finished — needs your attention: ${decision.reasoning}`,
@@ -1626,6 +1663,10 @@ export async function handleAutonomousDecision(
           reason: "invalid_llm_response",
         },
       });
+      ctx.sendChatMessage(
+        `[${taskCtx.label}] Needs your attention: the coordinator could not decide how to handle "${truncateForUser(promptText, 160)}".`,
+        "coding-agent",
+      );
       return;
     }
 
@@ -1866,6 +1907,18 @@ export async function handleConfirmDecision(
         fromPipeline: decisionFromPipeline,
       },
     });
+    ctx.sendChatMessage(
+      [
+        `[${taskCtx.label}] Waiting for your approval: ${truncateForUser(promptText, 180)}`,
+        formatSuggestedAction(decision),
+        decision?.reasoning
+          ? `Reason: ${truncateForUser(decision.reasoning, 180)}`
+          : "",
+      ]
+        .filter(Boolean)
+        .join(" "),
+      "coding-agent",
+    );
   } finally {
     ctx.inFlightDecisions.delete(sessionId);
     await drainPendingTurnComplete(ctx, sessionId);

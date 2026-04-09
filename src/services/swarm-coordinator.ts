@@ -30,6 +30,7 @@ import { normalizeAgentType } from "./pty-types.js";
 import {
   normalizeCoordinatorEvent,
   type CoordinatorBlockedEvent,
+  type CoordinatorLoginRequiredEvent,
   type CoordinatorNormalizedEvent,
 } from "./coordinator-event-normalizer.js";
 import type {
@@ -254,6 +255,9 @@ const MAX_PRE_BRIDGE_BUFFER = 100;
 /** Grace window where a late task_complete can recover a recently-stopped task. */
 const STOPPED_RECOVERY_WINDOW_MS = 90_000;
 const FAILOVER_OUTPUT_MAX_CHARS = 4_000;
+const MAX_AUTOMATIC_ERROR_RECOVERIES = 2;
+const ALTERNATE_FRAMEWORK_ERROR_RE =
+  /\b(auth|login|credential|401|403|unauthorized|forbidden|token|api key|not found|enoent|missing executable|command not found)\b/i;
 
 function inferProviderSource(
   framework: TaskAgentFrameworkAvailability,
@@ -1856,6 +1860,49 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
     );
   }
 
+  private getRecoveryCandidates(
+    frameworks: TaskAgentFrameworkAvailability[],
+    currentFramework: SupportedTaskAgentAdapter,
+    preferredFrameworkId: TaskAgentFrameworkId,
+    preferAlternative: boolean,
+  ): TaskAgentFrameworkAvailability[] {
+    const healthy = frameworks.filter(
+      (framework) =>
+        framework.installed && framework.authReady && !framework.temporarilyDisabled,
+    );
+    const byId = new Map(healthy.map((framework) => [framework.id, framework]));
+    const orderedIds: TaskAgentFrameworkId[] = [];
+
+    if (!preferAlternative) {
+      orderedIds.push(currentFramework);
+    }
+    orderedIds.push(preferredFrameworkId);
+    for (const framework of healthy) {
+      orderedIds.push(framework.id);
+    }
+
+    const seen = new Set<TaskAgentFrameworkId>();
+    const candidates: TaskAgentFrameworkAvailability[] = [];
+    for (const id of orderedIds) {
+      if (seen.has(id)) {
+        continue;
+      }
+      seen.add(id);
+      if (preferAlternative && id === currentFramework) {
+        continue;
+      }
+      const framework = byId.get(id);
+      if (framework) {
+        candidates.push(framework);
+      }
+    }
+    return candidates;
+  }
+
+  private shouldPreferAlternativeFrameworkForError(reason: string): boolean {
+    return ALTERNATE_FRAMEWORK_ERROR_RE.test(reason);
+  }
+
   private formatFailoverPrompt(
     taskCtx: TaskContext,
     failedFramework: SupportedTaskAgentAdapter,
@@ -1891,6 +1938,50 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
         ? `Recent terminal output from the failed session:\n${clippedOutput}\n`
         : "",
       "Use the existing workspace state instead of starting from scratch. Inspect the files, continue the task, run the needed validation, and then report what changed and how you verified it.",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  private formatErrorRecoveryPrompt(
+    taskCtx: TaskContext,
+    recoveryFramework: CodingAgentType,
+    reason: string,
+    recentOutput: string,
+  ): string {
+    const cleanedOutput = cleanForFailoverContext(recentOutput, taskCtx.workdir);
+    const trimmedOutput = cleanedOutput.trim();
+    const clippedOutput =
+      trimmedOutput.length > FAILOVER_OUTPUT_MAX_CHARS
+        ? trimmedOutput.slice(-FAILOVER_OUTPUT_MAX_CHARS)
+        : trimmedOutput;
+    const recentDecisions = taskCtx.decisions
+      .slice(-5)
+      .map(
+        (decision, index) =>
+          `${index + 1}. ${decision.event}: ${decision.reasoning}${decision.response ? ` (response: ${decision.response})` : ""}`,
+      )
+      .join("\n");
+    const recoveryMode =
+      recoveryFramework === taskCtx.agentType
+        ? `a fresh ${recoveryFramework} session`
+        : `a ${recoveryFramework} recovery session`;
+    return [
+      `Continue an in-progress task after the previous session terminated unexpectedly. Milady started ${recoveryMode} for recovery.`,
+      "",
+      "Original task:",
+      taskCtx.originalTask,
+      "",
+      `Failure reason: ${reason}`,
+      `Workspace: ${taskCtx.workdir}`,
+      "",
+      recentDecisions
+        ? `Recent coordinator decisions:\n${recentDecisions}\n`
+        : "",
+      clippedOutput
+        ? `Recent terminal output from the failed session:\n${clippedOutput}\n`
+        : "",
+      "Use the existing workspace state instead of starting over. Inspect the current files, recover from the failure, continue the task, run the needed validation, and then report exactly what changed and how you verified it.",
     ]
       .filter(Boolean)
       .join("\n");
@@ -2055,6 +2146,137 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
     return {
       replacementSessionId: replacementSession.id,
       replacementFramework: nextFramework.id,
+      replacementLabel,
+    };
+  }
+
+  private async attemptTaskRecovery(
+    taskCtx: TaskContext,
+    errorMsg: string,
+  ): Promise<{
+    replacementSessionId: string;
+    replacementFramework: CodingAgentType;
+    replacementLabel: string;
+  } | null> {
+    if (!this.ptyService) {
+      return null;
+    }
+
+    const failedSession = this.ptyService.getSession(taskCtx.sessionId);
+    const priorMetadata =
+      failedSession?.metadata &&
+      typeof failedSession.metadata === "object" &&
+      !Array.isArray(failedSession.metadata)
+        ? (failedSession.metadata as Record<string, unknown>)
+        : {};
+    const recoveryOrdinal =
+      typeof priorMetadata.recoveryOrdinal === "number"
+        ? priorMetadata.recoveryOrdinal + 1
+        : 1;
+    if (recoveryOrdinal > MAX_AUTOMATIC_ERROR_RECOVERIES) {
+      return null;
+    }
+
+    let recoveryFramework: CodingAgentType = taskCtx.agentType;
+    let recoveryAvailability: TaskAgentFrameworkAvailability | null = null;
+    if (this.isAutomaticFailoverFramework(taskCtx.agentType)) {
+      const frameworkState = await this.ptyService.getFrameworkState();
+      const candidates = this.getRecoveryCandidates(
+        frameworkState.frameworks,
+        taskCtx.agentType,
+        frameworkState.preferred.id,
+        this.shouldPreferAlternativeFrameworkForError(errorMsg),
+      );
+      const selected = candidates[0];
+      if (!selected) {
+        return null;
+      }
+      recoveryFramework = selected.id as CodingAgentType;
+      recoveryAvailability = selected;
+    }
+
+    const priorOutput = await Promise.race([
+      this.ptyService.getSessionOutput(taskCtx.sessionId, 200),
+      new Promise<string>((resolve) => setTimeout(() => resolve(""), 5_000)),
+    ]);
+    const replacementLabel = `${taskCtx.label} (${recoveryFramework} recovery ${recoveryOrdinal})`;
+    const replacementSession = await this.ptyService.spawnSession({
+      name:
+        failedSession?.name ??
+        `task-recovery-${Date.now()}-${recoveryFramework}`,
+      agentType: recoveryFramework,
+      workdir: taskCtx.workdir,
+      initialTask: this.formatErrorRecoveryPrompt(
+        taskCtx,
+        recoveryFramework,
+        errorMsg,
+        priorOutput,
+      ),
+      credentials: buildAgentCredentials(this.runtime),
+      approvalPreset: this.ptyService.defaultApprovalPreset,
+      skipAdapterAutoResponse: true,
+      metadata: {
+        ...priorMetadata,
+        threadId: taskCtx.threadId,
+        requestedType: recoveryFramework,
+        label: replacementLabel,
+        recoveryOrdinal,
+        recoveredFromFramework: taskCtx.agentType,
+        recoveredFromSessionId: taskCtx.sessionId,
+        recoveryReason: errorMsg,
+        recoveryAt: Date.now(),
+      },
+    });
+
+    await this.registerTask(replacementSession.id, {
+      threadId: taskCtx.threadId,
+      taskNodeId: taskCtx.taskNodeId,
+      agentType: recoveryFramework,
+      label: replacementLabel,
+      originalTask: taskCtx.originalTask,
+      workdir: taskCtx.workdir,
+      repo: taskCtx.repo,
+      providerSource: recoveryAvailability
+        ? inferProviderSource(recoveryAvailability)
+        : null,
+      metadata:
+        replacementSession.metadata &&
+        typeof replacementSession.metadata === "object" &&
+        !Array.isArray(replacementSession.metadata)
+          ? (replacementSession.metadata as Record<string, unknown>)
+          : undefined,
+    });
+
+    await this.taskRegistry.appendEvent({
+      threadId: taskCtx.threadId,
+      sessionId: replacementSession.id,
+      eventType: "task_error_recovery_started",
+      summary: `Continuing "${taskCtx.label}" after an agent error`,
+      data: {
+        fromFramework: taskCtx.agentType,
+        fromSessionId: taskCtx.sessionId,
+        toFramework: recoveryFramework,
+        toSessionId: replacementSession.id,
+        reason: errorMsg,
+        recoveryOrdinal,
+      },
+    });
+
+    this.broadcast({
+      type: "task_recovery_started",
+      sessionId: replacementSession.id,
+      timestamp: Date.now(),
+      data: {
+        fromSessionId: taskCtx.sessionId,
+        fromFramework: taskCtx.agentType,
+        toFramework: recoveryFramework,
+        reason: errorMsg,
+      },
+    });
+
+    return {
+      replacementSessionId: replacementSession.id,
+      replacementFramework: recoveryFramework,
       replacementLabel,
     };
   }
@@ -2428,9 +2650,25 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
           sessionId,
           errorMsg,
         );
+        let recoveryResult: Awaited<ReturnType<typeof this.attemptTaskRecovery>> =
+          null;
         if (!failoverResult) {
+          try {
+            recoveryResult = await this.attemptTaskRecovery(taskCtx, errorMsg);
+          } catch (recoveryError) {
+            this.log(
+              `Automatic error recovery failed for "${taskCtx.label}": ${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}`,
+            );
+          }
+        }
+        if (recoveryResult) {
           this.sendChatMessage(
-            `"${taskCtx.label}" hit an error: ${errorMsg}`,
+            `"${taskCtx.label}" hit an error: ${errorMsg}. Milady is continuing the same task on ${recoveryResult.replacementFramework}.`,
+            "coding-agent",
+          );
+        } else if (!failoverResult) {
+          this.sendChatMessage(
+            `"${taskCtx.label}" hit an error and needs your attention: ${errorMsg}`,
             "coding-agent",
           );
         }
@@ -2442,11 +2680,16 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
           summary: `Task "${taskCtx.label}" errored`,
           data: { status: "error", message: errorMsg },
         });
-        checkAllTasksComplete(this);
+        if (!failoverResult && !recoveryResult) {
+          checkAllTasksComplete(this);
+        }
         break;
       }
 
       case "stopped":
+        {
+          const alreadyTerminal =
+            taskCtx.status === "completed" || taskCtx.status === "error";
         // Don't downgrade "completed" or "error" to "stopped" — the async
         // stopSession fires after executeDecision already marked the task.
         if (taskCtx.status !== "completed" && taskCtx.status !== "error") {
@@ -2467,8 +2710,15 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
           summary: `Task "${taskCtx.label}" stopped`,
           data: { status: taskCtx.status },
         });
+        if (!alreadyTerminal) {
+          this.sendChatMessage(
+            `"${taskCtx.label}" stopped before completion.`,
+            "coding-agent",
+          );
+        }
         checkAllTasksComplete(this);
         break;
+        }
 
       case "ready":
         taskCtx.status = "active";
@@ -2494,6 +2744,36 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
           data: { status: "ready" },
         });
         break;
+
+      case "login_required": {
+        const loginEvent = normalized as CoordinatorLoginRequiredEvent;
+        taskCtx.status = "blocked";
+        this.broadcast({
+          type: "login_required",
+          sessionId,
+          timestamp: Date.now(),
+          data,
+        });
+        await this.taskRegistry.appendEvent({
+          threadId: taskCtx.threadId,
+          sessionId,
+          eventType: "task_status_changed",
+          summary: `Task "${taskCtx.label}" is waiting for login`,
+          data: {
+            status: "blocked",
+            reason: "login_required",
+            instructions: loginEvent.instructions ?? null,
+            url: loginEvent.url ?? null,
+          },
+        });
+        const loginParts = [
+          `"${taskCtx.label}" needs a provider login before it can continue.`,
+          loginEvent.instructions?.trim() || "",
+          loginEvent.url ? `Login link: ${loginEvent.url}` : "",
+        ].filter(Boolean);
+        this.sendChatMessage(loginParts.join(" "), "coding-agent");
+        break;
+      }
 
       case "tool_running": {
         // Agent is actively working via an external tool — keep watchdog happy
@@ -2551,9 +2831,9 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
             }
           }
 
-          this.log(
-            `[${taskCtx.label}] Running ${toolDesc}.${urlSuffix} The agent is working outside the terminal.`,
-          );
+          const message = `[${taskCtx.label}] Running ${toolDesc}.${urlSuffix} The agent is working outside the terminal.`;
+          this.log(message);
+          this.sendChatMessage(message, "coding-agent");
         }
         break;
       }
@@ -2665,6 +2945,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
               : undefined,
           reasoning: `Human-approved: ${decision.reasoning}`,
         });
+        await this.syncTaskContext(taskCtx);
       }
 
       await this.executeDecision(sessionId, decision);
@@ -2694,6 +2975,12 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
           keys: decision.keys,
         },
       });
+      if (taskCtx) {
+        this.sendChatMessage(
+          `"${taskCtx.label}" was approved. Milady is continuing the task now.`,
+          "coding-agent",
+        );
+      }
     } else {
       // Rejected — record and broadcast
       if (taskCtx) {
@@ -2705,6 +2992,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
           decision: "escalate",
           reasoning: "Human rejected the suggested action",
         });
+        await this.syncTaskContext(taskCtx);
       }
       this.pendingDecisions.delete(sessionId);
       await this.taskRegistry.deletePendingDecision(sessionId);
@@ -2724,6 +3012,10 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
         timestamp: Date.now(),
         data: { prompt: pending.promptText },
       });
+      this.sendChatMessage(
+        `"${pending.taskContext.label}" remains blocked after the suggested action was rejected. Prompt: ${pending.promptText}`,
+        "coding-agent",
+      );
     }
   }
 
