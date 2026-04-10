@@ -191,7 +191,7 @@ const STANDARD_FRAMEWORKS: SupportedTaskAgentAdapter[] = [
 ];
 
 const TASK_AGENT_COMPLEXITY_RE =
-  /\b(repo|repository|code|coding|debug|fix|implement|investigate|research|analyze|analysis|summarize|summary|write|draft|document|plan|workflow|automation|parallel|delegate|subtask|agent|orchestrate|coordinate|compare|test|tests|pull request|pr\b|branch|commit)\b/i;
+  /\b(repo|repository|code|coding|debug|fix|implement|investigate|research|analyze|analysis|summarize|summary|write|draft|document|plan|workflow|automation|parallel|delegate|subtask|agent|orchestrate|coordinate|compare|test|tests|pull request|pr\b|branch|commit|browser|website|webpage|thread|comment|post|form|navigate|api|mcp)\b/i;
 
 let frameworkStateCache:
   | {

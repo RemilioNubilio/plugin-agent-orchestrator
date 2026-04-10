@@ -59,7 +59,7 @@ export const startCodingTaskAction: BackgroundAction = {
 
   description:
     "Create one or more asynchronous task agents for any open-ended multi-step job. " +
-    "These task agents can code, debug, research, write, analyze, plan, document, and automate while the main agent stays free to keep talking with the user. " +
+    "These task agents are not limited to coding: they can code, debug, research, write, analyze, plan, document, automate, browse, use APIs/MCP tools, operate websites/forms, and carry out detailed execution while the main agent stays free to keep talking with the user. " +
     "If a repo URL is provided, a workspace is provisioned automatically; if no repo is provided, the task agent runs in a safe scratch directory. " +
     "Use this whenever the work is more involved than a simple direct reply. " +
     "IMPORTANT: If the user references a repository from conversation history (e.g. 'in the same repo', " +
@@ -96,6 +96,21 @@ export const startCodingTaskAction: BackgroundAction = {
         name: "{{agentName}}",
         content: {
           text: "I'll coordinate parallel task agents for that and keep the results organized.",
+          action: "CREATE_TASK",
+        },
+      },
+    ],
+    [
+      {
+        name: "{{user1}}",
+        content: {
+          text: "Use a sub-agent to inspect that website thread and post a reply that we are looking into it.",
+        },
+      },
+      {
+        name: "{{agentName}}",
+        content: {
+          text: "I'll create a task agent for that workflow and have it use the available tools to inspect the thread and reply.",
           action: "CREATE_TASK",
         },
       },
@@ -313,7 +328,7 @@ export const startCodingTaskAction: BackgroundAction = {
     {
       name: "task",
       description:
-        "The open-ended task or prompt to send once the task agent is ready. Used for single-agent mode.",
+        "The open-ended task or prompt to send once the task agent is ready. Used for single-agent mode. This can describe repo work, research, writing, browser/site operations, replies/comments, API workflows, or other detailed execution.",
       required: false,
       schema: { type: "string" as const },
     },
@@ -322,7 +337,7 @@ export const startCodingTaskAction: BackgroundAction = {
       description:
         "Pipe-delimited list of task-agent assignments for multi-agent mode. Each segment is a task description. " +
         "Optionally prefix with an agent type: 'claude:Fix auth | gemini:Write tests | codex:Update docs'. " +
-        "Each task agent gets its own workspace clone. If provided, the 'task' parameter is ignored.",
+        "Each task agent gets its own workspace clone or scratch context. Subtasks may be coding, research, writing, browser work, API operations, or other execution. If provided, the 'task' parameter is ignored.",
       required: false,
       schema: { type: "string" as const },
     },

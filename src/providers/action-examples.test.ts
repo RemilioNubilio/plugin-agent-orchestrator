@@ -61,6 +61,17 @@ describe("codingAgentExamplesProvider", () => {
     expect(result.text).toContain("Examples:");
   });
 
+  it("returns full examples for browser or website workflows", async () => {
+    const result = await codingAgentExamplesProvider.get(
+      mockRuntime,
+      mockMessage("Use a sub-agent to inspect that website thread and post a reply"),
+      mockState,
+    );
+    expect(result.text).toContain("Examples:");
+    expect(result.text).toContain("NOT limited to coding");
+    expect(result.text).toContain("operate websites and forms");
+  });
+
   it("returns the compact variant for casual conversation", async () => {
     const result = await codingAgentExamplesProvider.get(
       mockRuntime,

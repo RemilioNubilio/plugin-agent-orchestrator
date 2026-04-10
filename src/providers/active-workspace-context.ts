@@ -87,7 +87,7 @@ export const activeWorkspaceContextProvider: Provider = {
     if (workspaces.length === 0 && sessions.length === 0 && tasks.length === 0) {
       lines.push("No active workspaces or task-agent sessions.");
       lines.push(
-        "Use CREATE_TASK when the user needs anything more involved than a simple direct reply.",
+        "Use CREATE_TASK when the user needs anything more involved than a simple direct reply, including non-code browser, website, API, or operational workflows.",
       );
     } else {
       if (workspaces.length > 0) {
@@ -179,7 +179,7 @@ export const activeWorkspaceContextProvider: Provider = {
     if (sessions.length > 0 || tasks.length > 0) {
       lines.push("");
       lines.push(
-        "Use SEND_TO_AGENT to unblock a running agent or assign it a new tracked task, LIST_AGENTS to inspect progress, STOP_AGENT to cancel, and FINALIZE_WORKSPACE when the work should be published or wrapped up.",
+        "Use SEND_TO_AGENT to unblock a running agent or assign it a new tracked task, LIST_AGENTS to inspect progress, STOP_AGENT to cancel, and FINALIZE_WORKSPACE when repo work should be published or wrapped up.",
       );
     }
 

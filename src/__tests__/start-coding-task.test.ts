@@ -161,6 +161,11 @@ describe("startCodingTaskAction", () => {
       expect(names).toContain("label");
       expect(names).toContain("approvalPreset");
     });
+
+    it("should describe non-code task-agent capability clearly", () => {
+      expect(startCodingTaskAction.description).toContain("not limited to coding");
+      expect(startCodingTaskAction.description).toContain("operate websites/forms");
+    });
   });
 
   // -------------------------------------------------------------------------

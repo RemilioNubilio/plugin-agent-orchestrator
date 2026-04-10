@@ -6,7 +6,7 @@ Built for [Milady](https://github.com/milady-ai/milady). The plugin registers el
 
 ## Features
 
-- **Open-ended task delegation**: Use task agents for anything beyond a simple reply, including coding, research, drafting, debugging, repo work, and multi-step execution
+- **Open-ended task delegation**: Use task agents for anything beyond a simple reply, including coding, research, drafting, debugging, repo work, browser/site workflows, API operations, and multi-step execution
 - **PTY session management**: Spawn, control, and monitor task agents running in pseudo-terminals
 - **Current task status**: Surface active sessions, coordinator task state, and pending confirmations so the main agent can keep the user updated
 - **Subscription-aware framework preference**: Prefer Claude Code or Codex when Milady knows the user is logged in with Anthropic or OpenAI-backed subscriptions
@@ -75,6 +75,8 @@ const agent = {
 
 Legacy action names such as `START_CODING_TASK`, `SPAWN_CODING_AGENT`, `SEND_TO_CODING_AGENT`, `LIST_CODING_AGENTS`, and `STOP_CODING_AGENT` remain supported as aliases.
 
+Task agents are not coding-only. If the selected framework exposes browser tools, MCP tools, shell tools, or site/API integrations, the orchestrator can delegate detailed operational work such as inspecting a web thread, gathering context from a page, filling forms, posting replies, updating external systems, or running non-repo workflows.
+
 ### Example Conversation
 
 ```
@@ -94,6 +96,10 @@ User: Create a PR for the fix
 Agent: Workspace finalized!
        Commit: a1b2c3d4
        PR #42: https://github.com/user/repo/pull/42
+
+User: Open that website thread, inspect the context, and post a reply that we're looking into it.
+Agent: Starting a task agent for the browser workflow...
+       Session ID: def456, Status: running
 ```
 
 ## Services

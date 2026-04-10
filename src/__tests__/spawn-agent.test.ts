@@ -72,6 +72,8 @@ describe("spawnAgentAction", () => {
 
     it("should have task-agent description", () => {
       expect(spawnAgentAction.description).toContain("task agent");
+      expect(spawnAgentAction.description).toContain("not limited to coding");
+      expect(spawnAgentAction.description).toContain("browser/site workflows");
     });
 
     it("should define parameters", () => {

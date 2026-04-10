@@ -56,7 +56,7 @@ export const spawnAgentAction: Action = {
 
   description:
     "Spawn a specific task agent inside an existing workspace when you need direct control. " +
-    "These agents are intentionally open-ended and can handle investigation, writing, planning, testing, synthesis, repo work, and general async task execution. " +
+    "These agents are intentionally open-ended and are not limited to coding: they can handle investigation, writing, planning, testing, synthesis, repo work, browser/site workflows, API operations, and general async task execution. " +
     "Returns a session ID that can be used to interact with the agent.",
 
   examples: [
@@ -84,6 +84,21 @@ export const spawnAgentAction: Action = {
         name: "{{agentName}}",
         content: {
           text: "I'll create a task-agent session for that.",
+          action: "SPAWN_AGENT",
+        },
+      },
+    ],
+    [
+      {
+        name: "{{user1}}",
+        content: {
+          text: "Start a task agent that can open the site, inspect the thread, and post the reply for me.",
+        },
+      },
+      {
+        name: "{{agentName}}",
+        content: {
+          text: "I'll spawn a task-agent session for that browser workflow.",
           action: "SPAWN_AGENT",
         },
       },
@@ -415,7 +430,8 @@ export const spawnAgentAction: Action = {
     },
     {
       name: "task",
-      description: "Open-ended task or prompt to send to the task agent once spawned.",
+      description:
+        "Open-ended task or prompt to send to the task agent once spawned. This may cover repo work, research, writing, browser/site actions, replies/comments, API workflows, or other detailed execution.",
       required: false,
       schema: { type: "string" as const },
     },
