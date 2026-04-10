@@ -268,7 +268,13 @@ export class PTYService {
         const coordinator = this.coordinator;
         if (!coordinator) return false;
         const taskCtx = coordinator.getTaskContext(sessionId);
-        return taskCtx?.status === "active";
+        // tool_running counts as active for PTY purposes — the task is
+        // still alive, just executing a tool. matches the same expansion
+        // applied to handleTurnComplete and drainPendingTurnComplete so
+        // tool-heavy scratch tasks aren't treated as inactive mid-run.
+        return (
+          taskCtx?.status === "active" || taskCtx?.status === "tool_running"
+        );
       },
       hasTaskActivity: (sessionId) => {
         const coordinator = this.coordinator;

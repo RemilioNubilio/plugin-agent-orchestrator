@@ -1202,7 +1202,26 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
       },
     });
 
-    if (thread.acceptanceCriteria.length > 0) {
+    // The acceptance verifier is a code-completion safety check: it asks the
+    // LLM whether file/test evidence in the workspace matches the criteria,
+    // catching agents that lie about completing code work. It's only useful
+    // when there is real artifact evidence to verify (a repo) AND real
+    // criteria to check against (provided or model-generated, not the
+    // baseline placeholder fallback). For chat / question-answering tasks
+    // (no repo, response IS the deliverable) the verifier produces false
+    // failures because there are no files to inspect.
+    const acceptanceCriteriaSource =
+      typeof thread.metadata?.acceptanceCriteriaSource === "string"
+        ? thread.metadata.acceptanceCriteriaSource
+        : null;
+    const hasRepo =
+      typeof thread.metadata?.repo === "string" &&
+      thread.metadata.repo.trim().length > 0;
+    if (
+      thread.acceptanceCriteria.length > 0 &&
+      acceptanceCriteriaSource !== "baseline" &&
+      hasRepo
+    ) {
       await this.taskRegistry.createTaskVerifierJob({
         threadId: input.threadId,
         nodeId: rootNode.id,
@@ -2619,7 +2638,18 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
         const coalesceTimer = setTimeout(() => {
           this.turnCompleteCoalesceTimers.delete(sessionId);
           const currentTask = this.tasks.get(sessionId);
-          if (currentTask && currentTask.status === "active") {
+          // Accept both "active" and "tool_running" as live pre-validation
+          // states. Subagents that use tools (curl, file ops, etc.) sit in
+          // "tool_running" almost continuously, so by the time task_complete
+          // arrives the status is usually "tool_running" — the prior strict
+          // "=== active" check meant validation never ran for tool-heavy
+          // scratch tasks, leaving them stuck and propagating goal failure
+          // through the watchdog.
+          if (
+            currentTask &&
+            (currentTask.status === "active" ||
+              currentTask.status === "tool_running")
+          ) {
             handleTurnComplete(
               this,
               sessionId,
