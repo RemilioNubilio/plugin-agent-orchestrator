@@ -21,6 +21,7 @@ import type { AgentSelectionStrategy } from "../services/agent-selection.js";
 import { readConfigEnvKey } from "../services/config-env.js";
 import type { PTYService } from "../services/pty-service.js";
 import { getCoordinator } from "../services/pty-service.js";
+import { diagnoseWorkspaceBootstrapFailure } from "../services/repo-input.js";
 import {
   type CodingAgentType,
   isPiAgentType,
@@ -404,6 +405,8 @@ export async function handleMultiAgent(
       specLabel,
     } = plannedAgent;
     const taskNodeId = graphPlan?.workerNodes[i]?.id;
+    let failureStage: "workspace" | "preflight" | "spawn" | "register" =
+      "workspace";
 
     try {
       // Provision workspace (each agent gets its own clone or scratch dir)
@@ -422,6 +425,7 @@ export async function handleMultiAgent(
       }
 
       // Preflight check
+      failureStage = "preflight";
       if (specAgentType !== "shell" && specAgentType !== "pi") {
         const [preflight] = await ptyService.checkAvailableAgents([
           specAgentType as Exclude<CodingAgentType, "shell" | "pi">,
@@ -463,6 +467,7 @@ export async function handleMultiAgent(
         !!coordinator && llmProvider === "subscription";
       const useDirectCallbackResponses = Boolean(callback);
 
+      failureStage = "spawn";
       const session: SessionInfo = await ptyService.spawnSession({
         name: `coding-${Date.now()}-${i}`,
         agentType: specAgentType,
@@ -512,6 +517,7 @@ export async function handleMultiAgent(
         coordinatorManagedSession && !useDirectCallbackResponses,
       );
       if (coordinator && specTask) {
+        failureStage = "register";
         await coordinator.registerTask(session.id, {
           threadId: taskThread?.id ?? session.id,
           taskNodeId,
@@ -545,12 +551,25 @@ export async function handleMultiAgent(
         });
       }
     } catch (error) {
-      const errorMessage =
+      const rawErrorMessage =
         error instanceof Error ? error.message : String(error);
+      const errorMessage = repo && failureStage === "workspace"
+        ? `${rawErrorMessage}. ${diagnoseWorkspaceBootstrapFailure(
+            repo,
+            rawErrorMessage,
+          )}`
+        : rawErrorMessage;
       logger.error(
         `[START_CODING_TASK] Failed to spawn agent ${i + 1}:`,
         errorMessage,
       );
+      if (callback) {
+        await callback({
+          text:
+            `[${i + 1}/${agentSpecs.length}] Failed to launch "${specLabel}". ` +
+            errorMessage,
+        });
+      }
       results.push({
         sessionId: "",
         agentType: specAgentType,

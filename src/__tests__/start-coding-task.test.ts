@@ -316,7 +316,27 @@ describe("startCodingTaskAction", () => {
       );
 
       expect(mockProvisionWorkspace).toHaveBeenCalledWith({
-        repo: "https://github.com/acme/my-app",
+        repo: "https://github.com/acme/my-app.git",
+      });
+    });
+
+    it("should normalize owner/repo repo params before provisioning", async () => {
+      const ptyService = createMockPTYService();
+      const wsService = createMockWorkspaceService();
+      const runtime = createMockRuntime(ptyService, wsService);
+      const message = createMockMessage({ text: "Debug the failing task agent" });
+      const callback = jest.fn();
+
+      await startCodingTaskAction.handler(
+        runtime as unknown as IAgentRuntime,
+        message as unknown as Memory,
+        undefined,
+        { parameters: { task: "Debug the failing task agent", repo: "milady-ai/milady" } },
+        callback,
+      );
+
+      expect(mockProvisionWorkspace).toHaveBeenCalledWith({
+        repo: "https://github.com/milady-ai/milady.git",
       });
     });
 
@@ -493,6 +513,42 @@ describe("startCodingTaskAction", () => {
       expect(callback).toHaveBeenCalledWith(
         expect.objectContaining({
           text: expect.stringContaining("not installed"),
+        }),
+      );
+    });
+
+    it("should surface workspace bootstrap diagnostics when clone provisioning fails", async () => {
+      const ptyService = createMockPTYService();
+      const wsService = createMockWorkspaceService();
+      const runtime = createMockRuntime(ptyService, wsService);
+      const message = createMockMessage({ text: "Debug the launcher failure" });
+      const callback = jest.fn();
+
+      mockProvisionWorkspace.mockRejectedValueOnce(
+        new Error("fatal: could not resolve host: github.com"),
+      );
+
+      const result = await startCodingTaskAction.handler(
+        runtime as unknown as IAgentRuntime,
+        message as unknown as Memory,
+        undefined,
+        {
+          parameters: {
+            task: "Debug the launcher failure",
+            repo: "https://github.com/acme/my-app",
+          },
+        },
+        callback,
+      );
+
+      expect(result?.success).toBe(false);
+      const agents = (result as { data?: { agents?: Array<{ error?: string }> } })?.data?.agents;
+      expect(agents?.[0]?.error).toContain(
+        "Workspace bootstrap failed on DNS or network resolution",
+      );
+      expect(callback).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: expect.stringContaining('Failed to launch'),
         }),
       );
     });

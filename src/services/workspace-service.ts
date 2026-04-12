@@ -56,6 +56,7 @@ import {
   removeScratchDir,
 } from "./workspace-lifecycle.js";
 import { readConfigEnvKey } from "./config-env.js";
+import { normalizeRepositoryInput } from "./repo-input.js";
 
 export type {
   CodingWorkspaceConfig,
@@ -220,9 +221,9 @@ export class CodingWorkspaceService {
       throw new Error("CodingWorkspaceService not initialized");
     }
 
-    // Strip trailing slashes to prevent git-workspace-service from
-    // appending .git incorrectly (e.g. "repo/" -> "repo/.git")
-    const repo = options.repo.replace(/\/+$/, "");
+    // Normalize common shorthand like owner/repo before handing it to the
+    // lower-level clone service, which expects an actual remote URL.
+    const repo = normalizeRepositoryInput(options.repo);
     const executionId = options.execution?.id ?? `exec-${Date.now()}`;
     const taskId = options.task?.id ?? `task-${Date.now()}`;
 

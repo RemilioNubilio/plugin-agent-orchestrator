@@ -129,6 +129,18 @@ describe("CodingWorkspaceService", () => {
       expect(workspace.isWorktree).toBe(false);
     });
 
+    it("should normalize owner/repo shorthand before cloning", async () => {
+      await service.provisionWorkspace({
+        repo: "milady-ai/milady",
+      });
+
+      expect(mockWorkspaceService.provision).toHaveBeenCalledWith(
+        expect.objectContaining({
+          repo: "https://github.com/milady-ai/milady.git",
+        }),
+      );
+    });
+
     it("should provision with worktree strategy", async () => {
       // First provision parent
       const parent = await service.provisionWorkspace({

@@ -32,6 +32,7 @@ import {
 import type { PTYService } from "../services/pty-service.js";
 import { getCoordinator } from "../services/pty-service.js";
 import { normalizeAgentType } from "../services/pty-types.js";
+import { normalizeRepositoryInput } from "../services/repo-input.js";
 import { requireTaskAgentAccess } from "../services/task-policy.js";
 import type { CodingWorkspaceService } from "../services/workspace-service.js";
 import {
@@ -198,6 +199,10 @@ export const startCodingTaskAction: BackgroundAction = {
       }
     }
 
+    if (repo) {
+      repo = normalizeRepositoryInput(repo);
+    }
+
     const selectionTask =
       (params?.task as string) ??
       (content.task as string) ??
@@ -295,7 +300,7 @@ export const startCodingTaskAction: BackgroundAction = {
     {
       name: "repo",
       description:
-        "Git repository URL to clone (e.g. https://github.com/owner/repo). " +
+        "Git repository to clone (e.g. https://github.com/owner/repo or owner/repo). " +
         "ALWAYS provide this when the user is working on a real project or references a repo from context. " +
         "Only omit for pure research/scratch tasks with no target repository. " +
         "If unsure which repo, ask the user before spawning.",
