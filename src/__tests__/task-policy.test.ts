@@ -5,6 +5,9 @@ process.env.MILADY_SKIP_LOCAL_PLUGIN_ROLES = "1";
 
 const mockCheckSenderRole = jest.fn();
 
+mock.module("@elizaos/core/roles", () => ({
+  checkSenderRole: mockCheckSenderRole,
+}));
 mock.module("@miladyai/plugin-roles", () => ({
   checkSenderRole: mockCheckSenderRole,
 }));
