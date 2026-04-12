@@ -27,7 +27,8 @@
     "test": "bun test",
     "test:live": "ORCHESTRATOR_LIVE=1 bun test src/__tests__/task-agent-live.e2e.test.ts",
     "test:watch": "bun test --watch",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:e2e": "bun run test:live"
   },
   "peerDependencies": {
     "@elizaos/core": "alpha",
