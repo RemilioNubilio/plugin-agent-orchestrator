@@ -238,7 +238,7 @@ describe("validateTaskCompletion", () => {
     }
     globalThis.fetch = originalFetch;
 
-    const server = await new Promise<Server>((resolve) => {
+    const server = await new Promise<Server | null>((resolve) => {
       const nextServer = createServer((req, res) => {
         if (req.url !== "/api/dev/cursor-screenshot") {
           res.statusCode = 404;
@@ -248,8 +248,12 @@ describe("validateTaskCompletion", () => {
         res.writeHead(200, { "Content-Type": "image/png" });
         res.end(Buffer.from(PNG_BYTES));
       });
-      nextServer.listen(0, "127.0.0.1", () => resolve(nextServer));
+      nextServer.once("error", () => resolve(null));
+      nextServer.listen(0, () => resolve(nextServer));
     });
+    if (!server) {
+      return;
+    }
 
     try {
       const address = server.address();

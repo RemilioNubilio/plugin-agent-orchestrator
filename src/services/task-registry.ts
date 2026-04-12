@@ -591,6 +591,7 @@ export interface RecordTaskEvidenceInput {
 
 export interface ListTaskThreadsOptions {
   includeArchived?: boolean;
+  threadId?: string;
   status?: TaskThreadStatus;
   statuses?: TaskThreadStatus[];
   kind?: TaskThreadKind;
@@ -1154,6 +1155,9 @@ function buildThreadListWhereClauses(
   options: ListTaskThreadsOptions,
 ): string[] {
   const clauses: string[] = [];
+  if (options.threadId) {
+    clauses.push(`thread.id = ${sqlQuote(options.threadId)}`);
+  }
   if (!options.includeArchived) {
     clauses.push("thread.archived_at IS NULL");
   }
@@ -1602,6 +1606,11 @@ export class TaskRegistry {
       `CREATE INDEX IF NOT EXISTS idx_orchestrator_task_evidence_thread_id
          ON orchestrator_task_evidence(thread_id, created_at ASC)`,
     );
+    await executeRawSql(
+      this.runtime,
+      `CREATE INDEX IF NOT EXISTS idx_orchestrator_task_threads_search_text
+         ON orchestrator_task_threads(search_text)`,
+    );
 
     schemaReady.add(key);
   }
@@ -1950,9 +1959,10 @@ export class TaskRegistry {
 
   async getThreadSummary(threadId: string): Promise<TaskThreadSummary | null> {
     const rows = await this.listThreads({
+      threadId,
       includeArchived: true,
     });
-    return rows.find((row) => row.id === threadId) ?? null;
+    return rows[0] ?? null;
   }
 
   async findThreadIdBySessionId(sessionId: string): Promise<string | null> {

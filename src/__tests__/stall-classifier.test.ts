@@ -75,11 +75,11 @@ describe("stall-classifier", () => {
       ...overrides,
     });
 
-    it("returns task_complete when LLM responds with that state", async () => {
+    it("downgrades task_complete to still_working when LLM responds with that state", async () => {
       mockRuntime.useModel.mockResolvedValue('{"state":"task_complete"}');
       const result = await classifyStallOutput(makeCtx());
       expect(result).not.toBeNull();
-      expect(result?.state).toBe("task_complete");
+      expect(result?.state).toBe("still_working");
     });
 
     it("returns waiting_for_input with prompt and suggestedResponse", async () => {
@@ -250,7 +250,7 @@ describe("stall-classifier", () => {
       expect(result?.suggestedResponse).toBe("y");
     });
 
-    it("handles task_complete and records metrics", async () => {
+    it("downgrades task_complete to still_working for coordinator-managed sessions", async () => {
       const mockManager = {
         get: jest.fn().mockReturnValue({ startedAt: new Date(Date.now() - 5000) }),
       };
@@ -259,12 +259,8 @@ describe("stall-classifier", () => {
         makeCtx({ manager: mockManager }),
       );
       expect(result).not.toBeNull();
-      expect(result?.state).toBe("task_complete");
-      expect(mockMetrics.recordCompletion).toHaveBeenCalledWith(
-        "claude",
-        "classifier",
-        expect.any(Number),
-      );
+      expect(result?.state).toBe("still_working");
+      expect(mockMetrics.recordCompletion).not.toHaveBeenCalled();
     });
 
     it("returns null on LLM failure", async () => {
