@@ -37,6 +37,10 @@ type RoleCheckResult = {
 const LOCAL_ROLES_MODULE_CANDIDATES = [
   path.resolve(process.cwd(), "packages/plugin-roles/src/index.ts"),
   path.resolve(process.cwd(), "packages/plugin-roles/dist/index.js"),
+  path.resolve(
+    process.cwd(),
+    "packages/agent/src/runtime/roles/src/index.ts",
+  ),
 ];
 
 function normalizeRole(value: unknown): RoleName {
@@ -190,27 +194,29 @@ async function resolveSenderRole(
     }
   }
 
-  try {
-    // Optional milady-side package — resolved at runtime only. We use a
-    // dynamic module specifier so neither tsc nor biome flags it: tsc
-    // doesn't try to resolve the literal at type-check time, and biome's
-    // ts-ignore-prefers-ts-expect-error rule doesn't apply because there
-    // is no directive. If the package isn't installed the runtime
-    // `import()` simply throws and we fall through to the null return.
-    const rolesModuleSpecifier = "@miladyai/plugin-roles";
-    const rolesModule = (await import(rolesModuleSpecifier)) as {
-      checkSenderRole?: (
-        runtime: IAgentRuntime,
-        message: Memory,
-      ) => Promise<RoleCheckResult | null>;
-    };
-    if (typeof rolesModule.checkSenderRole !== "function") {
-      return null;
+  // Try well-known package specifiers that export checkSenderRole.
+  // @elizaos/core/roles is the standard location in eliza-based runtimes;
+  // @miladyai/plugin-roles is a legacy milady-specific package.
+  const PACKAGE_SPECIFIERS = [
+    "@elizaos/core/roles",
+    "@miladyai/plugin-roles",
+  ];
+  for (const specifier of PACKAGE_SPECIFIERS) {
+    try {
+      const rolesModule = (await import(specifier)) as {
+        checkSenderRole?: (
+          runtime: IAgentRuntime,
+          message: Memory,
+        ) => Promise<RoleCheckResult | null>;
+      };
+      if (typeof rolesModule.checkSenderRole === "function") {
+        return await rolesModule.checkSenderRole(runtime, message);
+      }
+    } catch {
+      // Package not available — try next candidate.
     }
-    return await rolesModule.checkSenderRole(runtime, message);
-  } catch {
-    return null;
   }
+  return null;
 }
 
 export async function requireTaskAgentAccess(
