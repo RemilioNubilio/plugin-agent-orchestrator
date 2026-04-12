@@ -334,9 +334,33 @@ export async function classifyStallOutput(
       log(`Stall classification: invalid state "${parsed.state}"`);
       return null;
     }
-    // Map tool_running → still_working (StallClassification doesn't have tool_running)
-    const mappedState: StallClassification["state"] =
-      parsed.state === "tool_running" ? "still_working" : parsed.state;
+    // Map tool_running → still_working (StallClassification doesn't have tool_running).
+    //
+    // Also downgrade task_complete → still_working. The stall classifier LLM
+    // guesses from raw stripped-ANSI terminal buffer text, which cannot
+    // reliably distinguish "agent is truly finished" from "shell prompt
+    // showed up between tool calls" or "intermediate command exited with a
+    // summary". Treating this LLM's task_complete guess as a completion
+    // signal causes the coordinator's turn-complete pipeline to fire
+    // mid-work and re-inject the original prompt, creating an infinite
+    // retry loop for long open-ended tasks.
+    //
+    // Task completion is signaled authoritatively by the agent's own hook
+    // system (routed through pty-service.handleHookEvent) and by the
+    // jsonl-based completion watcher in the milady package. The stall
+    // classifier is still useful for detecting waiting_for_input and error
+    // states, which is why we don't short-circuit those paths.
+    let mappedState: StallClassification["state"];
+    if (parsed.state === "tool_running" || parsed.state === "task_complete") {
+      mappedState = "still_working";
+      if (parsed.state === "task_complete") {
+        log(
+          `Stall classification for ${sessionId}: LLM said task_complete — downgrading to still_working (authoritative completion comes from hooks, not buffer guessing)`,
+        );
+      }
+    } else {
+      mappedState = parsed.state;
+    }
     const classification: StallClassification = {
       state: mappedState,
       prompt: parsed.prompt,
@@ -354,13 +378,6 @@ export async function classifyStallOutput(
     log(
       `Stall classification for ${sessionId}: ${classification.state}${classification.suggestedResponse ? ` → "${classification.suggestedResponse}"` : ""}`,
     );
-    if (classification.state === "task_complete") {
-      const session = manager?.get(sessionId);
-      const durationMs = session?.startedAt
-        ? Date.now() - new Date(session.startedAt).getTime()
-        : 0;
-      metricsTracker.recordCompletion(agentType, "classifier", durationMs);
-    }
     return classification;
   } catch (err) {
     log(`Stall classification failed: ${err}`);
@@ -556,8 +573,21 @@ export async function classifyAndDecideForCoordinator(
       return null;
     }
 
-    const mappedState: StallClassification["state"] =
-      parsed.state === "tool_running" ? "still_working" : parsed.state;
+    // Same downgrade rationale as classifyStallOutput: the LLM's task_complete
+    // guess from buffer text is unreliable on long multi-step tasks. Authoritative
+    // completion comes from the agent's hook system (pty-service.handleHookEvent)
+    // and the jsonl-based completion watcher in the milady package.
+    let mappedState: StallClassification["state"];
+    if (parsed.state === "tool_running" || parsed.state === "task_complete") {
+      mappedState = "still_working";
+      if (parsed.state === "task_complete") {
+        log(
+          `Combined classify+decide for ${sessionId}: LLM said task_complete — downgrading to still_working (authoritative completion comes from hooks)`,
+        );
+      }
+    } else {
+      mappedState = parsed.state;
+    }
 
     // Deterministic safety guard: if the LLM approved access to a path
     // outside the workspace, override with a decline. This runs before

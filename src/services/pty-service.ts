@@ -97,6 +97,20 @@ import {
 } from "./task-agent-frameworks.js";
 
 /**
+ * Grace period after `task_complete` before auto-stopping a PTY session.
+ * Short enough that stale subagents don't linger (and trigger spurious
+ * stall classifications that fire phantom heartbeats in downstream
+ * streamers), long enough that any backgrounded processes spawned by
+ * the agent can detach from the PTY parent before it exits.
+ *
+ * Previously 5000 ms in our nubs/full-working-state fork branch
+ * (commit 66a9a74); upstream alpha removed the auto-stop entirely in a
+ * later refactor which caused subagents to sit around for minutes after
+ * finishing their turn.
+ */
+const TASK_COMPLETE_STOP_DELAY_MS = 5_000;
+
+/**
  * Portable safety floor injected into every spawned coding-agent's memory
  * file. Locks the agent to its allocated workspace dir so it never wanders
  * into $HOME or /tmp regardless of caller-supplied memoryContent. Deployment-
@@ -273,7 +287,13 @@ export class PTYService {
         const coordinator = this.coordinator;
         if (!coordinator) return false;
         const taskCtx = coordinator.getTaskContext(sessionId);
-        return taskCtx?.status === "active";
+        // tool_running counts as active for PTY purposes — the task is
+        // still alive, just executing a tool. matches the same expansion
+        // applied to handleTurnComplete and drainPendingTurnComplete so
+        // tool-heavy scratch tasks aren't treated as inactive mid-run.
+        return (
+          taskCtx?.status === "active" || taskCtx?.status === "tool_running"
+        );
       },
       hasTaskActivity: (sessionId) => {
         const coordinator = this.coordinator;
@@ -1026,6 +1046,15 @@ export class PTYService {
         break;
       case "task_complete":
         this.emitEvent(sessionId, "task_complete", { ...data, source: "hook" });
+        // Auto-stop the PTY after a short grace period. Without this,
+        // subagents sit around firing stall classifications that then
+        // trigger phantom heartbeats in downstream streamers minutes
+        // after the user already got their answer. The grace period
+        // lets any backgrounded processes detach from the PTY parent
+        // before it exits.
+        setTimeout(() => {
+          this.stopSession(sessionId).catch(() => {});
+        }, TASK_COMPLETE_STOP_DELAY_MS);
         break;
       case "permission_approved":
         // Permission was auto-approved via PermissionRequest hook.

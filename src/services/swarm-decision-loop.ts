@@ -230,7 +230,12 @@ async function drainPendingTurnComplete(
   ctx.pendingTurnComplete.delete(sessionId);
 
   const taskCtx = ctx.tasks.get(sessionId);
-  if (!taskCtx || taskCtx.status !== "active") return;
+  if (
+    !taskCtx ||
+    (taskCtx.status !== "active" && taskCtx.status !== "tool_running")
+  ) {
+    return;
+  }
 
   ctx.log(`Draining buffered turn-complete for "${taskCtx.label}"`);
   await handleTurnComplete(ctx, sessionId, taskCtx, pendingData);
@@ -250,7 +255,16 @@ async function drainPendingBlocked(
   ctx.pendingBlocked.delete(sessionId);
 
   const taskCtx = ctx.tasks.get(sessionId);
-  if (!taskCtx || taskCtx.status !== "active") return;
+  // Mirror drainPendingTurnComplete: a buffered blocked event should still
+  // drain if the task is in tool_running state (subagents using tools sit
+  // there continuously). Without this, a blocked prompt that arrived during
+  // an in-flight decision gets dropped silently when the lock releases.
+  if (
+    !taskCtx ||
+    (taskCtx.status !== "active" && taskCtx.status !== "tool_running")
+  ) {
+    return;
+  }
 
   ctx.log(`Draining buffered blocked event for "${taskCtx.label}"`);
   await handleBlocked(ctx, sessionId, taskCtx, pendingData);
@@ -1416,7 +1430,12 @@ export async function handleTurnComplete(
   taskCtx: TaskContext,
   data: unknown,
 ): Promise<void> {
-  if (taskCtx.status !== "active") return;
+  // Accept both "active" and "tool_running" — subagents using tools sit in
+  // tool_running almost continuously, and we still want to run validation
+  // when they hit task_complete. Only bail on truly terminal/blocked states.
+  if (taskCtx.status !== "active" && taskCtx.status !== "tool_running") {
+    return;
+  }
 
   // If another decision (e.g. handleBlocked) is running for this session,
   // buffer the task_complete event so it's processed when the lock releases.
@@ -1444,7 +1463,11 @@ export async function handleTurnComplete(
           const pendingData = ctx.pendingTurnComplete.get(sessionId);
           if (!pendingData) return;
           const currentTask = ctx.tasks.get(sessionId);
-          if (!currentTask || currentTask.status !== "active") {
+          if (
+            !currentTask ||
+            (currentTask.status !== "active" &&
+              currentTask.status !== "tool_running")
+          ) {
             ctx.pendingTurnComplete.delete(sessionId);
             return;
           }

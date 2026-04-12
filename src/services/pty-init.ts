@@ -29,6 +29,13 @@ import type { CompletionMethod } from "./agent-metrics.js";
 import { captureTaskResponse } from "./ansi-utils.js";
 import type { PTYServiceConfig } from "./pty-types.js";
 
+// Stall detector silence threshold. 60s — long enough that a bash, git,
+// WebSearch, or multi-step tool call can complete without tripping the
+// classifier, short enough to still catch real hangs within a minute.
+// Previously 4000ms, which misfired for every long tool call on claude-code
+// agents and caused completion re-injection loops on open-ended tasks.
+const STALL_TIMEOUT_MS = 60_000;
+
 // Resolve absolute path to coding-agent-adapters so the Node worker process
 // can load it regardless of its cwd.  The worker uses require() which does
 // cwd-relative resolution — passing the bare module name "coding-agent-adapters"
@@ -112,36 +119,21 @@ export interface InitContext {
   markTaskDelivered?: (sessionId: string) => void;
 }
 
-/**
- * If a session has an active task that has started work, forward the
- * session_ready event as task_complete so the coordinator evaluates completion.
- *
- * Shared by both the Bun worker and native Node event paths to avoid
- * duplicating the same guard / capture / emit logic.
- */
-function forwardReadyAsTaskComplete(
-  ctx: InitContext,
-  session: { id: string },
-): void {
-  if (!ctx.hasActiveTask?.(session.id) || !ctx.hasTaskActivity?.(session.id)) {
-    return;
-  }
-  const response = ctx.taskResponseMarkers.has(session.id)
-    ? captureTaskResponse(
-        session.id,
-        ctx.sessionOutputBuffers,
-        ctx.taskResponseMarkers,
-      )
-    : "";
-  ctx.log(
-    `session_ready for active task ${session.id} — forwarding as task_complete (stall classifier path, response: ${response.length} chars)`,
-  );
-  ctx.emitEvent(session.id, "task_complete", {
-    session,
-    response,
-    source: "session_ready_forward",
-  });
-}
+// NOTE: A previous implementation defined `forwardReadyAsTaskComplete` here,
+// which re-emitted every `session_ready` event as `task_complete` if the
+// session had an active task. That was incorrect: Claude Code's TUI briefly
+// enters a ready state between every tool call (after Bash, WebSearch, git,
+// edit, etc.), so ready ≠ done. It caused the coordinator to run its
+// turn-complete decision pipeline dozens of times per real session, each of
+// which would re-inject the original prompt via "Turn done, continuing",
+// creating an infinite retry loop on any long multi-step task.
+//
+// Task completion is now signaled authoritatively by the agent's own hook
+// system, routed through pty-service.handleHookEvent. The jsonl-based
+// completion watcher in the milady package provides a defense-in-depth
+// ground-truth signal. `session_ready` is still emitted for consumers that
+// want to know when the PTY prompt is visible, but it is not a completion
+// signal.
 
 /** Value returned by {@link initializePTYManager}. */
 export interface InitResult {
@@ -201,7 +193,7 @@ export async function initializePTYManager(
       adapterModules: [resolvedAdapterModule],
       nodePath: resolveNodeWorkerPath(),
       stallDetectionEnabled: true,
-      stallTimeoutMs: 4000,
+      stallTimeoutMs: STALL_TIMEOUT_MS,
       onStallClassify: async (
         sessionId: string,
         recentOutput: string,
@@ -211,20 +203,14 @@ export async function initializePTYManager(
       },
     });
 
-    // Set up event forwarding for worker-based manager.
-    // IMPORTANT: The stall classifier's "task_complete" classification emits
-    // "ready" (not "task_complete") in pty-manager. When session_ready fires
-    // for a session that already has an active task registered in the coordinator,
-    // it means the agent returned to idle after working — treat as task_complete.
+    // Set up event forwarding for worker-based manager. session_ready means
+    // the PTY prompt is visible again — it does NOT mean the agent is done
+    // (see the forwardReadyAsTaskComplete note above).
     bunManager.on("session_ready", (session: WorkerSessionHandle) => {
       ctx.log(
         `session_ready event received for ${session.id} (type: ${session.type}, status: ${session.status})`,
       );
       ctx.emitEvent(session.id, "ready", { session, source: "pty_manager" });
-      forwardReadyAsTaskComplete(ctx, session);
-      // Mark task as delivered AFTER the forward check so the first ready
-      // event (startup) is not treated as completion. Subsequent ready events
-      // will see taskDelivered=true and forward as task_complete.
       ctx.markTaskDelivered?.(session.id);
     });
 
@@ -387,7 +373,7 @@ export async function initializePTYManager(
   const managerConfig: PTYManagerConfig = {
     maxLogLines: ctx.serviceConfig.maxLogLines,
     stallDetectionEnabled: true,
-    stallTimeoutMs: 4000,
+    stallTimeoutMs: STALL_TIMEOUT_MS,
     onStallClassify: async (
       sessionId: string,
       recentOutput: string,
@@ -412,10 +398,11 @@ export async function initializePTYManager(
     }
   }
 
-  // Set up event forwarding (same stall-classifier workaround as Bun path)
+  // Set up event forwarding. session_ready means the PTY prompt is visible
+  // again — NOT that the agent is done (see the forwardReadyAsTaskComplete
+  // note above).
   nodeManager.on("session_ready", (session: SessionHandle) => {
     ctx.emitEvent(session.id, "ready", { session, source: "pty_manager" });
-    forwardReadyAsTaskComplete(ctx, session);
     ctx.markTaskDelivered?.(session.id);
   });
 

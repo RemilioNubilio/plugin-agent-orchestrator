@@ -676,10 +676,11 @@ function buildValidationPrompt(
     "- Pass only if the task appears complete and the available evidence supports that claim.",
     "- Revise if the agent should keep working. In that case, provide a direct follow-up prompt.",
     "- Escalate if the task cannot be validated from available evidence and needs human review.",
-    "- Be skeptical. Missing tests or missing verification should usually mean revise or escalate, not pass.",
+    "- For information / question-answering / research tasks (no repo, no files expected), the completion summary IS the deliverable. Pass if the summary directly answers the original request with concrete content. Empty workspace evidence is expected for these and is not a failure signal.",
+    "- For code / build tasks (repo set, or the request asks to create/edit/test files), missing tests or missing verification should usually mean revise or escalate, not pass.",
     "- Treat screenshot capture as artifact evidence only. A desktop screenshot may prove the UI rendered, but it does not semantically prove the task without supporting transcript, test, or trajectory evidence.",
     "- Trust the 'Workspace evidence' block over agent commentary: if files are listed there, they exist on disk, regardless of how the agent described its work. If the task was to create files and the workspace evidence shows them, that is strong evidence for pass.",
-    "- Conversely, if the agent claims to have created files but the workspace evidence shows an empty directory or missing files, treat that as revise (not pass) — the agent's claim is unverified.",
+    "- Conversely, if the agent CLAIMS to have created files but the workspace evidence shows an empty directory or missing files, treat that as revise (not pass) — the agent's claim is unverified. This rule applies only when files were actually expected.",
   ].join("\n");
 }
 

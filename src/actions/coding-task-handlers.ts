@@ -251,11 +251,10 @@ export async function handleMultiAgent(
     return { success: false, error: "WORKSPACE_SERVICE_UNAVAILABLE" };
   }
 
-  if (callback) {
-    await callback({
-      text: `Launching ${agentSpecs.length} agents${repo ? ` on ${repo}` : ""}...`,
-    });
-  }
+  // Skip the spawn callback — the LLM REPLY already says "on it" (character
+  // prompt ack rule) and the task-progress-streamer delivers the final
+  // result. Emitting "Launching N agents..." here duplicates the ack and
+  // spams discord. See milady nubs/full-working-state clean Discord UX fix.
 
   // Planning phase: generate shared context brief for multi-agent coordination.
   // Strip agent-type prefixes from specs to get clean subtask descriptions.
@@ -545,11 +544,8 @@ export async function handleMultiAgent(
         status: session.status,
       });
 
-      if (callback) {
-        await callback({
-          text: `[${i + 1}/${agentSpecs.length}] Spawned ${displayType} agent as "${specLabel}"`,
-        });
-      }
+      // Per-agent spawn chatter removed. The streamer reports the final
+      // result; the intermediate "[1/N] Spawned ..." messages are noise.
     } catch (error) {
       const rawErrorMessage =
         error instanceof Error ? error.message : String(error);
@@ -598,7 +594,11 @@ export async function handleMultiAgent(
       : []),
   ].join("\n");
 
-  if (callback) {
+  // The final summary is suppressed from chat in favor of the
+  // task-progress-streamer, which delivers the actual subagent answer.
+  // We still include `summary` in the ActionResult.text so programmatic
+  // consumers (tests, logs) see the full detail.
+  if (callback && failed.length > 0) {
     await callback({ text: summary });
   }
 
