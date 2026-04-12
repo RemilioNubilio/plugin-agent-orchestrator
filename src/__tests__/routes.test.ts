@@ -71,6 +71,11 @@ function createMockRes(): any {
 
 const createMockPTYService = () => ({
   checkAvailableAgents: jest.fn().mockResolvedValue([]),
+  triggerAgentAuth: jest.fn().mockResolvedValue({
+    launched: true,
+    url: "https://claude.example/login",
+    instructions: "Open the provider login page.",
+  }),
   getAgentMetrics: jest.fn().mockReturnValue({}),
   listSessions: jest.fn().mockResolvedValue([]),
   defaultApprovalPreset: "autonomous",
@@ -401,7 +406,12 @@ describe("handleCodingAgentRoutes", () => {
       const req = createMockReq("GET", "/api/coding-agents/scratch");
       const res = createMockRes();
 
-      await handleCodingAgentRoutes(req, res, "/api/coding-agents/scratch", ctx);
+      await handleCodingAgentRoutes(
+        req,
+        res,
+        "/api/coding-agents/scratch",
+        ctx,
+      );
 
       expect(res._getStatus()).toBe(200);
       expect(res._getJson()[0].sessionId).toBe("s1");
@@ -501,7 +511,34 @@ describe("handleCodingAgentRoutes", () => {
   });
 
   // =========================================================================
-  // 5. Route dispatch — unmatched route
+  // 5. Auth launch
+  // =========================================================================
+  describe("auth launch", () => {
+    it("uses the PTY service auth launcher for supported agents", async () => {
+      const req = createMockReq("POST", "/api/coding-agents/auth/claude");
+      const res = createMockRes();
+      const pty = asMock(ctx.ptyService);
+
+      await handleCodingAgentRoutes(
+        req,
+        res,
+        "/api/coding-agents/auth/claude",
+        ctx,
+      );
+
+      expect(pty.triggerAgentAuth).toHaveBeenCalledWith("claude");
+      expect(res._getStatus()).toBe(200);
+      expect(res._getJson()).toEqual(
+        expect.objectContaining({
+          launched: true,
+          url: "https://claude.example/login",
+        }),
+      );
+    });
+  });
+
+  // =========================================================================
+  // 6. Route dispatch — unmatched route
   // =========================================================================
   describe("route dispatch", () => {
     it("returns false for unmatched routes", async () => {
@@ -521,7 +558,7 @@ describe("handleCodingAgentRoutes", () => {
   });
 
   // =========================================================================
-  // 6. Body parsing — invalid JSON
+  // 7. Body parsing — invalid JSON
   // =========================================================================
   describe("body parsing", () => {
     it("returns 500 for invalid JSON body", async () => {
@@ -544,7 +581,7 @@ describe("handleCodingAgentRoutes", () => {
   });
 
   // =========================================================================
-  // 7. Service unavailable
+  // 8. Service unavailable
   // =========================================================================
   describe("service unavailable", () => {
     it("returns 503 when PTY service is null for agent routes", async () => {

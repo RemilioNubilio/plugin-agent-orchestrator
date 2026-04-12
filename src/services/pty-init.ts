@@ -13,6 +13,7 @@ import os from "node:os";
 import path from "node:path";
 import { createAllAdapters } from "coding-agent-adapters";
 import {
+  type AuthRequiredInfo,
   BunCompatiblePTYManager,
   isBun,
   PTYManager,
@@ -24,8 +25,8 @@ import {
   type ToolRunningInfo,
   type WorkerSessionHandle,
 } from "pty-manager";
-import { captureTaskResponse } from "./ansi-utils.js";
 import type { CompletionMethod } from "./agent-metrics.js";
+import { captureTaskResponse } from "./ansi-utils.js";
 import type { PTYServiceConfig } from "./pty-types.js";
 
 // Resolve absolute path to coding-agent-adapters so the Node worker process
@@ -160,6 +161,37 @@ export async function initializePTYManager(
   ctx: InitContext,
 ): Promise<InitResult> {
   const usingBunWorker = isBun();
+  const recentStructuredAuth = new Map<string, number>();
+  const AUTH_EVENT_DEDUPE_MS = 5_000;
+
+  const emitStructuredAuthRequired = (
+    session: { id: string; type?: string },
+    info: AuthRequiredInfo,
+  ): void => {
+    recentStructuredAuth.set(session.id, Date.now());
+    if (session.type === "gemini") {
+      ctx.handleGeminiAuth(session.id);
+    }
+    ctx.emitEvent(session.id, "login_required", {
+      instructions: info.instructions,
+      url: info.url,
+      deviceCode: info.deviceCode,
+      method: info.method,
+      promptSnippet: info.promptSnippet,
+      session,
+      source: "pty_manager",
+    });
+  };
+
+  const shouldSuppressLegacyLoginRequired = (sessionId: string): boolean => {
+    const at = recentStructuredAuth.get(sessionId);
+    if (!at) return false;
+    if (Date.now() - at > AUTH_EVENT_DEDUPE_MS) {
+      recentStructuredAuth.delete(sessionId);
+      return false;
+    }
+    return true;
+  };
 
   if (usingBunWorker) {
     // Use Bun-compatible manager that spawns a Node worker
@@ -229,8 +261,18 @@ export async function initializePTYManager(
     );
 
     bunManager.on(
+      "auth_required",
+      (session: WorkerSessionHandle, info: AuthRequiredInfo) => {
+        emitStructuredAuthRequired(session, info);
+      },
+    );
+
+    bunManager.on(
       "login_required",
       (session: WorkerSessionHandle, instructions?: string, url?: string) => {
+        if (shouldSuppressLegacyLoginRequired(session.id)) {
+          return;
+        }
         // Auto-handle Gemini auth flow
         if (session.type === "gemini") {
           ctx.handleGeminiAuth(session.id);
@@ -328,13 +370,13 @@ export async function initializePTYManager(
       }
     });
 
-    bunManager.on("worker_exit", (info: {
-      code: number | null;
-      signal: string | null;
-    }) => {
-      ctx.handleWorkerExit?.(info);
-      console.error("[PTYService] Worker exited:", info);
-    });
+    bunManager.on(
+      "worker_exit",
+      (info: { code: number | null; signal: string | null }) => {
+        ctx.handleWorkerExit?.(info);
+        console.error("[PTYService] Worker exited:", info);
+      },
+    );
 
     await bunManager.waitForReady();
     return { manager: bunManager, usingBunWorker: true };
@@ -389,8 +431,18 @@ export async function initializePTYManager(
   );
 
   nodeManager.on(
+    "auth_required",
+    (session: SessionHandle, info: AuthRequiredInfo) => {
+      emitStructuredAuthRequired(session, info);
+    },
+  );
+
+  nodeManager.on(
     "login_required",
     (session: SessionHandle, instructions?: string, url?: string) => {
+      if (shouldSuppressLegacyLoginRequired(session.id)) {
+        return;
+      }
       if (session.type === "gemini") {
         ctx.handleGeminiAuth(session.id);
       }

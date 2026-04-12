@@ -251,6 +251,22 @@ function safeGetSetting(
   }
 }
 
+function getPreflightAuthStatus(
+  result: PreflightResult | undefined,
+): "authenticated" | "unauthenticated" | "unknown" {
+  const auth =
+    result && typeof result === "object"
+      ? ((result as unknown as Record<string, unknown>).auth as
+          | Record<string, unknown>
+          | undefined)
+      : undefined;
+  const status = typeof auth?.status === "string" ? auth.status : "";
+  if (status === "authenticated" || status === "unauthenticated") {
+    return status;
+  }
+  return "unknown";
+}
+
 function getUserHomeDir(): string {
   return (
     process.env.HOME?.trim() || process.env.USERPROFILE?.trim() || os.homedir()
@@ -451,14 +467,36 @@ async function computeTaskAgentFrameworkState(
     readConfigEnvKey("PARALLAX_LLM_PROVIDER") || "subscription";
   const cloudReady = llmProvider === "cloud" && hasElizaCloudApiKey();
 
-  const claudeSubscriptionReady = hasClaudeSubscriptionAuth();
+  const claudePreflightAuth = getPreflightAuthStatus(
+    preflightByAdapter.get("claude"),
+  );
+  const codexPreflightAuth = getPreflightAuthStatus(
+    preflightByAdapter.get("codex"),
+  );
+  const geminiPreflightAuth = getPreflightAuthStatus(
+    preflightByAdapter.get("gemini"),
+  );
+  const aiderPreflightAuth = getPreflightAuthStatus(
+    preflightByAdapter.get("aider"),
+  );
+
+  const claudeSubscriptionReady =
+    claudePreflightAuth === "authenticated" || hasClaudeSubscriptionAuth();
   const claudeAuthReady =
     cloudReady || claudeSubscriptionReady || hasClaudeApiKey(runtime);
-  const codexSubscriptionReady = hasCodexSubscriptionAuth();
+  const codexSubscriptionReady =
+    codexPreflightAuth === "authenticated" || hasCodexSubscriptionAuth();
   const codexAuthReady =
     cloudReady || codexSubscriptionReady || hasCodexApiKey(runtime);
   // Eliza Cloud doesn't proxy Gemini, so cloud mode does NOT make Gemini auth-ready
-  const geminiAuthReady = hasGeminiCredential(runtime);
+  const geminiAuthReady =
+    geminiPreflightAuth === "authenticated" || hasGeminiCredential(runtime);
+  const aiderAuthReady =
+    cloudReady ||
+    aiderPreflightAuth === "authenticated" ||
+    claudeAuthReady ||
+    codexAuthReady ||
+    geminiAuthReady;
   const piReady = hasPiBinary();
 
   const providerPrefersClaude =
@@ -485,7 +523,7 @@ async function computeTaskAgentFrameworkState(
             ? codexAuthReady
             : id === "gemini"
               ? geminiAuthReady
-              : claudeAuthReady || codexAuthReady || geminiAuthReady;
+              : aiderAuthReady;
       const reason =
         id === "claude" && subscriptionReady
           ? "ready to use the user's Claude subscription"
@@ -538,9 +576,10 @@ async function computeTaskAgentFrameworkState(
   const selectable = frameworks.filter(
     (framework) => framework.installed && !framework.temporarilyDisabled,
   );
-  const candidates = selectable.length > 0
-    ? selectable
-    : frameworks.filter((framework) => framework.installed);
+  const candidates =
+    selectable.length > 0
+      ? selectable
+      : frameworks.filter((framework) => framework.installed);
 
   const scoredCandidates = candidates.map((framework) => {
     const explicitOverride =
@@ -578,7 +617,10 @@ async function computeTaskAgentFrameworkState(
     };
     return {
       framework,
-      score: Object.values(selectionSignals).reduce((sum, value) => sum + value, 0),
+      score: Object.values(selectionSignals).reduce(
+        (sum, value) => sum + value,
+        0,
+      ),
       selectionSignals,
     };
   });
@@ -595,8 +637,9 @@ async function computeTaskAgentFrameworkState(
       return left.framework.id.localeCompare(right.framework.id);
     })[0]?.framework ?? fallback;
   const preferredSignals =
-    scoredCandidates.find((entry) => entry.framework.id === preferredCandidate.id)
-      ?.selectionSignals ?? {};
+    scoredCandidates.find(
+      (entry) => entry.framework.id === preferredCandidate.id,
+    )?.selectionSignals ?? {};
   const preferred: PreferredTaskAgent = {
     id: preferredCandidate.id,
     reason: buildPreferredReason(
@@ -610,7 +653,9 @@ async function computeTaskAgentFrameworkState(
 
   for (const framework of frameworks) {
     framework.recommended = framework.id === preferred.id;
-    const scored = scoredCandidates.find((entry) => entry.framework.id === framework.id);
+    const scored = scoredCandidates.find(
+      (entry) => entry.framework.id === framework.id,
+    );
     if (scored) {
       framework.selectionScore = scored.score;
       framework.selectionSignals = scored.selectionSignals;
@@ -637,7 +682,11 @@ export async function getTaskAgentFrameworkState(
       profileInput,
     );
   }
-  const value = await computeTaskAgentFrameworkState(runtime, probe, profileInput);
+  const value = await computeTaskAgentFrameworkState(
+    runtime,
+    probe,
+    profileInput,
+  );
   if (!profileInput) {
     frameworkStateCache = {
       expiresAt: Date.now() + 15_000,
@@ -697,7 +746,8 @@ function computeTaskAgentFrameworkStateFromCachedInventory(
     recommended: false,
   }));
   const profile = buildTaskAgentTaskProfile(profileInput);
-  const configuredSubscriptionProvider = inventory.configuredSubscriptionProvider;
+  const configuredSubscriptionProvider =
+    inventory.configuredSubscriptionProvider;
   const providerPrefersClaude =
     configuredSubscriptionProvider === "anthropic-subscription";
   const providerPrefersCodex =
@@ -750,7 +800,10 @@ function computeTaskAgentFrameworkStateFromCachedInventory(
     };
     return {
       framework,
-      score: Object.values(selectionSignals).reduce((sum, value) => sum + value, 0),
+      score: Object.values(selectionSignals).reduce(
+        (sum, value) => sum + value,
+        0,
+      ),
       selectionSignals,
     };
   });
@@ -766,8 +819,9 @@ function computeTaskAgentFrameworkStateFromCachedInventory(
       return left.framework.id.localeCompare(right.framework.id);
     })[0]?.framework ?? fallback;
   const preferredSignals =
-    scoredCandidates.find((entry) => entry.framework.id === preferredCandidate.id)
-      ?.selectionSignals ?? {};
+    scoredCandidates.find(
+      (entry) => entry.framework.id === preferredCandidate.id,
+    )?.selectionSignals ?? {};
   const preferred = {
     id: preferredCandidate.id,
     reason: buildPreferredReason(
@@ -780,7 +834,9 @@ function computeTaskAgentFrameworkStateFromCachedInventory(
   };
   for (const framework of frameworks) {
     framework.recommended = framework.id === preferred.id;
-    const scored = scoredCandidates.find((entry) => entry.framework.id === framework.id);
+    const scored = scoredCandidates.find(
+      (entry) => entry.framework.id === framework.id,
+    );
     if (scored) {
       framework.selectionScore = scored.score;
       framework.selectionSignals = scored.selectionSignals;
@@ -926,7 +982,10 @@ function buildPreferredReason(
     .sort((left, right) => right[1] - left[1])
     .slice(0, 2)
     .map(([key]) => key);
-  if (explicitDefault === framework.id && selectionSignals.explicitOverride > 0) {
+  if (
+    explicitDefault === framework.id &&
+    selectionSignals.explicitOverride > 0
+  ) {
     return `explicit PARALLAX_DEFAULT_AGENT_TYPE override, with ${FRAMEWORK_LABELS[framework.id]} still scoring well for ${dominantSignals.join(" + ")} work`;
   }
   if (

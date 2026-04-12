@@ -142,9 +142,9 @@ describe("PTYService", () => {
         runtime as unknown as IAgentRuntime,
       );
 
-      expect(await customService.resolveAgentType({ task: "Fix the bug" })).toBe(
-        "gemini",
-      );
+      expect(
+        await customService.resolveAgentType({ task: "Fix the bug" }),
+      ).toBe("gemini");
     });
   });
 
@@ -491,6 +491,164 @@ describe("PTYService", () => {
 
     it("should include pi in supported agent types", () => {
       expect(service.getSupportedAgentTypes()).toContain("pi");
+    });
+  });
+
+  describe("provider auth recovery", () => {
+    it("reports replacement-session recovery when auth is valid but the blocked session cannot resume", async () => {
+      jest
+        .spyOn(service, "getAgentAuthStatus")
+        .mockResolvedValue({ status: "authenticated" });
+      const resumeSessionAfterRecoveredAuth = jest
+        .fn()
+        .mockResolvedValue(false);
+      const resumeTaskAfterProviderAuth = jest.fn().mockResolvedValue({
+        replacementSessionId: "session-2",
+        replacementFramework: "codex",
+        replacementLabel: "task (codex recovery 1)",
+      });
+
+      (
+        service as unknown as {
+          resumeSessionAfterRecoveredAuth: (
+            sessionId: string,
+            agentType: string,
+          ) => Promise<boolean>;
+          coordinator: {
+            resumeTaskAfterProviderAuth: (
+              sessionId: string,
+              reason: string,
+            ) => Promise<{
+              replacementSessionId: string;
+              replacementFramework: string;
+              replacementLabel: string;
+            }>;
+          };
+        }
+      ).resumeSessionAfterRecoveredAuth = resumeSessionAfterRecoveredAuth;
+      (
+        service as unknown as {
+          coordinator: {
+            resumeTaskAfterProviderAuth: (
+              sessionId: string,
+              reason: string,
+            ) => Promise<{
+              replacementSessionId: string;
+              replacementFramework: string;
+              replacementLabel: string;
+            }>;
+          };
+        }
+      ).coordinator = {
+        resumeTaskAfterProviderAuth,
+      };
+
+      const result = await service.startSessionAuthRecovery(
+        "session-1",
+        "claude",
+        {},
+      );
+
+      expect(result).toEqual(
+        expect.objectContaining({
+          status: "recovered",
+          recoveryTarget: "replacement_session",
+          replacementSessionId: "session-2",
+          replacementFramework: "codex",
+        }),
+      );
+      expect(resumeTaskAfterProviderAuth).toHaveBeenCalledWith(
+        "session-1",
+        "claude authentication was refreshed",
+      );
+    });
+
+    it("reactivates the task when background auth recovery resumes the same session", async () => {
+      jest.useFakeTimers();
+      try {
+        const sessionId = "session-auth";
+        const liveSession = {
+          id: sessionId,
+          name: "claude-session",
+          type: "claude",
+          status: "authenticating",
+          startedAt: new Date(),
+          lastActivityAt: new Date(),
+        };
+        mockManager.get.mockImplementation((id: string) =>
+          id === sessionId ? liveSession : undefined,
+        );
+        jest
+          .spyOn(service, "getAgentAuthStatus")
+          .mockResolvedValue({ status: "authenticated" });
+        const resumeSessionAfterRecoveredAuth = jest
+          .fn()
+          .mockResolvedValue(true);
+        const markTaskResumedAfterProviderAuth = jest
+          .fn()
+          .mockResolvedValue(true);
+        const resumeTaskAfterProviderAuth = jest.fn();
+
+        (
+          service as unknown as {
+            resumeSessionAfterRecoveredAuth: (
+              sessionId: string,
+              agentType: string,
+            ) => Promise<boolean>;
+            monitorSessionAuthRecovery: (
+              sessionId: string,
+              agentType: string,
+            ) => void;
+            coordinator: {
+              markTaskResumedAfterProviderAuth: (
+                sessionId: string,
+              ) => Promise<boolean>;
+              resumeTaskAfterProviderAuth: typeof resumeTaskAfterProviderAuth;
+            };
+          }
+        ).resumeSessionAfterRecoveredAuth = resumeSessionAfterRecoveredAuth;
+        (
+          service as unknown as {
+            coordinator: {
+              markTaskResumedAfterProviderAuth: (
+                sessionId: string,
+              ) => Promise<boolean>;
+              resumeTaskAfterProviderAuth: typeof resumeTaskAfterProviderAuth;
+            };
+            monitorSessionAuthRecovery: (
+              sessionId: string,
+              agentType: string,
+            ) => void;
+          }
+        ).coordinator = {
+          markTaskResumedAfterProviderAuth,
+          resumeTaskAfterProviderAuth,
+        };
+
+        (
+          service as unknown as {
+            monitorSessionAuthRecovery: (
+              sessionId: string,
+              agentType: string,
+            ) => void;
+          }
+        ).monitorSessionAuthRecovery(sessionId, "claude");
+
+        jest.advanceTimersByTime(2_500);
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(resumeSessionAfterRecoveredAuth).toHaveBeenCalledWith(
+          sessionId,
+          "claude",
+        );
+        expect(markTaskResumedAfterProviderAuth).toHaveBeenCalledWith(
+          sessionId,
+        );
+        expect(resumeTaskAfterProviderAuth).not.toHaveBeenCalled();
+      } finally {
+        jest.useRealTimers();
+      }
     });
   });
 

@@ -23,16 +23,16 @@ import type { ServerResponse } from "node:http";
 import type { IAgentRuntime } from "@elizaos/core";
 import { logger } from "@elizaos/core";
 import { buildAgentCredentials } from "./agent-credentials.js";
-import { cleanForFailoverContext, cleanForChat, extractDevServerUrl } from "./ansi-utils.js";
-import type { PTYService } from "./pty-service.js";
-import type { CodingAgentType } from "./pty-types.js";
-import { normalizeAgentType } from "./pty-types.js";
+import { cleanForFailoverContext, extractDevServerUrl } from "./ansi-utils.js";
 import {
-  normalizeCoordinatorEvent,
   type CoordinatorBlockedEvent,
   type CoordinatorLoginRequiredEvent,
   type CoordinatorNormalizedEvent,
+  normalizeCoordinatorEvent,
 } from "./coordinator-event-normalizer.js";
+import type { PTYService } from "./pty-service.js";
+import type { CodingAgentType } from "./pty-types.js";
+import { normalizeAgentType } from "./pty-types.js";
 import type {
   CoordinationLLMResponse,
   SharedDecision,
@@ -47,6 +47,7 @@ import {
 import { SwarmHistory } from "./swarm-history.js";
 import { scanIdleSessions } from "./swarm-idle-watchdog.js";
 import { deriveTaskAcceptanceCriteria } from "./task-acceptance.js";
+import type { TaskAgentAuthLaunchResult } from "./task-agent-auth.js";
 import {
   isUsageExhaustedTaskAgentError,
   markTaskAgentFrameworkHealthy,
@@ -148,6 +149,8 @@ export interface TaskContext {
   lastInputSentAt?: number;
   /** Timestamp when the task was last transitioned to `stopped`. */
   stoppedAt?: number;
+  /** Suppress the generic stop notice when the session is intentionally replaced. */
+  suppressStopNotice?: boolean;
 }
 
 export interface CoordinationDecision {
@@ -856,7 +859,9 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
         originalTask: context.originalTask,
       })
       .catch((err) => {
-        this.log(`Failed to append task registration history for ${sessionId}: ${err}`);
+        this.log(
+          `Failed to append task registration history for ${sessionId}: ${err}`,
+        );
       });
 
     const taskCtx = this.tasks.get(sessionId);
@@ -1868,7 +1873,9 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
   ): TaskAgentFrameworkAvailability[] {
     const healthy = frameworks.filter(
       (framework) =>
-        framework.installed && framework.authReady && !framework.temporarilyDisabled,
+        framework.installed &&
+        framework.authReady &&
+        !framework.temporarilyDisabled,
     );
     const byId = new Map(healthy.map((framework) => [framework.id, framework]));
     const orderedIds: TaskAgentFrameworkId[] = [];
@@ -1909,7 +1916,10 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
     reason: string,
     recentOutput: string,
   ): string {
-    const cleanedOutput = cleanForFailoverContext(recentOutput, taskCtx.workdir);
+    const cleanedOutput = cleanForFailoverContext(
+      recentOutput,
+      taskCtx.workdir,
+    );
     const trimmedOutput = cleanedOutput.trim();
     const clippedOutput =
       trimmedOutput.length > FAILOVER_OUTPUT_MAX_CHARS
@@ -1949,7 +1959,10 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
     reason: string,
     recentOutput: string,
   ): string {
-    const cleanedOutput = cleanForFailoverContext(recentOutput, taskCtx.workdir);
+    const cleanedOutput = cleanForFailoverContext(
+      recentOutput,
+      taskCtx.workdir,
+    );
     const trimmedOutput = cleanedOutput.trim();
     const clippedOutput =
       trimmedOutput.length > FAILOVER_OUTPUT_MAX_CHARS
@@ -2279,6 +2292,103 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
       replacementFramework: recoveryFramework,
       replacementLabel,
     };
+  }
+
+  async resumeTaskAfterProviderAuth(
+    sessionId: string,
+    reason: string,
+  ): Promise<{
+    replacementSessionId: string;
+    replacementFramework: CodingAgentType;
+    replacementLabel: string;
+  } | null> {
+    const taskCtx = this.tasks.get(sessionId);
+    if (!taskCtx) {
+      return null;
+    }
+    if (
+      taskCtx.status === "completed" ||
+      taskCtx.status === "error" ||
+      taskCtx.status === "stopped"
+    ) {
+      return null;
+    }
+
+    const replacement = await this.attemptTaskRecovery(taskCtx, reason);
+    if (!replacement) {
+      return null;
+    }
+
+    taskCtx.suppressStopNotice = true;
+    taskCtx.status = "stopped";
+    try {
+      await this.ptyService?.stopSession(sessionId, true);
+    } catch (error) {
+      this.log(
+        `Failed to stop superseded auth-blocked session ${sessionId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+
+    this.sendChatMessage(
+      `"${taskCtx.label}" recovered after provider authentication and is continuing on ${replacement.replacementFramework}.`,
+      "coding-agent",
+    );
+    return replacement;
+  }
+
+  async markTaskResumedAfterProviderAuth(sessionId: string): Promise<boolean> {
+    const taskCtx = this.tasks.get(sessionId);
+    if (!taskCtx) {
+      return false;
+    }
+    if (
+      taskCtx.status === "completed" ||
+      taskCtx.status === "error" ||
+      taskCtx.status === "stopped"
+    ) {
+      return false;
+    }
+
+    taskCtx.status = "active";
+    taskCtx.stoppedAt = undefined;
+    taskCtx.lastActivityAt = Date.now();
+    taskCtx.idleCheckCount = 0;
+
+    if (
+      taskCtx.agentType === "claude" ||
+      taskCtx.agentType === "codex" ||
+      taskCtx.agentType === "gemini" ||
+      taskCtx.agentType === "aider"
+    ) {
+      markTaskAgentFrameworkHealthy(taskCtx.agentType);
+    }
+
+    this.broadcast({
+      type: "ready",
+      sessionId,
+      timestamp: Date.now(),
+      data: {
+        reason: "provider_auth_recovered",
+        source: "auth_recovery",
+      },
+    });
+    await this.taskRegistry.appendEvent({
+      threadId: taskCtx.threadId,
+      sessionId,
+      eventType: "task_status_changed",
+      summary: `Task "${taskCtx.label}" resumed after provider authentication`,
+      data: {
+        status: "active",
+        reason: "provider_auth_recovered",
+      },
+    });
+    this.sendChatMessage(
+      `"${taskCtx.label}" refreshed provider authentication and is continuing automatically.`,
+      "coding-agent",
+    );
+    return true;
   }
 
   async recordDecision(
@@ -2650,8 +2760,9 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
           sessionId,
           errorMsg,
         );
-        let recoveryResult: Awaited<ReturnType<typeof this.attemptTaskRecovery>> =
-          null;
+        let recoveryResult: Awaited<
+          ReturnType<typeof this.attemptTaskRecovery>
+        > = null;
         if (!failoverResult) {
           try {
             recoveryResult = await this.attemptTaskRecovery(taskCtx, errorMsg);
@@ -2686,10 +2797,9 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
         break;
       }
 
-      case "stopped":
-        {
-          const alreadyTerminal =
-            taskCtx.status === "completed" || taskCtx.status === "error";
+      case "stopped": {
+        const alreadyTerminal =
+          taskCtx.status === "completed" || taskCtx.status === "error";
         // Don't downgrade "completed" or "error" to "stopped" — the async
         // stopSession fires after executeDecision already marked the task.
         if (taskCtx.status !== "completed" && taskCtx.status !== "error") {
@@ -2710,7 +2820,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
           summary: `Task "${taskCtx.label}" stopped`,
           data: { status: taskCtx.status },
         });
-        if (!alreadyTerminal) {
+        if (!alreadyTerminal && !taskCtx.suppressStopNotice) {
           this.sendChatMessage(
             `"${taskCtx.label}" stopped before completion.`,
             "coding-agent",
@@ -2718,7 +2828,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
         }
         checkAllTasksComplete(this);
         break;
-        }
+      }
 
       case "ready":
         taskCtx.status = "active";
@@ -2747,6 +2857,48 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 
       case "login_required": {
         const loginEvent = normalized as CoordinatorLoginRequiredEvent;
+        let recoveryResult:
+          | (TaskAgentAuthLaunchResult & {
+              recoveryStarted: boolean;
+              status: "recovered" | "recovering" | "failed";
+            })
+          | null = null;
+        try {
+          if (
+            this.ptyService &&
+            (taskCtx.agentType === "claude" ||
+              taskCtx.agentType === "codex" ||
+              taskCtx.agentType === "gemini" ||
+              taskCtx.agentType === "aider")
+          ) {
+            recoveryResult = await this.ptyService.startSessionAuthRecovery(
+              sessionId,
+              taskCtx.agentType,
+              {
+                instructions: loginEvent.instructions,
+                url: loginEvent.url,
+                deviceCode: loginEvent.deviceCode,
+                method: loginEvent.method,
+                promptSnippet: loginEvent.promptSnippet,
+              },
+            );
+          }
+        } catch (error) {
+          this.log(
+            `Provider auth recovery failed for "${taskCtx.label}": ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+
+        if (recoveryResult?.status === "recovered") {
+          if (recoveryResult.recoveryTarget === "replacement_session") {
+            break;
+          }
+          await this.markTaskResumedAfterProviderAuth(sessionId);
+          break;
+        }
+
         taskCtx.status = "blocked";
         this.broadcast({
           type: "login_required",
@@ -2764,12 +2916,28 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
             reason: "login_required",
             instructions: loginEvent.instructions ?? null,
             url: loginEvent.url ?? null,
+            deviceCode: loginEvent.deviceCode ?? null,
+            method: loginEvent.method ?? null,
+            recoveryStatus: recoveryResult?.status ?? null,
           },
         });
         const loginParts = [
-          `"${taskCtx.label}" needs a provider login before it can continue.`,
-          loginEvent.instructions?.trim() || "",
+          recoveryResult?.status === "recovering"
+            ? `"${taskCtx.label}" needs provider authentication, and Milady has started the recovery flow. It will continue automatically when sign-in completes.`
+            : `"${taskCtx.label}" needs a provider login before it can continue.`,
+          recoveryResult?.instructions?.trim() ||
+            loginEvent.instructions?.trim() ||
+            "",
+          recoveryResult?.deviceCode || loginEvent.deviceCode
+            ? `Device code: ${
+                recoveryResult?.deviceCode ?? loginEvent.deviceCode
+              }`
+            : "",
+          recoveryResult?.browserDetail || "",
           loginEvent.url ? `Login link: ${loginEvent.url}` : "",
+          recoveryResult?.url && recoveryResult.url !== loginEvent.url
+            ? `Login link: ${recoveryResult.url}`
+            : "",
         ].filter(Boolean);
         this.sendChatMessage(loginParts.join(" "), "coding-agent");
         break;

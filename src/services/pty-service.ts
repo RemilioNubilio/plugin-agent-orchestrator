@@ -28,7 +28,17 @@ import type {
 } from "pty-manager";
 import { AgentMetricsTracker } from "./agent-metrics.js";
 import type { AgentSelectionStrategy } from "./agent-selection.js";
+import {
+  captureTaskResponse,
+  cleanForChat,
+  extractCompletionSummary,
+  peekTaskResponse,
+} from "./ansi-utils.js";
 import { readConfigEnvKey } from "./config-env.js";
+import {
+  type CoordinatorNormalizedEvent,
+  normalizeCoordinatorEvent,
+} from "./coordinator-event-normalizer.js";
 import {
   captureFeed,
   captureLifecycle,
@@ -49,12 +59,6 @@ import {
   subscribeToOutput as subscribeToOutputIO,
 } from "./pty-session-io.js";
 import {
-  captureTaskResponse,
-  cleanForChat,
-  extractCompletionSummary,
-  peekTaskResponse,
-} from "./ansi-utils.js";
-import {
   buildSpawnConfig,
   setupDeferredTaskDelivery,
   setupOutputBuffer,
@@ -74,15 +78,23 @@ import {
 import { SwarmCoordinator } from "./swarm-coordinator.js";
 import { POST_SEND_COOLDOWN_MS } from "./swarm-decision-loop.js";
 import {
-  buildTaskAgentTaskProfile,
-  getTaskAgentFrameworkState,
-  type TaskAgentTaskProfileInput,
-  type TaskAgentFrameworkState,
-} from "./task-agent-frameworks.js";
+  assistTaskAgentBrowserLogin,
+  augmentTaskAgentPreflightResults,
+  getTaskAgentLoginHint,
+  launchTaskAgentAuthFlow,
+  probeTaskAgentAuth,
+  type TaskAgentAuthFlowHandle,
+  type TaskAgentAuthLaunchResult,
+  type TaskAgentAuthStatus,
+} from "./task-agent-auth.js";
 import {
-  normalizeCoordinatorEvent,
-  type CoordinatorNormalizedEvent,
-} from "./coordinator-event-normalizer.js";
+  buildTaskAgentTaskProfile,
+  clearTaskAgentFrameworkStateCache,
+  getTaskAgentFrameworkState,
+  type SupportedTaskAgentAdapter,
+  type TaskAgentFrameworkState,
+  type TaskAgentTaskProfileInput,
+} from "./task-agent-frameworks.js";
 
 /**
  * Portable safety floor injected into every spawned coding-agent's memory
@@ -148,8 +160,10 @@ export class PTYService {
   private outputUnsubscribers: Map<string, () => void> = new Map();
   private transcriptUnsubscribers: Map<string, () => void> = new Map();
   private sessionOutputBuffers: Map<string, string[]> = new Map();
-  private completionReconcileTimers: Map<string, ReturnType<typeof setInterval>> =
-    new Map();
+  private completionReconcileTimers: Map<
+    string,
+    ReturnType<typeof setInterval>
+  > = new Map();
   private completionSignalSince: Map<string, number> = new Map();
   private terminalSessionStates: Map<
     string,
@@ -168,6 +182,11 @@ export class PTYService {
   private static readonly MAX_TRACE_ENTRIES = 200;
   /** Lightweight per-agent-type metrics for observability */
   private metricsTracker = new AgentMetricsTracker();
+  /** Active provider auth helper processes keyed by agent type. */
+  private activeAuthFlows: Map<string, TaskAgentAuthFlowHandle> = new Map();
+  /** Background auth-recovery watchers keyed by blocked session id. */
+  private authRecoveryTimers: Map<string, ReturnType<typeof setInterval>> =
+    new Map();
   /** Console bridge for terminal output streaming and buffered hydration */
   consoleBridge: PTYConsoleBridge | null = null;
   /** Swarm coordinator instance (if active). Accessed via getCoordinator(runtime). */
@@ -317,6 +336,18 @@ export class PTYService {
     }
     this.completionReconcileTimers.clear();
     this.completionSignalSince.clear();
+    for (const timer of this.authRecoveryTimers.values()) {
+      clearInterval(timer);
+    }
+    this.authRecoveryTimers.clear();
+    for (const flow of this.activeAuthFlows.values()) {
+      try {
+        flow.stop();
+      } catch {
+        // Ignore auth-helper cleanup failures on shutdown.
+      }
+    }
+    this.activeAuthFlows.clear();
 
     if (this.manager) {
       await this.manager.shutdown();
@@ -682,6 +713,11 @@ export class PTYService {
       );
     } finally {
       this.clearCompletionReconcile(sessionId);
+      const authRecoveryTimer = this.authRecoveryTimers.get(sessionId);
+      if (authRecoveryTimer) {
+        clearInterval(authRecoveryTimer);
+        this.authRecoveryTimers.delete(sessionId);
+      }
       this.clearTranscriptCapture(sessionId);
     }
   }
@@ -746,8 +782,13 @@ export class PTYService {
    * available frameworks from task shape, auth/install state, and recent
    * metrics so dynamic routing still works on unconfigured installs.
    */
-  async resolveAgentType(selection?: TaskAgentTaskProfileInput): Promise<string> {
-    if (this.agentSelectionStrategy === "fixed" && this.explicitDefaultAgentType) {
+  async resolveAgentType(
+    selection?: TaskAgentTaskProfileInput,
+  ): Promise<string> {
+    if (
+      this.agentSelectionStrategy === "fixed" &&
+      this.explicitDefaultAgentType
+    ) {
       return this.explicitDefaultAgentType;
     }
     const frameworkState = await this.getFrameworkState(selection);
@@ -757,7 +798,9 @@ export class PTYService {
   async getFrameworkState(
     selection?: TaskAgentTaskProfileInput,
   ): Promise<TaskAgentFrameworkState> {
-    const profile = selection ? buildTaskAgentTaskProfile(selection) : undefined;
+    const profile = selection
+      ? buildTaskAgentTaskProfile(selection)
+      : undefined;
     return getTaskAgentFrameworkState(
       this.runtime,
       {
@@ -834,15 +877,19 @@ export class PTYService {
     if (!this.manager) return false;
     if (this.usingBunWorker) {
       return (
-        (this.manager as BunCompatiblePTYManager & {
-          isSessionLoading?: (id: string) => Promise<boolean>;
-        }).isSessionLoading?.(sessionId) ?? false
+        (
+          this.manager as BunCompatiblePTYManager & {
+            isSessionLoading?: (id: string) => Promise<boolean>;
+          }
+        ).isSessionLoading?.(sessionId) ?? false
       );
     }
     return (
-      (this.manager as PTYManager & {
-        isSessionLoading?: (id: string) => Promise<boolean>;
-      }).isSessionLoading?.(sessionId) ?? false
+      (
+        this.manager as PTYManager & {
+          isSessionLoading?: (id: string) => Promise<boolean>;
+        }
+      ).isSessionLoading?.(sessionId) ?? false
     );
   }
 
@@ -1006,7 +1053,253 @@ export class PTYService {
   ): Promise<PreflightResult[]> {
     const agentTypes =
       types ?? (["claude", "gemini", "codex", "aider"] as AdapterType[]);
-    return checkAdapters(agentTypes);
+    const results = await checkAdapters(agentTypes);
+    return await augmentTaskAgentPreflightResults(results, {
+      runtime: this.runtime,
+    });
+  }
+
+  async getAgentAuthStatus(
+    agentType: SupportedTaskAgentAdapter,
+  ): Promise<TaskAgentAuthStatus> {
+    return await probeTaskAgentAuth(agentType, { runtime: this.runtime });
+  }
+
+  async triggerAgentAuth(
+    agentType: SupportedTaskAgentAdapter,
+  ): Promise<TaskAgentAuthLaunchResult> {
+    const existing = this.activeAuthFlows.get(agentType);
+    if (existing) {
+      return existing.snapshot();
+    }
+
+    clearTaskAgentFrameworkStateCache();
+    const currentStatus = await this.getAgentAuthStatus(agentType);
+    if (currentStatus.status === "authenticated") {
+      return {
+        launched: true,
+        instructions: `${agentType} is already authenticated.`,
+      };
+    }
+
+    const launched = await launchTaskAgentAuthFlow(agentType, {
+      runtime: this.runtime,
+    });
+    if (!launched.handle) {
+      return launched.result;
+    }
+
+    this.activeAuthFlows.set(agentType, launched.handle);
+    void launched.handle.completion.finally(() => {
+      const active = this.activeAuthFlows.get(agentType);
+      if (active === launched.handle) {
+        this.activeAuthFlows.delete(agentType);
+      }
+      clearTaskAgentFrameworkStateCache();
+    });
+
+    let result = launched.result;
+    if (result.url) {
+      const browserAssist = await assistTaskAgentBrowserLogin(
+        agentType,
+        result.url,
+        { runtime: this.runtime },
+      );
+      result = {
+        ...result,
+        browserOpened: browserAssist.opened,
+        browserClicked: browserAssist.clicked,
+        browserDetail: browserAssist.detail,
+      };
+    }
+    return result;
+  }
+
+  async startSessionAuthRecovery(
+    sessionId: string,
+    agentType: SupportedTaskAgentAdapter,
+    login: {
+      instructions?: string;
+      url?: string;
+      deviceCode?: string;
+      method?: string;
+      promptSnippet?: string;
+    },
+  ): Promise<
+    TaskAgentAuthLaunchResult & {
+      recoveryStarted: boolean;
+      status: "recovered" | "recovering" | "failed";
+    }
+  > {
+    clearTaskAgentFrameworkStateCache();
+    const status = await this.getAgentAuthStatus(agentType);
+    if (status.status === "authenticated") {
+      const resumed = await this.resumeSessionAfterRecoveredAuth(
+        sessionId,
+        agentType,
+      );
+      if (resumed) {
+        return {
+          launched: true,
+          instructions: `${agentType} authentication is already valid. Milady resumed the blocked session.`,
+          recoveryStarted: true,
+          status: "recovered",
+          recoveryTarget: "same_session",
+        };
+      }
+
+      const replacement = await this.coordinator?.resumeTaskAfterProviderAuth?.(
+        sessionId,
+        `${agentType} authentication was refreshed`,
+      );
+      if (replacement) {
+        return {
+          launched: true,
+          instructions: `${agentType} authentication is already valid. Milady restarted the task on a fresh session.`,
+          recoveryStarted: true,
+          status: "recovered",
+          recoveryTarget: "replacement_session",
+          replacementSessionId: replacement.replacementSessionId,
+          replacementFramework: replacement.replacementFramework,
+        };
+      }
+
+      return {
+        launched: false,
+        instructions: `${agentType} authentication is valid, but Milady could not resume the task automatically.`,
+        recoveryStarted: false,
+        status: "failed",
+      };
+    }
+
+    let launch: TaskAgentAuthLaunchResult = {
+      launched: false,
+      instructions:
+        login.instructions?.trim() ||
+        getTaskAgentLoginHint(agentType) ||
+        `Authentication is required for ${agentType}.`,
+      ...(login.url ? { url: login.url } : {}),
+      ...(login.deviceCode ? { deviceCode: login.deviceCode } : {}),
+    };
+
+    if (!launch.url && !launch.deviceCode) {
+      launch = await this.triggerAgentAuth(agentType);
+    } else if (launch.url) {
+      const browserAssist = await assistTaskAgentBrowserLogin(
+        agentType,
+        launch.url,
+        { runtime: this.runtime },
+      );
+      launch = {
+        ...launch,
+        launched: true,
+        browserOpened: browserAssist.opened,
+        browserClicked: browserAssist.clicked,
+        browserDetail: browserAssist.detail,
+      };
+    }
+
+    this.monitorSessionAuthRecovery(sessionId, agentType);
+
+    return {
+      ...launch,
+      recoveryStarted: true,
+      status: launch.launched ? "recovering" : "failed",
+    };
+  }
+
+  private monitorSessionAuthRecovery(
+    sessionId: string,
+    agentType: SupportedTaskAgentAdapter,
+  ): void {
+    const existing = this.authRecoveryTimers.get(sessionId);
+    if (existing) return;
+
+    const startedAt = Date.now();
+    const timer = setInterval(() => {
+      void (async () => {
+        const session = this.getSession(sessionId);
+        if (
+          !session ||
+          session.status === "stopped" ||
+          session.status === "error"
+        ) {
+          clearInterval(timer);
+          this.authRecoveryTimers.delete(sessionId);
+          return;
+        }
+
+        const auth = await this.getAgentAuthStatus(agentType);
+        if (auth.status === "authenticated") {
+          clearInterval(timer);
+          this.authRecoveryTimers.delete(sessionId);
+          clearTaskAgentFrameworkStateCache();
+          const resumed = await this.resumeSessionAfterRecoveredAuth(
+            sessionId,
+            agentType,
+          );
+          if (resumed) {
+            await this.coordinator?.markTaskResumedAfterProviderAuth?.(
+              sessionId,
+            );
+            return;
+          }
+          await this.coordinator?.resumeTaskAfterProviderAuth?.(
+            sessionId,
+            `${agentType} authentication was refreshed`,
+          );
+          return;
+        }
+
+        if (Date.now() - startedAt > 5 * 60_000) {
+          clearInterval(timer);
+          this.authRecoveryTimers.delete(sessionId);
+        }
+      })().catch((error) => {
+        this.log(`Auth recovery watcher failed for ${sessionId}: ${error}`);
+        clearInterval(timer);
+        this.authRecoveryTimers.delete(sessionId);
+      });
+    }, 2_500);
+
+    this.authRecoveryTimers.set(sessionId, timer);
+  }
+
+  private async resumeSessionAfterRecoveredAuth(
+    sessionId: string,
+    agentType: SupportedTaskAgentAdapter,
+  ): Promise<boolean> {
+    const session = this.getSession(sessionId);
+    if (!session) return false;
+    if (session.status === "ready" || session.status === "busy") {
+      return true;
+    }
+
+    try {
+      await this.sendKeysToSession(sessionId, "enter");
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      await this.sendKeysToSession(sessionId, "enter");
+    } catch (error) {
+      this.log(
+        `Failed to nudge ${agentType} session ${sessionId} after auth recovery: ${error}`,
+      );
+      return false;
+    }
+
+    const deadline = Date.now() + 8_000;
+    while (Date.now() < deadline) {
+      const current = this.getSession(sessionId);
+      if (!current) return false;
+      if (current.status === "ready" || current.status === "busy") {
+        return true;
+      }
+      if (current.status === "stopped" || current.status === "error") {
+        return false;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    }
+
+    return false;
   }
 
   getSupportedAgentTypes(): CodingAgentType[] {
@@ -1055,7 +1348,9 @@ export class PTYService {
           metricsTracker: this.metricsTracker,
           debugSnapshots: this.serviceConfig.debug === true,
           lastSentInput:
-            typeof meta?.lastSentInput === "string" ? meta.lastSentInput : undefined,
+            typeof meta?.lastSentInput === "string"
+              ? meta.lastSentInput
+              : undefined,
           log: (msg: string) => this.log(msg),
           taskContext: {
             sessionId: taskCtx.sessionId,
@@ -1090,7 +1385,9 @@ export class PTYService {
       metricsTracker: this.metricsTracker,
       debugSnapshots: this.serviceConfig.debug === true,
       lastSentInput:
-        typeof meta?.lastSentInput === "string" ? meta.lastSentInput : undefined,
+        typeof meta?.lastSentInput === "string"
+          ? meta.lastSentInput
+          : undefined,
       log: (msg: string) => this.log(msg),
     });
 
@@ -1321,7 +1618,10 @@ export class PTYService {
   }
 
   private emitEvent(sessionId: string, event: string, data: unknown): void {
-    if (event === "blocked" && this.shouldSuppressBlockedEvent(sessionId, data)) {
+    if (
+      event === "blocked" &&
+      this.shouldSuppressBlockedEvent(sessionId, data)
+    ) {
       return;
     }
     if (
@@ -1333,6 +1633,11 @@ export class PTYService {
       this.clearCompletionReconcile(sessionId);
     }
     if (event === "stopped" || event === "error") {
+      const authRecoveryTimer = this.authRecoveryTimers.get(sessionId);
+      if (authRecoveryTimer) {
+        clearInterval(authRecoveryTimer);
+        this.authRecoveryTimers.delete(sessionId);
+      }
       const liveSession = this.manager?.get(sessionId);
       const createdAt =
         liveSession?.startedAt instanceof Date
@@ -1446,7 +1751,10 @@ export class PTYService {
     );
   }
 
-  private shouldSuppressBlockedEvent(sessionId: string, data: unknown): boolean {
+  private shouldSuppressBlockedEvent(
+    sessionId: string,
+    data: unknown,
+  ): boolean {
     const payload = data as
       | {
           promptInfo?: unknown;
@@ -1471,20 +1779,23 @@ export class PTYService {
       return false;
     }
     const promptText =
-      typeof promptInfo.prompt === "string" ? cleanForChat(promptInfo.prompt) : "";
+      typeof promptInfo.prompt === "string"
+        ? cleanForChat(promptInfo.prompt)
+        : "";
     if (!promptText) {
       return false;
     }
     const compactPrompt = promptText.replace(/\s+/g, " ").trim();
-    const hasWorkspacePath = /(\/private\/|\/var\/folders\/)/.test(compactPrompt);
+    const hasWorkspacePath = /(\/private\/|\/var\/folders\/)/.test(
+      compactPrompt,
+    );
     const looksLikeWorkingStatus =
       /working \(\d+s .*esc to interrupt\)/i.test(compactPrompt) ||
       /messages to be submitted after next tool call/i.test(compactPrompt) ||
       /find and fix a bug in @filename/i.test(compactPrompt) ||
       /use \/skills to list available skills/i.test(compactPrompt);
     const looksLikeSpinnerTail =
-      /\b\d+% left\b/i.test(compactPrompt) &&
-      hasWorkspacePath;
+      /\b\d+% left\b/i.test(compactPrompt) && hasWorkspacePath;
     const looksLikeSpinnerFragments =
       hasWorkspacePath &&
       /(?:\bW Wo\b|• Wor|• Work|Worki|Workin|Working)/i.test(compactPrompt);
@@ -1501,7 +1812,10 @@ export class PTYService {
     return true;
   }
 
-  private responseLooksMeaningful(response: string, rawOutput: string): boolean {
+  private responseLooksMeaningful(
+    response: string,
+    rawOutput: string,
+  ): boolean {
     if (extractCompletionSummary(rawOutput).trim().length > 0) {
       return true;
     }
@@ -1533,7 +1847,9 @@ export class PTYService {
     return false;
   }
 
-  private async reconcileBusySessionFromOutput(sessionId: string): Promise<void> {
+  private async reconcileBusySessionFromOutput(
+    sessionId: string,
+  ): Promise<void> {
     if (!this.manager) {
       this.clearCompletionReconcile(sessionId);
       return;
@@ -1620,7 +1936,11 @@ export class PTYService {
       : 0;
     liveSession.status = "ready";
     liveSession.lastActivityAt = new Date();
-    this.metricsTracker.recordCompletion(agentType, "output-reconcile", durationMs);
+    this.metricsTracker.recordCompletion(
+      agentType,
+      "output-reconcile",
+      durationMs,
+    );
     this.log(
       `Reconciled ${sessionId} from busy to task_complete using stable adapter output`,
     );

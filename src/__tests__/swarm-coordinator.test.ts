@@ -87,6 +87,15 @@ const createMockPTYService = () => ({
   sendKeysToSession: jest.fn().mockResolvedValue(undefined),
   getSessionOutput: jest.fn().mockResolvedValue("recent output"),
   stopSession: jest.fn().mockResolvedValue(undefined),
+  startSessionAuthRecovery: jest.fn().mockResolvedValue({
+    launched: true,
+    recoveryStarted: true,
+    status: "recovering",
+    url: "https://claude.example/login",
+    instructions: "Milady opened the provider sign-in flow.",
+    browserOpened: true,
+    browserClicked: false,
+  }),
   listSessions: jest.fn().mockResolvedValue([]),
   spawnSession: jest.fn().mockResolvedValue({
     id: "s-failover",
@@ -796,16 +805,26 @@ describe("SwarmCoordinator", () => {
       );
     });
 
-    it("blocks the task and notifies the user when provider login is required", async () => {
+    it("starts auth recovery, blocks the task, and notifies the user when provider login is required", async () => {
       const sendChatSpy = jest.spyOn(coordinator, "sendChatMessage");
 
       await coordinator.handleSessionEvent("s-1", "login_required", {
         instructions: "Open Claude Code and finish login.",
         url: "https://claude.example/login",
+        method: "oauth_browser",
       });
 
       const ctx = coordinator.getTaskContext("s-1");
       expect(ctx.status).toBe("blocked");
+      expect(mockPty.startSessionAuthRecovery).toHaveBeenCalledWith(
+        "s-1",
+        "claude",
+        expect.objectContaining({
+          instructions: "Open Claude Code and finish login.",
+          url: "https://claude.example/login",
+          method: "oauth_browser",
+        }),
+      );
       expect(mockTaskRegistry.appendEvent).toHaveBeenCalledWith(
         expect.objectContaining({
           threadId: "s-1",
@@ -814,11 +833,33 @@ describe("SwarmCoordinator", () => {
           data: expect.objectContaining({
             reason: "login_required",
             url: "https://claude.example/login",
+            recoveryStatus: "recovering",
           }),
         }),
       );
       expect(sendChatSpy).toHaveBeenCalledWith(
-        expect.stringContaining("needs a provider login"),
+        expect.stringContaining("started the recovery flow"),
+        "coding-agent",
+      );
+    });
+
+    it("keeps the task active when provider auth is immediately recovered", async () => {
+      mockPty.startSessionAuthRecovery.mockResolvedValueOnce({
+        launched: true,
+        recoveryStarted: true,
+        status: "recovered",
+        recoveryTarget: "same_session",
+        instructions: "Auth recovered.",
+      });
+      const sendChatSpy = jest.spyOn(coordinator, "sendChatMessage");
+
+      await coordinator.handleSessionEvent("s-1", "login_required", {
+        instructions: "Authenticate Claude",
+      });
+
+      expect(coordinator.getTaskContext("s-1").status).toBe("active");
+      expect(sendChatSpy).toHaveBeenCalledWith(
+        expect.stringContaining("refreshed provider authentication"),
         "coding-agent",
       );
     });
@@ -953,8 +994,14 @@ describe("SwarmCoordinator", () => {
         response: "Done",
       });
 
-      // Wait for coalesce timer (500ms) + LLM call to settle
-      await new Promise((r) => setTimeout(r, 700));
+      // Wait for coalesce timer + async completion routing to settle.
+      for (
+        let attempt = 0;
+        attempt < 20 && ctx.status !== "completed";
+        attempt++
+      ) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
 
       expect(ctx.status).toBe("completed");
       expect(mockRuntime.useModel).toHaveBeenCalled();

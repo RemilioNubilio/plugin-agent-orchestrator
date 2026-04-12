@@ -9,13 +9,14 @@
  * @module api/agent-routes
  */
 
-import type { IncomingMessage, ServerResponse } from "node:http";
-import { access, readFile, realpath, rm } from "node:fs/promises";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
+import { access, readFile, realpath, rm } from "node:fs/promises";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
-import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { extractEvalRunMetadata } from "../actions/eval-metadata.js";
 import {
   buildAgentCredentials,
   isAnthropicOAuthToken,
@@ -28,7 +29,6 @@ import {
   toPiCommand,
 } from "../services/pty-types.js";
 import { getTaskAgentFrameworkState } from "../services/task-agent-frameworks.js";
-import { extractEvalRunMetadata } from "../actions/eval-metadata.js";
 import type { RouteContext } from "./routes.js";
 import { parseBody, sendError, sendJson } from "./routes.js";
 
@@ -95,7 +95,10 @@ async function resolveSafeVenvPath(
   // Canonicalize candidate when present to reject symlink escapes.
   try {
     const resolvedReal = await realpath(resolved);
-    if (!isPathInside(workdirReal, resolvedReal) || resolvedReal === workdirReal) {
+    if (
+      !isPathInside(workdirReal, resolvedReal) ||
+      resolvedReal === workdirReal
+    ) {
       throw new Error(
         "PARALLAX_BENCHMARK_PREFLIGHT_VENV resolves outside workdir",
       );
@@ -123,7 +126,9 @@ async function fileExists(filePath: string): Promise<boolean> {
   }
 }
 
-async function resolveRequirementsPath(workdir: string): Promise<string | null> {
+async function resolveRequirementsPath(
+  workdir: string,
+): Promise<string | null> {
   const workdirReal = await realpath(path.resolve(workdir));
   const candidates = [
     path.join(workdir, "apps", "api", "requirements.txt"),
@@ -141,7 +146,9 @@ async function resolveRequirementsPath(workdir: string): Promise<string | null> 
   return null;
 }
 
-async function fingerprintRequirementsFile(requirementsPath: string): Promise<string> {
+async function fingerprintRequirementsFile(
+  requirementsPath: string,
+): Promise<string> {
   const file = await readFile(requirementsPath);
   return createHash("sha256").update(file).digest("hex");
 }
@@ -158,7 +165,8 @@ async function runBenchmarkPreflight(workdir: string): Promise<void> {
     process.env.PARALLAX_BENCHMARK_PREFLIGHT_MODE?.toLowerCase() === "warm"
       ? "warm"
       : "cold";
-  const venvDir = process.env.PARALLAX_BENCHMARK_PREFLIGHT_VENV || ".benchmark-venv";
+  const venvDir =
+    process.env.PARALLAX_BENCHMARK_PREFLIGHT_VENV || ".benchmark-venv";
   const venvPath = await resolveSafeVenvPath(workdir, venvDir);
   const pythonInVenv = path.join(
     venvPath,
@@ -258,6 +266,10 @@ export async function handleAgentRoutes(
   // POST /api/coding-agents/auth/:agent — trigger CLI auth flow
   const authMatch = pathname.match(/^\/api\/coding-agents\/auth\/(\w+)$/);
   if (method === "POST" && authMatch) {
+    if (!ctx.ptyService) {
+      sendError(res, "PTY Service not available", 503);
+      return true;
+    }
     const rawAgentType = authMatch[1];
 
     // Validate agent type before instantiating an adapter.
@@ -273,22 +285,18 @@ export async function handleAgentRoutes(
       return true;
     }
 
-    const agentType = rawAgentType as import("coding-agent-adapters").AdapterType;
+    const agentType =
+      rawAgentType as import("../services/task-agent-frameworks.js").SupportedTaskAgentAdapter;
     try {
-      const { createAdapter } = await import("coding-agent-adapters");
-      const adapter = createAdapter(agentType);
-      const result = await (
-        adapter as typeof adapter & {
-          triggerAuth?: () => Promise<unknown>;
-        }
-      ).triggerAuth?.();
+      const result = await ctx.ptyService.triggerAgentAuth(agentType);
       if (!result) {
         sendError(res, `No auth flow available for ${agentType}`, 400);
       } else {
         sendJson(res, result as unknown as JsonValue);
       }
     } catch (error) {
-      const msg = error instanceof Error ? error.message : "Auth trigger failed";
+      const msg =
+        error instanceof Error ? error.message : "Auth trigger failed";
       // Defensive fallback: primary input validation is handled by
       // SUPPORTED_AGENTS above, so reaching here means the adapter package's
       // own validation failed (e.g. internal lookup table mismatch). The regex
@@ -337,23 +345,22 @@ export async function handleAgentRoutes(
     const action = scratchActionMatch[2];
     try {
       if (action === "keep") {
-        const scratch = await ctx.workspaceService.keepScratchWorkspace(
-          sessionId,
-        );
+        const scratch =
+          await ctx.workspaceService.keepScratchWorkspace(sessionId);
         sendJson(res, { success: true, scratch } as unknown as JsonValue);
         return true;
       }
       if (action === "delete") {
         await ctx.workspaceService.deleteScratchWorkspace(sessionId);
-        sendJson(
-          res,
-          { success: true, deleted: true, sessionId } as unknown as JsonValue,
-        );
+        sendJson(res, {
+          success: true,
+          deleted: true,
+          sessionId,
+        } as unknown as JsonValue);
         return true;
       }
       const body = await parseBody(req);
-      const promoteName =
-        typeof body.name === "string" ? body.name : undefined;
+      const promoteName = typeof body.name === "string" ? body.name : undefined;
       const scratch = await ctx.workspaceService.promoteScratchWorkspace(
         sessionId,
         promoteName,
@@ -452,7 +459,8 @@ export async function handleAgentRoutes(
       defaultAgentType: ctx.ptyService.defaultAgentType,
       preferredAgentType: frameworkState.preferred.id,
       preferredAgentReason: frameworkState.preferred.reason,
-      configuredSubscriptionProvider: frameworkState.configuredSubscriptionProvider,
+      configuredSubscriptionProvider:
+        frameworkState.configuredSubscriptionProvider,
       frameworks: frameworkState.frameworks,
     } as unknown as JsonValue);
     return true;
@@ -534,9 +542,9 @@ export async function handleAgentRoutes(
       const workspaceBaseDir = path.join(os.homedir(), ".milady", "workspaces");
       const workspaceBaseDirResolved = path.resolve(workspaceBaseDir);
       const cwdResolved = path.resolve(process.cwd());
-      const workspaceBaseDirReal = await realpath(workspaceBaseDirResolved).catch(
-        () => workspaceBaseDirResolved,
-      );
+      const workspaceBaseDirReal = await realpath(
+        workspaceBaseDirResolved,
+      ).catch(() => workspaceBaseDirResolved);
       const cwdReal = await realpath(cwdResolved).catch(() => cwdResolved);
       const allowedPrefixes = [workspaceBaseDirReal, cwdReal];
       let workdir = rawWorkdir as string | undefined;
@@ -549,7 +557,8 @@ export async function handleAgentRoutes(
         }
         const isAllowed = allowedPrefixes.some(
           (prefix) =>
-            resolvedReal === prefix || resolvedReal.startsWith(prefix + path.sep),
+            resolvedReal === prefix ||
+            resolvedReal.startsWith(prefix + path.sep),
         );
         if (!isAllowed) {
           sendError(
@@ -636,8 +645,9 @@ export async function handleAgentRoutes(
         coordinator && task && !requestedThreadId
           ? await coordinator.createTaskThread({
               title:
-                ((metadata as Record<string, unknown>)?.label as string | undefined) ??
-                `Task ${Date.now()}`,
+                ((metadata as Record<string, unknown>)?.label as
+                  | string
+                  | undefined) ?? `Task ${Date.now()}`,
               originalRequest: task as string,
               scenarioId: evalRunMetadata.scenarioId,
               batchId: evalRunMetadata.batchId,

@@ -22,8 +22,7 @@ interface CoordinatorEventBase<TName extends SessionEventName> {
   session?: CoordinatorSessionSnapshot;
 }
 
-export interface CoordinatorReadyEvent
-  extends CoordinatorEventBase<"ready"> {}
+export interface CoordinatorReadyEvent extends CoordinatorEventBase<"ready"> {}
 
 export interface CoordinatorBlockedEvent
   extends CoordinatorEventBase<"blocked"> {
@@ -37,6 +36,9 @@ export interface CoordinatorLoginRequiredEvent
   extends CoordinatorEventBase<"login_required"> {
   instructions?: string;
   url?: string;
+  deviceCode?: string;
+  method?: string;
+  promptSnippet?: string;
 }
 
 export interface CoordinatorTaskCompleteEvent
@@ -55,8 +57,7 @@ export interface CoordinatorStoppedEvent
   reason?: string;
 }
 
-export interface CoordinatorErrorEvent
-  extends CoordinatorEventBase<"error"> {
+export interface CoordinatorErrorEvent extends CoordinatorEventBase<"error"> {
   message: string;
 }
 
@@ -75,9 +76,7 @@ export type CoordinatorNormalizedEvent =
   | CoordinatorErrorEvent
   | CoordinatorMessageEvent;
 
-function normalizeSource(
-  data: unknown,
-): CoordinatorEventSource {
+function normalizeSource(data: unknown): CoordinatorEventSource {
   const source =
     typeof (data as { source?: unknown } | undefined)?.source === "string"
       ? ((data as { source: string }).source as string)
@@ -93,7 +92,9 @@ function normalizeSource(
   }
 }
 
-function normalizeSessionSnapshot(data: unknown): CoordinatorSessionSnapshot | undefined {
+function normalizeSessionSnapshot(
+  data: unknown,
+): CoordinatorSessionSnapshot | undefined {
   const session = (data as { session?: unknown } | undefined)?.session;
   if (!session || typeof session !== "object" || Array.isArray(session)) {
     return undefined;
@@ -131,9 +132,12 @@ export function normalizeCoordinatorEvent(
         ...(session ? { session } : {}),
       };
     case "blocked": {
-      const promptInfo = (data as { promptInfo?: unknown } | undefined)?.promptInfo;
+      const promptInfo = (data as { promptInfo?: unknown } | undefined)
+        ?.promptInfo;
       const promptRecord =
-        promptInfo && typeof promptInfo === "object" && !Array.isArray(promptInfo)
+        promptInfo &&
+        typeof promptInfo === "object" &&
+        !Array.isArray(promptInfo)
           ? (promptInfo as Record<string, unknown>)
           : undefined;
       const promptText =
@@ -154,7 +158,8 @@ export function normalizeCoordinatorEvent(
           : {}),
         ...(promptRecord ? { promptInfo: promptRecord } : {}),
         autoResponded:
-          (data as { autoResponded?: unknown } | undefined)?.autoResponded === true,
+          (data as { autoResponded?: unknown } | undefined)?.autoResponded ===
+          true,
       };
     }
     case "login_required":
@@ -165,8 +170,8 @@ export function normalizeCoordinatorEvent(
         timestamp,
         rawData: data,
         ...(session ? { session } : {}),
-        ...(typeof (data as { instructions?: unknown } | undefined)?.instructions ===
-        "string"
+        ...(typeof (data as { instructions?: unknown } | undefined)
+          ?.instructions === "string"
           ? {
               instructions: (data as { instructions: string }).instructions,
             }
@@ -174,6 +179,24 @@ export function normalizeCoordinatorEvent(
         ...(typeof (data as { url?: unknown } | undefined)?.url === "string"
           ? {
               url: (data as { url: string }).url,
+            }
+          : {}),
+        ...(typeof (data as { deviceCode?: unknown } | undefined)
+          ?.deviceCode === "string"
+          ? {
+              deviceCode: (data as { deviceCode: string }).deviceCode,
+            }
+          : {}),
+        ...(typeof (data as { method?: unknown } | undefined)?.method ===
+        "string"
+          ? {
+              method: (data as { method: string }).method,
+            }
+          : {}),
+        ...(typeof (data as { promptSnippet?: unknown } | undefined)
+          ?.promptSnippet === "string"
+          ? {
+              promptSnippet: (data as { promptSnippet: string }).promptSnippet,
             }
           : {}),
       };
@@ -186,7 +209,8 @@ export function normalizeCoordinatorEvent(
         rawData: data,
         ...(session ? { session } : {}),
         response:
-          typeof (data as { response?: unknown } | undefined)?.response === "string"
+          typeof (data as { response?: unknown } | undefined)?.response ===
+          "string"
             ? (data as { response: string }).response
             : "",
       };
@@ -202,8 +226,8 @@ export function normalizeCoordinatorEvent(
         "string"
           ? { toolName: (data as { toolName: string }).toolName }
           : {}),
-        ...(typeof (data as { description?: unknown } | undefined)?.description ===
-        "string"
+        ...(typeof (data as { description?: unknown } | undefined)
+          ?.description === "string"
           ? { description: (data as { description: string }).description }
           : {}),
       };
@@ -215,7 +239,8 @@ export function normalizeCoordinatorEvent(
         timestamp,
         rawData: data,
         ...(session ? { session } : {}),
-        ...(typeof (data as { reason?: unknown } | undefined)?.reason === "string"
+        ...(typeof (data as { reason?: unknown } | undefined)?.reason ===
+        "string"
           ? { reason: (data as { reason: string }).reason }
           : {}),
       };
@@ -228,7 +253,8 @@ export function normalizeCoordinatorEvent(
         rawData: data,
         ...(session ? { session } : {}),
         message:
-          typeof (data as { message?: unknown } | undefined)?.message === "string"
+          typeof (data as { message?: unknown } | undefined)?.message ===
+          "string"
             ? (data as { message: string }).message
             : "unknown error",
       };
@@ -240,7 +266,8 @@ export function normalizeCoordinatorEvent(
         timestamp,
         rawData: data,
         ...(session ? { session } : {}),
-        ...(typeof (data as { content?: unknown } | undefined)?.content === "string"
+        ...(typeof (data as { content?: unknown } | undefined)?.content ===
+        "string"
           ? { content: (data as { content: string }).content }
           : {}),
       };
