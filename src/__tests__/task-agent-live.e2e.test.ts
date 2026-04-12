@@ -7,7 +7,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { describe, it } from "bun:test";
+import { describe, it } from "vitest";
 
 const RUN_LIVE = process.env.ORCHESTRATOR_LIVE === "1";
 const liveDescribe = RUN_LIVE ? describe : describe.skip;
