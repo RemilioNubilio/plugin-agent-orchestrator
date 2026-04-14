@@ -39,6 +39,33 @@ import {
   type CodingTaskContext,
   handleMultiAgent,
 } from "./coding-task-handlers.js";
+import { looksLikeTaskAgentRequest } from "../services/task-agent-frameworks.js";
+
+function hasExplicitTaskPayload(message: Memory): boolean {
+  const content =
+    message.content && typeof message.content === "object"
+      ? (message.content as Record<string, unknown>)
+      : null;
+  if (!content) {
+    return false;
+  }
+
+  return (
+    typeof content.task === "string" ||
+    typeof content.repo === "string" ||
+    typeof content.workdir === "string" ||
+    typeof content.agents === "string" ||
+    typeof content.agentType === "string"
+  );
+}
+
+function getMessageText(message: Memory): string {
+  if (typeof message.content === "string") {
+    return message.content;
+  }
+
+  return typeof message.content?.text === "string" ? message.content.text : "";
+}
 
 type BackgroundAction = Action & {
   suppressPostActionContinuation?: boolean;
@@ -105,12 +132,25 @@ export const startCodingTaskAction: BackgroundAction = {
 
   validate: async (
     runtime: IAgentRuntime,
-    _message: Memory,
+    message: Memory,
   ): Promise<boolean> => {
     const ptyService = runtime.getService("PTY_SERVICE") as unknown as
       | PTYService
       | undefined;
-    return ptyService != null;
+    if (!ptyService) {
+      return false;
+    }
+
+    if (hasExplicitTaskPayload(message)) {
+      return true;
+    }
+
+    const text = getMessageText(message).trim();
+    if (text.length === 0) {
+      return true;
+    }
+
+    return looksLikeTaskAgentRequest(text);
   },
 
   handler: async (

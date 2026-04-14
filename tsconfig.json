@@ -22,7 +22,13 @@
     "moduleDetection": "force",
     "allowArbitraryExtensions": true,
     "isolatedModules": false,
-    "noEmit": true
+    "noEmit": true,
+    "types": ["node"],
+    "typeRoots": [
+      "./node_modules/@types",
+      "../../node_modules/@types",
+      "../../../node_modules/@types"
+    ]
   },
   "include": ["src/**/*.ts"],
   "exclude": ["src/__tests__/**/*", "**/*.test.ts", "**/*.spec.ts"]

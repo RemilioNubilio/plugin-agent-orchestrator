@@ -35,6 +35,19 @@ interface TaskLike {
   registeredAt: number;
 }
 
+type FrameworkState = Awaited<
+  ReturnType<typeof getTaskAgentFrameworkState>
+>;
+
+const FALLBACK_FRAMEWORK_STATE: FrameworkState = {
+  configuredSubscriptionProvider: undefined,
+  frameworks: [],
+  preferred: {
+    id: "codex",
+    reason: "Task-agent framework state unavailable.",
+  },
+};
+
 function uniqueTasks(tasks: TaskLike[]): TaskLike[] {
   const seen = new Set<string>();
   const result: TaskLike[] = [];
@@ -60,17 +73,33 @@ export const activeWorkspaceContextProvider: Provider = {
       "CODING_WORKSPACE_SERVICE",
     ) as unknown as CodingWorkspaceService | undefined;
     const coordinator = getCoordinator(runtime);
-    const frameworkState = await getTaskAgentFrameworkState(runtime, ptyService);
+    let frameworkState = FALLBACK_FRAMEWORK_STATE;
+    try {
+      frameworkState = await getTaskAgentFrameworkState(runtime, ptyService);
+    } catch {
+      frameworkState = FALLBACK_FRAMEWORK_STATE;
+    }
 
-    const sessions = ptyService
-      ? await Promise.race([
+    let sessions: SessionInfo[] = [];
+    if (ptyService) {
+      try {
+        sessions = await Promise.race([
           ptyService.listSessions(),
           new Promise<SessionInfo[]>((resolve) =>
             setTimeout(() => resolve([]), 2000),
           ),
-        ])
-      : [];
-    const workspaces = wsService?.listWorkspaces() ?? [];
+        ]);
+      } catch {
+        sessions = [];
+      }
+    }
+
+    let workspaces: WorkspaceResult[] = [];
+    try {
+      workspaces = wsService?.listWorkspaces() ?? [];
+    } catch {
+      workspaces = [];
+    }
     const tasks = uniqueTasks(
       ((coordinator?.getAllTaskContexts?.() ?? []) as TaskLike[]).slice(),
     );

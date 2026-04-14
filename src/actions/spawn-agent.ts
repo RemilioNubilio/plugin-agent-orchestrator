@@ -35,9 +35,34 @@ import {
   isAnthropicOAuthToken,
   sanitizeCustomCredentials,
 } from "../services/agent-credentials.js";
+import { looksLikeTaskAgentRequest } from "../services/task-agent-frameworks.js";
 import { requireTaskAgentAccess } from "../services/task-policy.js";
 import type { CodingWorkspaceService } from "../services/workspace-service.js";
 import { mergeTaskThreadEvalMetadata } from "./eval-metadata.js";
+
+function hasExplicitSpawnPayload(message: Memory): boolean {
+  const content =
+    message.content && typeof message.content === "object"
+      ? (message.content as Record<string, unknown>)
+      : null;
+  if (!content) {
+    return false;
+  }
+
+  return (
+    typeof content.task === "string" ||
+    typeof content.workdir === "string" ||
+    typeof content.agentType === "string"
+  );
+}
+
+function getMessageText(message: Memory): string {
+  if (typeof message.content === "string") {
+    return message.content;
+  }
+
+  return typeof message.content?.text === "string" ? message.content.text : "";
+}
 
 export const spawnAgentAction: Action = {
   name: "SPAWN_AGENT",
@@ -92,9 +117,8 @@ export const spawnAgentAction: Action = {
 
   validate: async (
     runtime: IAgentRuntime,
-    _message: Memory,
+    message: Memory,
   ): Promise<boolean> => {
-    // Check if PTYService is available
     const ptyService = runtime.getService("PTY_SERVICE") as unknown as
       | PTYService
       | undefined;
@@ -102,7 +126,17 @@ export const spawnAgentAction: Action = {
       logger.warn("[SPAWN_AGENT] PTYService not available");
       return false;
     }
-    return true;
+
+    if (hasExplicitSpawnPayload(message)) {
+      return true;
+    }
+
+    const text = getMessageText(message).trim();
+    if (text.length === 0) {
+      return true;
+    }
+
+    return looksLikeTaskAgentRequest(text);
   },
 
   handler: async (

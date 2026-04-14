@@ -30,6 +30,18 @@ import { stopAgentAction } from "./actions/stop-agent.js";
 import { codingAgentExamplesProvider } from "./providers/action-examples.js";
 import { activeWorkspaceContextProvider } from "./providers/active-workspace-context.js";
 // Services
+import {
+  AgentOrchestratorService,
+  cancelTaskAction,
+  configureAgentOrchestratorPlugin,
+  createSubAgentProvider,
+  createTaskAction,
+  listTasksAction,
+  pauseTaskAction,
+  resumeTaskAction,
+  searchTasksAction,
+  switchTaskAction,
+} from "./legacy-code-task-service.js";
 import { PTYService } from "./services/pty-service.js";
 import { CodingWorkspaceService } from "./services/workspace-service.js";
 
@@ -77,6 +89,7 @@ export const taskAgentPlugin: Plugin = {
 };
 
 export const codingAgentPlugin = taskAgentPlugin;
+export const agentOrchestratorPlugin = taskAgentPlugin;
 
 export default taskAgentPlugin;
 
@@ -102,7 +115,18 @@ export { spawnAgentAction } from "./actions/spawn-agent.js";
 export { taskControlAction } from "./actions/task-control.js";
 export { taskHistoryAction } from "./actions/task-history.js";
 export { taskShareAction } from "./actions/task-share.js";
-export { createTaskAction } from "./actions/start-coding-task.js";
+export {
+  AgentOrchestratorService,
+  cancelTaskAction,
+  configureAgentOrchestratorPlugin,
+  createSubAgentProvider,
+  createTaskAction,
+  listTasksAction,
+  pauseTaskAction,
+  resumeTaskAction,
+  searchTasksAction,
+  switchTaskAction,
+} from "./legacy-code-task-service.js";
 export { listTaskAgentsAction } from "./actions/list-agents.js";
 export { sendToTaskAgentAction } from "./actions/send-to-agent.js";
 export { spawnTaskAgentAction } from "./actions/spawn-agent.js";
@@ -153,3 +177,4 @@ export type {
   WorkspaceResult,
 } from "./services/workspace-service.js";
 export { CodingWorkspaceService } from "./services/workspace-service.js";
+export { cleanForChat } from "./services/ansi-utils.js";
