@@ -41,6 +41,7 @@ async function build() {
             "node:*",
             "@elizaos/core",
             "coding-agent-adapters",
+            "drizzle-orm",
             "git-workspace-service",
             "pty-manager",
             "pty-console",

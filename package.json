@@ -46,6 +46,7 @@
   "license": "MIT",
   "dependencies": {
     "coding-agent-adapters": "0.16.3",
+    "drizzle-orm": "^0.45.1",
     "pty-console": "0.3.1",
     "pty-state-capture": "0.2.0"
   }
