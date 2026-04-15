@@ -58,6 +58,14 @@ export async function scanIdleSessions(
         taskCtx.status !== "stopped" &&
         taskCtx.status !== "error"
       ) {
+        // Suppress the user-facing "Session lost" chat message when the
+        // completion handler has already delivered a result: populated
+        // completionSummary means the subagent's task_complete path ran,
+        // the PTY was force-stopped intentionally, and the user already
+        // got their answer via swarm synthesis. Only surface "Session
+        // lost" for genuine mid-work crashes where there's no delivered
+        // result to explain the silence.
+        const normalCompletion = Boolean(taskCtx.completionSummary);
         ctx.log(
           `Idle watchdog: "${taskCtx.label}" — PTY session no longer exists, marking as stopped`,
         );
@@ -77,9 +85,12 @@ export async function scanIdleSessions(
           timestamp: now,
           data: { reason: "pty_session_gone" },
         });
-        // Session-lost is a runtime-internal signal; the coordinator's
-        // completion path posts the final outcome. Emitting this to chat
-        // surfaces bot-restart internals to users.
+        if (!normalCompletion) {
+          ctx.sendChatMessage(
+            `[${taskCtx.label}] Session lost — the agent process is no longer running (likely killed during a restart).`,
+            "coding-agent",
+          );
+        }
         checkAllTasksComplete(ctx);
         continue;
       }

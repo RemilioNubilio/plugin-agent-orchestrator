@@ -19,9 +19,31 @@
  * @module services/swarm-coordinator
  */
 
+import { promises as fs } from "node:fs";
 import type { ServerResponse } from "node:http";
 import type { IAgentRuntime } from "@elizaos/core";
 import { logger } from "@elizaos/core";
+
+/**
+ * True when the workspace contains files the subagent produced. Filters
+ * out our injected bookkeeping (CLAUDE.md memory file) and Claude Code's
+ * own dot-prefixed scaffolding (`.claude/`, `.gitignore`, `.git/`). Query
+ * tasks — "what's the price of btc", "explain X" — leave the workspace
+ * with only those bookkeeping entries, so `false` lets callers skip the
+ * noisy "task finished, code is at …" prompt for ephemeral lookups.
+ */
+async function hasSubagentArtifacts(workspacePath: string): Promise<boolean> {
+  try {
+    const entries = await fs.readdir(workspacePath);
+    return entries.some(
+      (name) => name !== "CLAUDE.md" && !name.startsWith("."),
+    );
+  } catch {
+    // Workspace already cleaned up or never existed — treat as no artifacts
+    // so the caller defaults to the quiet path.
+    return false;
+  }
+}
 import { buildAgentCredentials } from "./agent-credentials.js";
 import { cleanForFailoverContext, extractDevServerUrl } from "./ansi-utils.js";
 import {
@@ -101,6 +123,14 @@ export interface TaskCompletionSummary {
   originalTask: string;
   status: string;
   completionSummary: string;
+  /** Subagent's working directory — used by synthesis to read the final
+   *  assistant response from the Claude Code session jsonl after the PTY
+   *  session has been cleaned up. */
+  workdir?: string;
+  /** Room the task was spawned from (captured from the originating user
+   *  message). Used by synthesis to route the final answer back to the
+   *  same chat channel. */
+  roomId?: string;
 }
 
 /** Callback fired when all tasks in a swarm reach terminal state. */

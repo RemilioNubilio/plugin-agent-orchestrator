@@ -735,6 +735,11 @@ async function checkAllTasksCompleteAsync(
       return;
     }
   }
+  if (failingThreads.length > 0) {
+    ctx.log(
+      `checkAllTasksComplete: ${failingThreads.length} thread(s) failed acceptance but at least one task produced deliverable output — falling through to synthesis`,
+    );
+  }
 
   // Guard: only fire once per swarm (reset by coordinator on stop/new swarm)
   if (ctx.swarmCompleteNotified) {
@@ -1368,7 +1373,23 @@ export async function executeDecision(
           // Escalations surface via the broadcast event above; chat
           // stays quiet until the coordinator reaches a terminal state.
         }
-        break;
+        // verdict === "escalate": the subagent finished with an answer but
+        // the validator LLM could not prove acceptance from available
+        // evidence. The answer itself is still in the session jsonl — mark
+        // the task completed so the normal swarm_complete synthesis path
+        // delivers the subagent's real response (see buildTaskResultLine).
+        // The escalation broadcast still goes out for UI observability; we
+        // just skip the "needs human review" chat noise because the user
+        // gets the actual answer via synthesis.
+        ctx.broadcast({
+          type: "escalation",
+          sessionId,
+          timestamp: Date.now(),
+          data: {
+            reason: "validation_escalation",
+            summary: validation.summary,
+          },
+        });
       }
 
       taskCtx.status = "completed";
