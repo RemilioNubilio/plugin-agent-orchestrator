@@ -173,6 +173,36 @@ export function clearDeferredTurnCompleteTimers(): void {
 
 // ─── Helpers ───
 
+/**
+ * Detect status-indicator patterns (spinners, progress animations) that
+ * the PTY manager surfaces as "blocking prompts" but are not real user-facing
+ * prompts. These fire repeatedly during long CLI operations (e.g. Claude Code
+ * "Orchestrating…") and must be filtered before they flood the decision loop.
+ */
+const STATUS_PATTERNS = [
+  /^orchestrating/i,
+  /^thinking/i,
+  /^planning/i,
+  /^processing/i,
+  /^loading/i,
+  /^analyzing/i,
+  /^searching/i,
+  /^compiling/i,
+  /^building/i,
+  /^bundling/i,
+  /^installing/i,
+  /^resolving/i,
+];
+function isStatusAnimation(text: string): boolean {
+  // Strip whitespace, ellipsis, spinner glyphs, and ANSI escapes
+  const stripped = text
+    .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "")
+    .replace(/[\s\u2026\u00b7\u2022\u25cf\u25cb•·…⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏|/\-\\]/g, "")
+    .trim();
+  if (stripped.length === 0) return true;
+  return STATUS_PATTERNS.some((p) => p.test(stripped));
+}
+
 /** Build a TaskContextSummary from a TaskContext. */
 function toContextSummary(taskCtx: TaskContext): TaskContextSummary {
   return {
@@ -1518,6 +1548,18 @@ export async function handleBlocked(
     return;
   }
 
+  // Skip status-indicator patterns (spinners, animations, progress text) that
+  // are not real prompts. These come from TUI re-renders during long operations
+  // like "Orchestrating…" in Claude Code. Without this filter the coordinator
+  // floods the decision loop with false "blocked" events and eventually
+  // escalates to the user with a verbose debug dump.
+  if (isStatusAnimation(promptText)) {
+    ctx.log(
+      `Ignoring status animation for ${taskCtx.label}: ${promptText.slice(0, 60).replace(/\n/g, " ")}`,
+    );
+    return;
+  }
+
   // Auto-responded by rules: log and broadcast, no LLM needed
   if (eventData.autoResponded) {
     // Safety: check if the auto-approved prompt accessed out-of-scope paths.
@@ -2226,8 +2268,13 @@ export async function handleAutonomousDecision(
             : decision.reasoning;
         ctx.log(`[${taskCtx.label}] ${actionDesc}: ${reasonExcerpt}`);
       } else if (decision.action === "escalate") {
+        // Cap escalation messages to avoid dumping debug-level text into chat.
+        const reason =
+          decision.reasoning.length > 120
+            ? `${decision.reasoning.slice(0, 120)}…`
+            : decision.reasoning;
         ctx.sendChatMessage(
-          `[${taskCtx.label}] Needs your attention: ${decision.reasoning}`,
+          `[${taskCtx.label}] Needs your attention: ${reason}`,
           "coding-agent",
         );
       }
