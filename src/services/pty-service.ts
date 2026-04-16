@@ -337,6 +337,11 @@ export class PTYService {
     }
     return this.pendingBunList;
   }
+  /** Pending task_complete → auto-stop timers, cancellable by the coordinator. */
+  private taskCompleteAutoStopTimers: Map<
+    string,
+    ReturnType<typeof setTimeout>
+  > = new Map();
   /** Background auth-recovery watchers keyed by blocked session id. */
   private authRecoveryTimers: Map<string, ReturnType<typeof setInterval>> =
     new Map();
@@ -899,8 +904,29 @@ export class PTYService {
     return sendKeysToSessionIO(this.ioContext(), sessionId, keys);
   }
 
+  /**
+   * Cancel a pending task_complete auto-stop for this session. Returns true
+   * if a timer was cancelled, false if none was pending. Safe to call any
+   * number of times. Intended for the swarm coordinator's task_complete
+   * handler so the assessment LLM has time to decide whether to keep the
+   * session alive (respond) or stop it (complete/escalate/ignore).
+   */
+  cancelTaskCompleteAutoStop(sessionId: string): boolean {
+    const timer = this.taskCompleteAutoStopTimers.get(sessionId);
+    if (!timer) return false;
+    clearTimeout(timer);
+    this.taskCompleteAutoStopTimers.delete(sessionId);
+    return true;
+  }
+
   async stopSession(sessionId: string, force = false): Promise<void> {
     if (!this.manager) throw new Error("PTYService not initialized");
+    // Any explicit stop supersedes a pending auto-stop.
+    const pending = this.taskCompleteAutoStopTimers.get(sessionId);
+    if (pending) {
+      clearTimeout(pending);
+      this.taskCompleteAutoStopTimers.delete(sessionId);
+    }
     captureLifecycle(sessionId, "session_stopped", force ? "force" : undefined);
     try {
       return await stopSessionIO(
@@ -1226,15 +1252,26 @@ export class PTYService {
         break;
       case "task_complete":
         this.emitEvent(sessionId, "task_complete", { ...data, source: "hook" });
-        // Auto-stop the PTY after a short grace period. Without this,
-        // subagents sit around firing stall classifications that then
-        // trigger phantom heartbeats in downstream streamers minutes
-        // after the user already got their answer. The grace period
-        // lets any backgrounded processes detach from the PTY parent
-        // before it exits.
-        setTimeout(() => {
-          this.stopSession(sessionId).catch(() => {});
-        }, TASK_COMPLETE_STOP_DELAY_MS);
+        // Schedule a cancellable auto-stop. Without it, subagents sit around
+        // firing stall classifications that trigger phantom heartbeats minutes
+        // after the user got their answer. With it, races kill the PTY mid-
+        // assessment when the coordinator wants to send a follow-up. The
+        // coordinator's task_complete handler calls cancelTaskCompleteAutoStop
+        // as soon as it starts assessing, so the stop only fires when the
+        // coordinator does NOT need the session anymore.
+        {
+          const existing = this.taskCompleteAutoStopTimers.get(sessionId);
+          if (existing) clearTimeout(existing);
+          const timer = setTimeout(() => {
+            this.taskCompleteAutoStopTimers.delete(sessionId);
+            this.stopSession(sessionId).catch((err) => {
+              this.log(
+                `Auto-stop after task_complete failed for ${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            });
+          }, TASK_COMPLETE_STOP_DELAY_MS);
+          this.taskCompleteAutoStopTimers.set(sessionId, timer);
+        }
         break;
       case "permission_approved":
         // Permission was auto-approved via PermissionRequest hook.

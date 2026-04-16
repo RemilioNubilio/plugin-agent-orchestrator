@@ -193,6 +193,18 @@ const STATUS_PATTERNS = [
   /^installing/i,
   /^resolving/i,
 ];
+
+function isStatusAnimation(text: string): boolean {
+  // Strip ANSI escapes, whitespace, ellipsis, and spinner glyphs so
+  // "⠋ Orchestrating…" normalizes to "Orchestrating".
+  const stripped = text
+    .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "")
+    .replace(/[\s\u2026\u00b7\u2022\u25cf\u25cb⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏|/\-\\]/g, "")
+    .trim();
+  if (stripped.length === 0) return true;
+  return STATUS_PATTERNS.some((p) => p.test(stripped));
+}
+
 /**
  * Detect when the agent's text is a request for the human user (not new
  * instructions for the agent itself). The turn-assessment LLM sometimes
@@ -211,19 +223,10 @@ const ASK_USER_PATTERNS = [
   /\boption\s*[\(\[]?[123abc][\)\]]?\b/i,
   /^\s*[123abc]\.\s/m,
 ];
-export function isAskingUserForInput(text: string | undefined): boolean {
+
+function isAskingUserForInput(text: string | undefined): boolean {
   if (!text) return false;
   return ASK_USER_PATTERNS.some((p) => p.test(text));
-}
-
-function isStatusAnimation(text: string): boolean {
-  // Strip whitespace, ellipsis, spinner glyphs, and ANSI escapes
-  const stripped = text
-    .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "")
-    .replace(/[\s\u2026\u00b7\u2022\u25cf\u25cb•·…⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏|/\-\\]/g, "")
-    .trim();
-  if (stripped.length === 0) return true;
-  return STATUS_PATTERNS.some((p) => p.test(stripped));
 }
 
 /** Build a TaskContextSummary from a TaskContext. */
@@ -2105,8 +2108,9 @@ export async function handleTurnComplete(
       return;
     }
 
-    // Send chat message for small-LLM decisions only.
-    // When Milaidy's pipeline handled it, she already spoke via WS broadcast.
+    // "respond" continuations and "complete" chat messages reach the user
+    // through the synthesis path; only real "escalate" decisions surface
+    // directly in chat. Log "respond" internally for traceability.
     if (!decisionFromPipeline) {
       if (decision.action === "respond") {
         const instruction = decision.response ?? "";
@@ -2125,9 +2129,19 @@ export async function handleTurnComplete(
       // synthesis output) produces duplicated, noisy messages. Let the
       // synthesis path own the user-facing notification.
     }
-    // "complete" chat message is handled by executeDecision
 
     await executeDecision(ctx, sessionId, decision);
+
+    // executeDecision only stops the session on "complete" / "respond".
+    // Escalate and ignore need an explicit stop to release the PTY that
+    // would otherwise be held open by cancelTaskCompleteAutoStop.
+    if (decision.action === "escalate" || decision.action === "ignore") {
+      ctx.ptyService?.stopSession(sessionId, /* force */ false).catch((err) => {
+        ctx.log(
+          `Failed to stop session after ${decision.action}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+    }
   } finally {
     ctx.inFlightDecisions.delete(sessionId);
     await drainPendingBlocked(ctx, sessionId);

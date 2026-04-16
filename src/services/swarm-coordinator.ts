@@ -2583,12 +2583,10 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
     }
 
     // Ignore events from sessions created before this coordinator started.
-    // Session IDs are formatted as "pty-{timestamp}-{hex}": extract the timestamp.
-    // Defensive: upstream event normalizer has occasionally emitted non-string
-    // sessionIds during teardown, which previously surfaced as a TypeError in
-    // this path and poisoned the coordinator's event queue.
-    const tsMatch =
-      typeof sessionId === "string" ? sessionId.match(/^pty-(\d+)-/) : null;
+    // Session IDs are formatted as "pty-{timestamp}-{hex}" — extract the timestamp.
+    // Some events may arrive without a sessionId (worker-level errors, etc.) — bail.
+    if (typeof sessionId !== "string" || sessionId.length === 0) return;
+    const tsMatch = sessionId.match(/^pty-(\d+)-/);
     if (tsMatch) {
       const sessionCreatedAt = Number(tsMatch[1]);
       if (sessionCreatedAt < this.startedAt - 60_000) {
@@ -2739,6 +2737,14 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
       }
 
       case "task_complete": {
+        // Cancel the PTY auto-stop scheduled by pty-service.handleHookEvent
+        // so the assessment LLM call (debounced + executed below) doesn't
+        // race the 5s grace timer. Without this, the PTY is killed mid-
+        // assessment and follow-up "respond" decisions hit a dead session.
+        // executeDecision (case "complete") will explicitly stopSession with
+        // force=true when the coordinator decides the agent is done.
+        this.ptyService?.cancelTaskCompleteAutoStop?.(sessionId);
+
         // Broadcast immediately for UI visibility, but coalesce the
         // expensive LLM assessment: rapid turn-complete events within
         // 500ms are debounced so only the last one triggers an LLM call.
