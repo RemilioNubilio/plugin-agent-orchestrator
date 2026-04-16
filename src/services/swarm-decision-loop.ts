@@ -193,6 +193,29 @@ const STATUS_PATTERNS = [
   /^installing/i,
   /^resolving/i,
 ];
+/**
+ * Detect when the agent's text is a request for the human user (not new
+ * instructions for the agent itself). The turn-assessment LLM sometimes
+ * misclassifies these as `respond` (= feed back to the agent), which causes
+ * a feedback loop where the agent's own clarification request gets sent back
+ * to it as input. When matched, the decision should be converted to `escalate`
+ * and the agent's question surfaced to chat.
+ */
+const ASK_USER_PATTERNS = [
+  /\bi need (?:you|the user) to\b/i,
+  /\bplease (?:pick|choose|select|provide|paste|share|tell me|let me know)\b/i,
+  /\bcan you (?:provide|share|paste|tell me|let me know|confirm|clarify)\b/i,
+  /\bwhich (?:would you|do you|of these)\b/i,
+  /\bpick one of\b/i,
+  /\bchoose one of\b/i,
+  /\boption\s*[\(\[]?[123abc][\)\]]?\b/i,
+  /^\s*[123abc]\.\s/m,
+];
+export function isAskingUserForInput(text: string | undefined): boolean {
+  if (!text) return false;
+  return ASK_USER_PATTERNS.some((p) => p.test(text));
+}
+
 function isStatusAnimation(text: string): boolean {
   // Strip whitespace, ellipsis, spinner glyphs, and ANSI escapes
   const stripped = text
@@ -2022,6 +2045,24 @@ export async function handleTurnComplete(
             "Assessor LLM returned an invalid response and the subagent produced no captured output. Escalating for human review.",
         };
       }
+    }
+
+    // Guardrail: if the assessment LLM said "respond" but the response is
+    // actually the agent asking the user for input (clarification, choice,
+    // missing context), convert to escalate. Otherwise we feed the agent's
+    // own question back to itself as new input — infinite-loop bait.
+    if (
+      decision.action === "respond" &&
+      isAskingUserForInput(decision.response)
+    ) {
+      const agentQuestion = decision.response ?? "";
+      ctx.log(
+        `Converting "respond" → "escalate" for "${taskCtx.label}": agent is asking user for input`,
+      );
+      decision = {
+        action: "escalate",
+        reasoning: agentQuestion,
+      };
     }
 
     // Log the decision
