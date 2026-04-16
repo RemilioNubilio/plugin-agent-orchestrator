@@ -6,11 +6,96 @@
  */
 
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import os from "node:os";
+import path from "node:path";
 import { spawn } from "node:child_process";
+import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, it } from "vitest";
 
 const RUN_LIVE = process.env.ORCHESTRATOR_LIVE === "1";
-const liveDescribe = RUN_LIVE ? describe : describe.skip;
+const here = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(here, "..", "..", "..", "..");
+const runNodeTsxScript = path.join(
+  repoRoot,
+  "packages",
+  "app-core",
+  "scripts",
+  "run-node-tsx.mjs",
+);
+const liveSmokeScript = path.join(
+  repoRoot,
+  "packages",
+  "app-core",
+  "test",
+  "scripts",
+  "task-agent-live-smoke.ts",
+);
+
+function codexHasStoredAuth(): boolean {
+  if (process.env.OPENAI_API_KEY?.trim()) {
+    return true;
+  }
+  try {
+    const authPath = path.join(os.homedir(), ".codex", "auth.json");
+    const raw = fs.readFileSync(authPath, "utf8");
+    const parsed = JSON.parse(raw) as { OPENAI_API_KEY?: string };
+    return typeof parsed.OPENAI_API_KEY === "string" && parsed.OPENAI_API_KEY.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
+function claudeHasDeterministicAuth(): boolean {
+  if (process.env.ANTHROPIC_API_KEY?.trim()) {
+    return true;
+  }
+  return fs.existsSync(path.join(os.homedir(), ".claude", ".credentials.json"));
+}
+
+function isFrameworkAuthenticated(framework: Framework): boolean {
+  if (framework === "claude" && !claudeHasDeterministicAuth()) {
+    return false;
+  }
+
+  try {
+    if (framework === "claude") {
+      const output = execFileSync("claude", ["auth", "status"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: 5_000,
+      });
+      return /"loggedIn"\s*:\s*true|\blogged in\b/i.test(output);
+    }
+
+    if (codexHasStoredAuth()) {
+      return true;
+    }
+
+    const output = execFileSync("codex", ["login", "status"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 5_000,
+    });
+    return /\blogged in\b/i.test(output);
+  } catch (error) {
+    const detail =
+      error instanceof Error
+        ? error.message
+        : typeof error === "string"
+          ? error
+          : "";
+    return !/\bnot logged in\b|\bno stored credentials\b|\bunauthenticated\b/i.test(detail) &&
+      framework === "codex" &&
+      codexHasStoredAuth();
+  }
+}
+
+const claudeLiveDescribe =
+  RUN_LIVE && isFrameworkAuthenticated("claude") ? describe : describe.skip;
+const codexLiveDescribe =
+  RUN_LIVE && isFrameworkAuthenticated("codex") ? describe : describe.skip;
 
 async function runLiveSmokeScript(
   framework: "claude" | "codex",
@@ -21,16 +106,16 @@ async function runLiveSmokeScript(
     const child = spawn(
       bunBinary,
       [
-        "scripts/run-node-tsx.mjs",
-        "test/scripts/task-agent-live-smoke.ts",
+        runNodeTsxScript,
+        liveSmokeScript,
         "--framework",
         framework,
         "--mode",
         mode,
       ],
       {
-        cwd: process.cwd(),
-        env: { ...process.env, ORCHESTRATOR_LIVE: "1", PWD: process.cwd() },
+        cwd: repoRoot,
+        env: { ...process.env, ORCHESTRATOR_LIVE: "1", PWD: repoRoot },
         stdio: "inherit",
       },
     );
@@ -55,7 +140,7 @@ async function runLiveSmokeScript(
   });
 }
 
-liveDescribe("task-agent live smoke", () => {
+claudeLiveDescribe("task-agent live smoke (claude)", () => {
   it(
     "keeps a Claude Code session alive across sequential tracked tasks",
     async () => {
@@ -65,17 +150,19 @@ liveDescribe("task-agent live smoke", () => {
   );
 
   it(
-    "keeps a Codex session alive across sequential tracked tasks",
-    async () => {
-      await runLiveSmokeScript("codex", "sequential");
-    },
-    12 * 60 * 1000,
-  );
-
-  it(
     "has Claude Code research a page and serve a generated webpage",
     async () => {
       await runLiveSmokeScript("claude", "web");
+    },
+    12 * 60 * 1000,
+  );
+});
+
+codexLiveDescribe("task-agent live smoke (codex)", () => {
+  it(
+    "keeps a Codex session alive across sequential tracked tasks",
+    async () => {
+      await runLiveSmokeScript("codex", "sequential");
     },
     12 * 60 * 1000,
   );

@@ -195,10 +195,10 @@ async function resolveSenderRole(
   }
 
   // Try well-known package specifiers that export checkSenderRole.
-  // @elizaos/core/roles is the standard location in eliza-based runtimes;
-  // @miladyai/plugin-roles is a legacy milady-specific package.
+  // Prefer the @elizaos/core barrel; @miladyai/plugin-roles is a legacy
+  // milady-specific package fallback.
   const PACKAGE_SPECIFIERS = [
-    "@elizaos/core/roles",
+    "@elizaos/core",
     "@miladyai/plugin-roles",
   ];
   for (const specifier of PACKAGE_SPECIFIERS) {
