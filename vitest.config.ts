@@ -3,6 +3,11 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     environment: "node",
-    include: ["src/__tests__/task-agent-live.e2e.test.ts"],
+    include: [
+      "src/__tests__/task-agent-live.e2e.test.ts",
+      "src/__tests__/skill-manifest.test.ts",
+      "src/__tests__/skill-recommender.test.ts",
+      "src/__tests__/skill-callback.test.ts",
+    ],
   },
 });

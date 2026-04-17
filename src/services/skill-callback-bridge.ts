@@ -22,10 +22,12 @@ import type { PTYService } from "./pty-service.js";
 const LOG_PREFIX = "[SkillCallback]";
 /**
  * Match `USE_SKILL <slug>` followed by an optional JSON args blob. The slug
- * shape mirrors `SKILL_NAME_PATTERN` in @elizaos/plugin-agent-skills.
+ * shape mirrors `SKILL_NAME_PATTERN` in @elizaos/plugin-agent-skills, which
+ * is strict lowercase-with-hyphens. We do NOT use the `i` flag so that
+ * `USE_SKILL UPPER` is rejected (uppercase slugs are invalid).
  */
 const USE_SKILL_DIRECTIVE_RE =
-  /^\s*USE_SKILL\s+([a-z0-9]+(?:-[a-z0-9]+)*)\s*(\{[\s\S]*?\}|\[[\s\S]*?\])?\s*$/im;
+  /^[\t ]*USE_SKILL[\t ]+([a-z0-9]+(?:-[a-z0-9]+)*)[\t ]*(\{[\s\S]*?\}|\[[\s\S]*?\])?[\t ]*$/m;
 const RESULT_PREVIEW_MAX = 1500;
 
 interface SkillUseAction extends Action {

@@ -419,7 +419,11 @@ export async function recommendSkillsForTask(
   for (const entry of llmScores) {
     // Drop slugs the model invented that weren't in the candidate list.
     if (!llmCandidates.some((c) => c.slug === entry.slug)) continue;
-    llmBySlug.set(entry.slug, entry);
+    const existing = llmBySlug.get(entry.slug);
+    // Keep the highest-scoring entry when the model emits duplicates.
+    if (!existing || entry.score > existing.score) {
+      llmBySlug.set(entry.slug, entry);
+    }
   }
 
   const merged: RecommendedSkill[] = [];
