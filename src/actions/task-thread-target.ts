@@ -19,8 +19,7 @@ function stringValue(value: unknown): string | undefined {
 
 function inferSearchText(text: string): string | undefined {
   const quoted =
-    text.match(/"([^"]{3,120})"/)?.[1] ??
-    text.match(/'([^']{3,120})'/)?.[1];
+    text.match(/"([^"]{3,120})"/)?.[1] ?? text.match(/'([^']{3,120})'/)?.[1];
   if (quoted) return quoted.trim();
 
   const topical =
@@ -47,9 +46,8 @@ async function threadBySession(
   coordinator: SwarmCoordinator,
   sessionId: string,
 ): Promise<TaskThreadSummary | null> {
-  const threadId = await coordinator.taskRegistry.findThreadIdBySessionId(
-    sessionId,
-  );
+  const threadId =
+    await coordinator.taskRegistry.findThreadIdBySessionId(sessionId);
   if (!threadId) return null;
   const detail = await coordinator.getTaskThread(threadId);
   return detail;
@@ -95,9 +93,7 @@ export async function resolveTaskThreadTarget(params: {
   const search =
     stringValue(options?.search) ??
     stringValue(content.search) ??
-    inferSearchText(
-      typeof content.text === "string" ? content.text : "",
-    );
+    inferSearchText(typeof content.text === "string" ? content.text : "");
   if (search) {
     const matches = await coordinator.listTaskThreads({
       ...buildScopedListOptions(message, includeArchived),

@@ -37,10 +37,7 @@ type RoleCheckResult = {
 const LOCAL_ROLES_MODULE_CANDIDATES = [
   path.resolve(process.cwd(), "packages/plugin-roles/src/index.ts"),
   path.resolve(process.cwd(), "packages/plugin-roles/dist/index.js"),
-  path.resolve(
-    process.cwd(),
-    "packages/agent/src/runtime/roles/src/index.ts",
-  ),
+  path.resolve(process.cwd(), "packages/agent/src/runtime/roles/src/index.ts"),
 ];
 
 function normalizeRole(value: unknown): RoleName {
@@ -197,10 +194,7 @@ async function resolveSenderRole(
   // Try well-known package specifiers that export checkSenderRole.
   // Prefer the @elizaos/core barrel; @miladyai/plugin-roles is a legacy
   // milady-specific package fallback.
-  const PACKAGE_SPECIFIERS = [
-    "@elizaos/core",
-    "@miladyai/plugin-roles",
-  ];
+  const PACKAGE_SPECIFIERS = ["@elizaos/core", "@miladyai/plugin-roles"];
   for (const specifier of PACKAGE_SPECIFIERS) {
     try {
       const rolesModule = (await import(specifier)) as {

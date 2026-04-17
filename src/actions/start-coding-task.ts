@@ -94,7 +94,8 @@ export const startCodingTaskAction: BackgroundAction = {
     "'on that project', 'add a feature to it'), you MUST include the repo URL in the `repo` parameter. " +
     "If the task involves code changes to a real project but you don't know the repo URL, ASK the user for it " +
     "before calling this action — do not default to a scratch directory for real project work.",
-  descriptionCompressed: "Spawn async task agents for multi-step jobs: code, debug, research, write, analyze. Auto-provisions workspace from repo URL.",
+  descriptionCompressed:
+    "Spawn async task agents for multi-step jobs: code, debug, research, write, analyze. Auto-provisions workspace from repo URL.",
 
   suppressPostActionContinuation: true,
 
@@ -253,13 +254,14 @@ export const startCodingTaskAction: BackgroundAction = {
       (await ptyService.resolveAgentType({
         task: selectionTask,
         repo,
-        subtaskCount: typeof (params?.agents as string) === "string" ||
+        subtaskCount:
+          typeof (params?.agents as string) === "string" ||
           typeof (content.agents as string) === "string"
-          ? (((params?.agents as string) ?? (content.agents as string))
-              .split("|")
-              .map((value) => value.trim())
-              .filter(Boolean).length || 1)
-          : 1,
+            ? ((params?.agents as string) ?? (content.agents as string))
+                .split("|")
+                .map((value) => value.trim())
+                .filter(Boolean).length || 1
+            : 1,
       }));
     const defaultAgentType = normalizeAgentType(rawAgentType);
 

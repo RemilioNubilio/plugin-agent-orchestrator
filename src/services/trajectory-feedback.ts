@@ -23,7 +23,10 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return Promise.race([
     promise,
     new Promise<T>((_, reject) =>
-      setTimeout(() => reject(new Error(`Trajectory query timed out after ${ms}ms`)), ms),
+      setTimeout(
+        () => reject(new Error(`Trajectory query timed out after ${ms}ms`)),
+        ms,
+      ),
     ),
   ]);
 }
@@ -62,7 +65,9 @@ export interface TrajectoryFeedbackOptions {
  * Resolve the trajectory logger from the runtime. Returns null if
  * trajectory logging isn't available (e.g. no database).
  */
-function getTrajectoryLogger(runtime: IAgentRuntime): TrajectoryLoggerRef | null {
+function getTrajectoryLogger(
+  runtime: IAgentRuntime,
+): TrajectoryLoggerRef | null {
   const runtimeAny = runtime as unknown as {
     getService?: (serviceType: string) => unknown;
     getServicesByType?: (serviceType: string) => unknown[];
@@ -171,7 +176,10 @@ function extractInsights(response: string, purpose: string): string[] {
  * Uses simple keyword overlap — not semantic search, but fast and
  * good enough for catching repeated patterns.
  */
-function isRelevant(experience: PastExperience, taskDescription: string): boolean {
+function isRelevant(
+  experience: PastExperience,
+  taskDescription: string,
+): boolean {
   if (!taskDescription) return true; // No filter = include all
 
   const taskWords = new Set(
@@ -225,11 +233,14 @@ export async function queryPastExperience(
 
   try {
     // Fetch recent orchestrator trajectories
-    const result = await withTimeout(logger.listTrajectories({
-      source: "orchestrator",
-      limit: maxTrajectories,
-      startDate,
-    }), QUERY_TIMEOUT_MS);
+    const result = await withTimeout(
+      logger.listTrajectories({
+        source: "orchestrator",
+        limit: maxTrajectories,
+        startDate,
+      }),
+      QUERY_TIMEOUT_MS,
+    );
 
     if (!result.trajectories || result.trajectories.length === 0) return [];
 
@@ -263,8 +274,7 @@ export async function queryPastExperience(
             )
             .slice(0, 50)
         : [];
-      const decisionType =
-        metadata?.orchestrator?.decisionType ?? "unknown";
+      const decisionType = metadata?.orchestrator?.decisionType ?? "unknown";
       const taskLabel = metadata?.orchestrator?.taskLabel ?? "";
       const trajectoryRepo = metadata?.orchestrator?.repo;
 
@@ -354,7 +364,9 @@ export async function queryPastExperience(
       .slice(0, maxEntries);
   } catch (err) {
     // Non-critical — log and return empty
-    elizaLogger.error(`[trajectory-feedback] Failed to query past experience: ${err}`);
+    elizaLogger.error(
+      `[trajectory-feedback] Failed to query past experience: ${err}`,
+    );
     return [];
   }
 }

@@ -67,10 +67,14 @@ function buildBaselineAcceptanceCriteria(
     criteria.push(`Complete this planned subtask: ${subtask}`);
   }
   if (input.kind === "coding" || getRepo(input)) {
-    criteria.push("Run the relevant checks for the changed code, or record the exact blocker.");
+    criteria.push(
+      "Run the relevant checks for the changed code, or record the exact blocker.",
+    );
   }
   criteria.push("Capture concrete completion evidence in the task record.");
-  criteria.push("Do not claim completion while any blocker or missing verification remains.");
+  criteria.push(
+    "Do not claim completion while any blocker or missing verification remains.",
+  );
   return uniqueCriteria(criteria).slice(0, MAX_CRITERIA);
 }
 

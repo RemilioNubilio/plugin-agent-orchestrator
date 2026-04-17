@@ -57,8 +57,13 @@ function looksLikeSpinnerFragments(line: string): boolean {
     .split(/\s+/)
     .filter(Boolean);
   if (tokens.length === 0) return false;
-  const fragmentTokens = tokens.filter((token) => SPINNER_FRAGMENT_TOKEN.test(token));
-  return fragmentTokens.length >= 4 && fragmentTokens.length >= Math.ceil(tokens.length * 0.6);
+  const fragmentTokens = tokens.filter((token) =>
+    SPINNER_FRAGMENT_TOKEN.test(token),
+  );
+  return (
+    fragmentTokens.length >= 4 &&
+    fragmentTokens.length >= Math.ceil(tokens.length * 0.6)
+  );
 }
 
 function isStatusNoiseLine(line: string): boolean {
@@ -67,8 +72,10 @@ function isStatusNoiseLine(line: string): boolean {
   if (compact.startsWith("› ")) return true;
   if (STATUS_NOISE_LINE.test(compact)) return true;
   if (looksLikeSpinnerFragments(compact)) return true;
-  if (STATUS_PATH_LINE.test(compact) && /\b\d+% left\b/i.test(compact)) return true;
-  if (STATUS_PATH_LINE.test(compact) && looksLikeSpinnerFragments(compact)) return true;
+  if (STATUS_PATH_LINE.test(compact) && /\b\d+% left\b/i.test(compact))
+    return true;
+  if (STATUS_PATH_LINE.test(compact) && looksLikeSpinnerFragments(compact))
+    return true;
   return false;
 }
 
@@ -119,7 +126,10 @@ function promptLooksLikeFalseBlockedNoise(
   if (!normalizedPrompt) return false;
   if (lastSentInput) {
     const normalizedInput = normalizeForComparison(lastSentInput);
-    if (normalizedPrompt.length >= 12 && normalizedInput.includes(normalizedPrompt)) {
+    if (
+      normalizedPrompt.length >= 12 &&
+      normalizedInput.includes(normalizedPrompt)
+    ) {
       return true;
     }
   }
@@ -595,10 +605,18 @@ export async function classifyAndDecideForCoordinator(
     if (mappedState === "waiting_for_input" && parsed.suggestedResponse) {
       const promptText = typeof parsed.prompt === "string" ? parsed.prompt : "";
       const responseText = parsed.suggestedResponse.trim().toLowerCase();
-      const approving = ["y", "yes", "keys:enter", "keys:down,enter"].includes(responseText);
+      const approving = ["y", "yes", "keys:enter", "keys:down,enter"].includes(
+        responseText,
+      );
       const hasAbsPath = /(?:^|[\s"'`])\/[^\s"'`]+/.test(promptText);
-      if (approving && hasAbsPath && !promptText.includes(taskContext.workdir)) {
-        log(`Combined classify+decide: overriding out-of-scope approval for ${sessionId}`);
+      if (
+        approving &&
+        hasAbsPath &&
+        !promptText.includes(taskContext.workdir)
+      ) {
+        log(
+          `Combined classify+decide: overriding out-of-scope approval for ${sessionId}`,
+        );
         parsed.suggestedResponse = `n — That path is outside your workspace. Use ${taskContext.workdir} instead.`;
       }
     }

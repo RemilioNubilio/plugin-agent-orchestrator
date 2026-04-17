@@ -166,11 +166,7 @@ async function cleanupAgentHooks(
       const settings = JSON.parse(raw) as Record<string, unknown>;
       if (!settings.hooks) continue;
       delete settings.hooks;
-      await writeFile(
-        settingsPath,
-        JSON.stringify(settings, null, 2),
-        "utf-8",
-      );
+      await writeFile(settingsPath, JSON.stringify(settings, null, 2), "utf-8");
       log(`Cleaned up hooks from ${settingsPath}`);
     } catch (err: unknown) {
       // ENOENT (file doesn't exist) is expected — silently ignore.

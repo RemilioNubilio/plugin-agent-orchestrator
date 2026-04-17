@@ -103,7 +103,9 @@ export const spawnAgentAction: Action = {
     [
       {
         name: "{{user1}}",
-        content: { text: "Spin up a task agent for the follow-up work in this repo." },
+        content: {
+          text: "Spin up a task agent for the follow-up work in this repo.",
+        },
       },
       {
         name: "{{agentName}}",
@@ -180,7 +182,8 @@ export const spawnAgentAction: Action = {
       (await ptyService.resolveAgentType({
         task,
         workdir:
-          ((params?.workdir as string) ?? (content.workdir as string)) || undefined,
+          ((params?.workdir as string) ?? (content.workdir as string)) ||
+          undefined,
       }));
     const agentType = normalizeAgentType(rawAgentType);
     const piRequested = isPiAgentType(rawAgentType);
@@ -267,7 +270,8 @@ export const spawnAgentAction: Action = {
     try {
       credentials = buildAgentCredentials(runtime);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Failed to build credentials";
+      const msg =
+        err instanceof Error ? err.message : "Failed to build credentials";
       logger.error(`[spawn-agent] ${msg}`);
       if (callback) {
         await callback({ text: msg });
@@ -307,12 +311,16 @@ export const spawnAgentAction: Action = {
               title: `agent-${Date.now()}`,
               originalRequest: task,
               roomId:
-                typeof (message as unknown as Record<string, unknown>).roomId === "string"
-                  ? ((message as unknown as Record<string, unknown>).roomId as string)
+                typeof (message as unknown as Record<string, unknown>)
+                  .roomId === "string"
+                  ? ((message as unknown as Record<string, unknown>)
+                      .roomId as string)
                   : null,
               ownerUserId:
-                typeof (message as unknown as Record<string, unknown>).userId === "string"
-                  ? ((message as unknown as Record<string, unknown>).userId as string)
+                typeof (message as unknown as Record<string, unknown>)
+                  .userId === "string"
+                  ? ((message as unknown as Record<string, unknown>)
+                      .userId as string)
                   : null,
               scenarioId: evalMetadata.scenarioId,
               batchId: evalMetadata.batchId,
@@ -444,13 +452,15 @@ export const spawnAgentAction: Action = {
       name: "workdir",
       description:
         "Working directory for the agent. Defaults to current directory.",
-      descriptionCompressed: "Spawn task agent in existing workspace for direct control.",
+      descriptionCompressed:
+        "Spawn task agent in existing workspace for direct control.",
       required: false,
       schema: { type: "string" as const },
     },
     {
       name: "task",
-      description: "Open-ended task or prompt to send to the task agent once spawned.",
+      description:
+        "Open-ended task or prompt to send to the task agent once spawned.",
       required: false,
       schema: { type: "string" as const },
     },

@@ -41,7 +41,10 @@ function codexHasStoredAuth(): boolean {
     const authPath = path.join(os.homedir(), ".codex", "auth.json");
     const raw = fs.readFileSync(authPath, "utf8");
     const parsed = JSON.parse(raw) as { OPENAI_API_KEY?: string };
-    return typeof parsed.OPENAI_API_KEY === "string" && parsed.OPENAI_API_KEY.trim().length > 0;
+    return (
+      typeof parsed.OPENAI_API_KEY === "string" &&
+      parsed.OPENAI_API_KEY.trim().length > 0
+    );
   } catch {
     return false;
   }
@@ -86,9 +89,13 @@ function isFrameworkAuthenticated(framework: Framework): boolean {
         : typeof error === "string"
           ? error
           : "";
-    return !/\bnot logged in\b|\bno stored credentials\b|\bunauthenticated\b/i.test(detail) &&
+    return (
+      !/\bnot logged in\b|\bno stored credentials\b|\bunauthenticated\b/i.test(
+        detail,
+      ) &&
       framework === "codex" &&
-      codexHasStoredAuth();
+      codexHasStoredAuth()
+    );
   }
 }
 
@@ -123,7 +130,11 @@ async function runLiveSmokeScript(
     child.on("error", reject);
     child.on("exit", (code, signal) => {
       if (signal) {
-        reject(new Error(`${framework} ${mode} live smoke exited via signal ${signal}`));
+        reject(
+          new Error(
+            `${framework} ${mode} live smoke exited via signal ${signal}`,
+          ),
+        );
         return;
       }
       try {

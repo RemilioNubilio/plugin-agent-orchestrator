@@ -51,10 +51,7 @@ declare module "pty-state-capture" {
       event: CaptureLifecycleEvent,
       detail?: string,
     ): Promise<void>;
-    feed(
-      chunk: string,
-      direction?: StreamDirection,
-    ): Promise<FeedOutputResult>;
+    feed(chunk: string, direction?: StreamDirection): Promise<FeedOutputResult>;
     snapshot(): SessionCaptureSnapshot;
     getCurrentState(): string;
   }

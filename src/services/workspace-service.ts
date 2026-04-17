@@ -106,7 +106,8 @@ export class CodingWorkspaceService {
   private workspaces: Map<string, WorkspaceResult> = new Map();
   private labels: Map<string, string> = new Map(); // label -> workspaceId
   private scratchBySession: Map<string, ScratchWorkspaceRecord> = new Map();
-  private scratchCleanupTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
+  private scratchCleanupTimers: Map<string, ReturnType<typeof setTimeout>> =
+    new Map();
   private eventCallbacks: WorkspaceEventCallback[] = [];
   private authPromptCallback: AuthPromptCallback | null = null;
   /** Callback fired when a scratch workspace enters pending_decision state. */
@@ -570,10 +571,14 @@ export class CodingWorkspaceService {
       if (this.scratchDecisionCallback) {
         this.log(`Firing scratch decision prompt for "${label}" at ${dirPath}`);
         this.scratchDecisionCallback(record).catch((err) => {
-          console.warn(`[workspace] Failed to send scratch decision prompt: ${err}`);
+          console.warn(
+            `[workspace] Failed to send scratch decision prompt: ${err}`,
+          );
         });
       } else {
-        this.log(`No scratch decision callback wired — skipping prompt for "${label}"`);
+        this.log(
+          `No scratch decision callback wired — skipping prompt for "${label}"`,
+        );
       }
     } else {
       this.clearScratchCleanupTimer(sessionId);
@@ -581,7 +586,9 @@ export class CodingWorkspaceService {
     return record;
   }
 
-  async keepScratchWorkspace(sessionId: string): Promise<ScratchWorkspaceRecord> {
+  async keepScratchWorkspace(
+    sessionId: string,
+  ): Promise<ScratchWorkspaceRecord> {
     const record = this.requireScratchWorkspace(sessionId);
     const next: ScratchWorkspaceRecord = {
       ...record,
@@ -655,11 +662,9 @@ export class CodingWorkspaceService {
   }
 
   private getScratchRetentionPolicy(): ScratchRetentionPolicy {
-    const setting = (
-      this.runtime.getSetting("PARALLAX_SCRATCH_RETENTION") ??
+    const setting = (this.runtime.getSetting("PARALLAX_SCRATCH_RETENTION") ??
       this.readConfigEnvKey("PARALLAX_SCRATCH_RETENTION") ??
-      process.env.PARALLAX_SCRATCH_RETENTION
-    ) as string | undefined;
+      process.env.PARALLAX_SCRATCH_RETENTION) as string | undefined;
     const normalized = setting?.trim().toLowerCase();
     if (normalized === "ephemeral") return "ephemeral";
     if (normalized === "persistent" || normalized === "keep") {
@@ -682,7 +687,9 @@ export class CodingWorkspaceService {
     const setting = this.runtime.getSetting(
       "PARALLAX_SCRATCH_DECISION_TTL_MS",
     ) as string | number | undefined;
-    const parsed = Number(setting ?? process.env.PARALLAX_SCRATCH_DECISION_TTL_MS);
+    const parsed = Number(
+      setting ?? process.env.PARALLAX_SCRATCH_DECISION_TTL_MS,
+    );
     if (Number.isFinite(parsed) && parsed > 0) return parsed;
     return 24 * 60 * 60 * 1000;
   }

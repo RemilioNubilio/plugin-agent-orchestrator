@@ -35,9 +35,7 @@ interface TaskLike {
   registeredAt: number;
 }
 
-type FrameworkState = Awaited<
-  ReturnType<typeof getTaskAgentFrameworkState>
->;
+type FrameworkState = Awaited<ReturnType<typeof getTaskAgentFrameworkState>>;
 
 const FALLBACK_FRAMEWORK_STATE: FrameworkState = {
   configuredSubscriptionProvider: undefined,
@@ -63,7 +61,8 @@ export const activeWorkspaceContextProvider: Provider = {
   name: "ACTIVE_WORKSPACE_CONTEXT",
   description:
     "Live status of active workspaces, task-agent sessions, and current task progress",
-  descriptionCompressed: "Live status of workspaces, task agents, and progress.",
+  descriptionCompressed:
+    "Live status of workspaces, task agents, and progress.",
   position: 1,
 
   get: async (runtime: IAgentRuntime, _message: Memory, _state: State) => {
@@ -114,7 +113,11 @@ export const activeWorkspaceContextProvider: Provider = {
       `Preferred framework: ${TASK_AGENT_FRAMEWORK_LABELS[frameworkState.preferred.id]} (${frameworkState.preferred.reason}).`,
     );
 
-    if (workspaces.length === 0 && sessions.length === 0 && tasks.length === 0) {
+    if (
+      workspaces.length === 0 &&
+      sessions.length === 0 &&
+      tasks.length === 0
+    ) {
       lines.push("No active workspaces or task-agent sessions.");
       lines.push(
         "Use CREATE_TASK when the user needs anything more involved than a simple direct reply.",
@@ -142,7 +145,9 @@ export const activeWorkspaceContextProvider: Provider = {
         }
       }
 
-      const trackedPaths = new Set(workspaces.map((workspace) => workspace.path));
+      const trackedPaths = new Set(
+        workspaces.map((workspace) => workspace.path),
+      );
       const standaloneSessions = sessions.filter(
         (session) => !trackedPaths.has(session.workdir),
       );

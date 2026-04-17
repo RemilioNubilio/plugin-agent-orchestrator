@@ -65,13 +65,16 @@ export const listAgentsAction: Action = {
 
   description:
     "List active task agents together with current task progress so the main agent can keep the user updated while work continues asynchronously.",
-  descriptionCompressed: "List active task agents with progress for async status updates.",
+  descriptionCompressed:
+    "List active task agents with progress for async status updates.",
 
   examples: [
     [
       {
         name: "{{user1}}",
-        content: { text: "What task agents are running right now and what are they doing?" },
+        content: {
+          text: "What task agents are running right now and what are they doing?",
+        },
       },
       {
         name: "{{agentName}}",
@@ -127,7 +130,10 @@ export const listAgentsAction: Action = {
     const tasks = uniqueTasks(
       ((coordinator?.getAllTaskContexts?.() ?? []) as TaskLike[]).slice(),
     );
-    const frameworkState = await getTaskAgentFrameworkState(runtime, ptyService);
+    const frameworkState = await getTaskAgentFrameworkState(
+      runtime,
+      ptyService,
+    );
 
     if (sessions.length === 0 && tasks.length === 0) {
       const text =

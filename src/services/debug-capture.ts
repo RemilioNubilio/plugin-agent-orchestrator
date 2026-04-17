@@ -27,11 +27,7 @@ interface CaptureManagerLike {
     chunk: string,
     direction?: "stdout" | "stderr" | "stdin",
   ): Promise<unknown>;
-  lifecycle(
-    sessionId: string,
-    event: string,
-    detail?: string,
-  ): Promise<void>;
+  lifecycle(sessionId: string, event: string, detail?: string): Promise<void>;
   snapshot(sessionId: string): unknown | null;
 }
 
@@ -66,10 +62,14 @@ async function ensureCaptureManager(): Promise<CaptureManagerLike | null> {
       defaultRows: 80,
       defaultCols: 220,
     });
-    logger.info("[debug-capture] PTY state capture enabled — writing to .parallax/pty-captures/");
+    logger.info(
+      "[debug-capture] PTY state capture enabled — writing to .parallax/pty-captures/",
+    );
     return captureManager;
   } catch {
-    logger.debug("[debug-capture] pty-state-capture not available — capture disabled");
+    logger.debug(
+      "[debug-capture] pty-state-capture not available — capture disabled",
+    );
     return null;
   }
 }
@@ -111,7 +111,11 @@ export async function captureFeed(
  */
 export async function captureLifecycle(
   sessionId: string,
-  event: "session_started" | "session_ready" | "session_stopped" | "session_error",
+  event:
+    | "session_started"
+    | "session_ready"
+    | "session_stopped"
+    | "session_error",
   detail?: string,
 ): Promise<void> {
   if (!captureManager) return;

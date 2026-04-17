@@ -14,7 +14,12 @@ import {
 import { requireTaskAgentAccess } from "../services/task-policy.js";
 
 type HistoryMetric = "list" | "count" | "detail";
-type HistoryWindow = "active" | "today" | "yesterday" | "last_7_days" | "last_30_days";
+type HistoryWindow =
+  | "active"
+  | "today"
+  | "yesterday"
+  | "last_7_days"
+  | "last_30_days";
 
 function textValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0
@@ -44,15 +49,23 @@ function formatDate(date: Date): string {
 
 function inferMetric(text: string, value?: string): HistoryMetric {
   const normalized = value?.trim().toLowerCase();
-  if (normalized === "count" || normalized === "detail" || normalized === "list") {
+  if (
+    normalized === "count" ||
+    normalized === "detail" ||
+    normalized === "list"
+  ) {
     return normalized;
   }
   if (/\bhow many\b|\bcount\b/i.test(text)) return "count";
-  if (/\bshow me\b|\bgive me\b|\blist\b|\bwhat are\b/i.test(text)) return "list";
+  if (/\bshow me\b|\bgive me\b|\blist\b|\bwhat are\b/i.test(text))
+    return "list";
   return "detail";
 }
 
-function inferStatuses(text: string, rawStatuses?: string[]): TaskThreadStatus[] | undefined {
+function inferStatuses(
+  text: string,
+  rawStatuses?: string[],
+): TaskThreadStatus[] | undefined {
   if (rawStatuses && rawStatuses.length > 0) {
     return rawStatuses as TaskThreadStatus[];
   }
@@ -99,12 +112,13 @@ function inferWindow(text: string, raw?: string): HistoryWindow | undefined {
 function inferSearch(text: string, raw?: string): string | undefined {
   if (raw?.trim()) return raw.trim();
   const quoted =
-    text.match(/"([^"]{3,120})"/)?.[1] ??
-    text.match(/'([^']{3,120})'/)?.[1];
+    text.match(/"([^"]{3,120})"/)?.[1] ?? text.match(/'([^']{3,120})'/)?.[1];
   if (quoted) return quoted.trim();
   const topical =
     text.match(/\bworking on\s+(.+?)(?:[?.!,]|$)/i)?.[1] ??
-    text.match(/\ball tasks where we were working on\s+(.+?)(?:[?.!,]|$)/i)?.[1];
+    text.match(
+      /\ball tasks where we were working on\s+(.+?)(?:[?.!,]|$)/i,
+    )?.[1];
   return topical?.trim();
 }
 
@@ -144,7 +158,9 @@ function buildWindowFilters(window: HistoryWindow | undefined): {
     };
   }
   if (window === "last_30_days") {
-    const start = startOfDay(new Date(now.getTime() - 29 * 24 * 60 * 60 * 1000));
+    const start = startOfDay(
+      new Date(now.getTime() - 29 * 24 * 60 * 60 * 1000),
+    );
     return {
       latestActivityAfter: start.getTime(),
       latestActivityBefore: now.getTime(),
@@ -178,7 +194,8 @@ export const taskHistoryAction: Action = {
   ],
   description:
     "Query coordinator task history without stuffing raw transcripts into model context. Use this for active work, yesterday/last-week summaries, topic search, counts, and thread detail lookup.",
-  descriptionCompressed: "Query task history: active work, summaries, search, thread details.",
+  descriptionCompressed:
+    "Query task history: active work, summaries, search, thread details.",
   examples: [
     [
       {
@@ -235,7 +252,8 @@ export const taskHistoryAction: Action = {
       return { success: false, error: "SERVICE_UNAVAILABLE" };
     }
 
-    const params = (options?.parameters as Record<string, unknown> | undefined) ?? {};
+    const params =
+      (options?.parameters as Record<string, unknown> | undefined) ?? {};
     const content = (message.content ?? {}) as Record<string, unknown>;
     const text = typeof content.text === "string" ? content.text : "";
 
@@ -246,9 +264,13 @@ export const taskHistoryAction: Action = {
     const statuses = inferStatuses(
       text,
       Array.isArray(params.statuses)
-        ? params.statuses.filter((value): value is string => typeof value === "string")
+        ? params.statuses.filter(
+            (value): value is string => typeof value === "string",
+          )
         : Array.isArray(content.statuses)
-          ? content.statuses.filter((value): value is string => typeof value === "string")
+          ? content.statuses.filter(
+              (value): value is string => typeof value === "string",
+            )
           : undefined,
     );
     const window = inferWindow(
@@ -259,9 +281,11 @@ export const taskHistoryAction: Action = {
       text,
       textValue(params.search) ?? textValue(content.search),
     );
-    const limitRaw =
-      Number(params.limit ?? content.limit ?? (metric === "detail" ? 1 : 10));
-    const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.trunc(limitRaw) : 10;
+    const limitRaw = Number(
+      params.limit ?? content.limit ?? (metric === "detail" ? 1 : 10),
+    );
+    const limit =
+      Number.isFinite(limitRaw) && limitRaw > 0 ? Math.trunc(limitRaw) : 10;
     const includeArchived =
       (params.includeArchived as boolean | undefined) ??
       (content.includeArchived as boolean | undefined) ??
@@ -289,10 +313,16 @@ export const taskHistoryAction: Action = {
 
     const summaryWindow =
       windowFilters.label ??
-      (window === "active" ? "right now" : includeArchived ? "all recorded time" : "recent task history");
+      (window === "active"
+        ? "right now"
+        : includeArchived
+          ? "all recorded time"
+          : "recent task history");
     const summaryTopic = search ? ` for "${search}"` : "";
     const summaryStatus =
-      statuses && statuses.length > 0 ? ` with status ${statuses.join(", ")}` : "";
+      statuses && statuses.length > 0
+        ? ` with status ${statuses.join(", ")}`
+        : "";
 
     let responseText = "";
     if (metric === "count") {

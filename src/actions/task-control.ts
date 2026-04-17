@@ -64,7 +64,8 @@ export const taskControlAction: Action = {
   ],
   description:
     "Pause, stop, resume, continue, archive, or reopen a coordinator task thread while preserving the durable thread history.",
-  descriptionCompressed: "Pause/stop/resume/archive/reopen coordinator task thread.",
+  descriptionCompressed:
+    "Pause/stop/resume/archive/reopen coordinator task thread.",
   examples: [
     [
       {
@@ -121,7 +122,8 @@ export const taskControlAction: Action = {
       return { success: false, error: "SERVICE_UNAVAILABLE" };
     }
 
-    const params = (options?.parameters as Record<string, unknown> | undefined) ?? {};
+    const params =
+      (options?.parameters as Record<string, unknown> | undefined) ?? {};
     const content = (message.content ?? {}) as Record<string, unknown>;
     const text = typeof content.text === "string" ? content.text : "";
     const operation = inferOperation(

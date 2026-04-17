@@ -56,8 +56,6 @@ const KNOWN_AGENT_PREFIXES = [
   "google",
   "aider",
   "pi",
-  "pi-ai",
-  "piai",
   "pi-coding-agent",
   "picodingagent",
   "shell",
@@ -328,56 +326,58 @@ export async function handleMultiAgent(
         metadata: evalMetadata.metadata,
       })
     : null;
-  const plannedAgents = await Promise.all(agentSpecs.map(async (spec, i) => {
-    let specAgentType = defaultAgentType;
-    let specPiRequested = isPiAgentType(rawAgentType);
-    let specRequestedType = rawAgentType;
-    let specTask = spec;
-    let hasExplicitPrefix = false;
-    const colonIdx = spec.indexOf(":");
-    if (
-      ctx.agentSelectionStrategy !== "fixed" &&
-      colonIdx > 0 &&
-      colonIdx < 20
-    ) {
-      const prefix = spec.slice(0, colonIdx).trim().toLowerCase();
-      if ((KNOWN_AGENT_PREFIXES as readonly string[]).includes(prefix)) {
-        hasExplicitPrefix = true;
-        specRequestedType = prefix;
-        specPiRequested = isPiAgentType(prefix);
-        specAgentType = normalizeAgentType(prefix);
-        specTask = spec.slice(colonIdx + 1).trim();
+  const plannedAgents = await Promise.all(
+    agentSpecs.map(async (spec, i) => {
+      let specAgentType = defaultAgentType;
+      let specPiRequested = isPiAgentType(rawAgentType);
+      let specRequestedType = rawAgentType;
+      let specTask = spec;
+      let hasExplicitPrefix = false;
+      const colonIdx = spec.indexOf(":");
+      if (
+        ctx.agentSelectionStrategy !== "fixed" &&
+        colonIdx > 0 &&
+        colonIdx < 20
+      ) {
+        const prefix = spec.slice(0, colonIdx).trim().toLowerCase();
+        if ((KNOWN_AGENT_PREFIXES as readonly string[]).includes(prefix)) {
+          hasExplicitPrefix = true;
+          specRequestedType = prefix;
+          specPiRequested = isPiAgentType(prefix);
+          specAgentType = normalizeAgentType(prefix);
+          specTask = spec.slice(colonIdx + 1).trim();
+        }
+      } else if (
+        ctx.agentSelectionStrategy === "fixed" &&
+        colonIdx > 0 &&
+        colonIdx < 20
+      ) {
+        specTask = stripAgentPrefix(spec);
       }
-    } else if (
-      ctx.agentSelectionStrategy === "fixed" &&
-      colonIdx > 0 &&
-      colonIdx < 20
-    ) {
-      specTask = stripAgentPrefix(spec);
-    }
 
-    const specLabel = explicitLabel
-      ? `${explicitLabel}-${i + 1}`
-      : generateLabel(repo, specTask);
+      const specLabel = explicitLabel
+        ? `${explicitLabel}-${i + 1}`
+        : generateLabel(repo, specTask);
 
-    if (!agentTypeExplicit && !hasExplicitPrefix) {
-      specRequestedType = await ptyService.resolveAgentType({
-        task: specTask,
-        repo,
-        subtaskCount: agentSpecs.length,
-      });
-      specPiRequested = isPiAgentType(specRequestedType);
-      specAgentType = normalizeAgentType(specRequestedType);
-    }
+      if (!agentTypeExplicit && !hasExplicitPrefix) {
+        specRequestedType = await ptyService.resolveAgentType({
+          task: specTask,
+          repo,
+          subtaskCount: agentSpecs.length,
+        });
+        specPiRequested = isPiAgentType(specRequestedType);
+        specAgentType = normalizeAgentType(specRequestedType);
+      }
 
-    return {
-      specAgentType,
-      specPiRequested,
-      specRequestedType,
-      specTask,
-      specLabel,
-    };
-  }));
+      return {
+        specAgentType,
+        specPiRequested,
+        specRequestedType,
+        specTask,
+        specLabel,
+      };
+    }),
+  );
 
   const graphPlan =
     coordinator && taskThread
@@ -549,12 +549,13 @@ export async function handleMultiAgent(
     } catch (error) {
       const rawErrorMessage =
         error instanceof Error ? error.message : String(error);
-      const errorMessage = repo && failureStage === "workspace"
-        ? `${rawErrorMessage}. ${diagnoseWorkspaceBootstrapFailure(
-            repo,
-            rawErrorMessage,
-          )}`
-        : rawErrorMessage;
+      const errorMessage =
+        repo && failureStage === "workspace"
+          ? `${rawErrorMessage}. ${diagnoseWorkspaceBootstrapFailure(
+              repo,
+              rawErrorMessage,
+            )}`
+          : rawErrorMessage;
       logger.error(
         `[START_CODING_TASK] Failed to spawn agent ${i + 1}:`,
         errorMessage,

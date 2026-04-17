@@ -41,7 +41,9 @@ function extractJsonBlock(raw: string): string {
 
 function parseAcceptanceEvaluation(raw: string): AcceptanceEvaluation | null {
   try {
-    const parsed = JSON.parse(extractJsonBlock(raw)) as Partial<AcceptanceEvaluation>;
+    const parsed = JSON.parse(
+      extractJsonBlock(raw),
+    ) as Partial<AcceptanceEvaluation>;
     if (
       (parsed.verdict !== "pass" && parsed.verdict !== "fail") ||
       typeof parsed.summary !== "string" ||
@@ -51,16 +53,15 @@ function parseAcceptanceEvaluation(raw: string): AcceptanceEvaluation | null {
     }
     const checklist = Array.isArray(parsed.checklist)
       ? parsed.checklist
-          .filter(
-            (entry): entry is AcceptanceChecklistItem =>
-              Boolean(
-                entry &&
-                  typeof entry === "object" &&
-                  typeof (entry as AcceptanceChecklistItem).criterion ===
-                    "string" &&
-                  typeof (entry as AcceptanceChecklistItem).status === "string" &&
-                  typeof (entry as AcceptanceChecklistItem).evidence === "string",
-              ),
+          .filter((entry): entry is AcceptanceChecklistItem =>
+            Boolean(
+              entry &&
+                typeof entry === "object" &&
+                typeof (entry as AcceptanceChecklistItem).criterion ===
+                  "string" &&
+                typeof (entry as AcceptanceChecklistItem).status === "string" &&
+                typeof (entry as AcceptanceChecklistItem).evidence === "string",
+            ),
           )
           .map((entry) => ({
             criterion: entry.criterion.trim(),
@@ -73,8 +74,7 @@ function parseAcceptanceEvaluation(raw: string): AcceptanceEvaluation | null {
             evidence: entry.evidence.trim(),
           }))
           .filter(
-            (entry) =>
-              entry.criterion.length > 0 && entry.evidence.length > 0,
+            (entry) => entry.criterion.length > 0 && entry.evidence.length > 0,
           )
       : [];
     return {
@@ -119,7 +119,9 @@ function collectAcceptancePrerequisiteFailures(thread: TaskThreadDetail): {
   failedExecutionNodes: TaskNodeRecord[];
   completedWithoutEvidence: TaskNodeRecord[];
 } {
-  const executionNodes = thread.nodes.filter((node) => node.kind === "execution");
+  const executionNodes = thread.nodes.filter(
+    (node) => node.kind === "execution",
+  );
   const passedCompletionVerifierNodeIds = new Set(
     thread.verifierJobs
       .filter(
@@ -190,7 +192,9 @@ function summarizeThreadEvidence(thread: TaskThreadDetail): string {
     .map((session) =>
       [
         `${session.label} [${session.framework}] status=${session.status}`,
-        session.completionSummary ? `summary=${truncate(session.completionSummary, 400)}` : "",
+        session.completionSummary
+          ? `summary=${truncate(session.completionSummary, 400)}`
+          : "",
       ]
         .filter(Boolean)
         .join(" | "),
@@ -481,6 +485,8 @@ export async function runReadyTaskVerifiers(
   }
 }
 
-export function isTerminalTaskNodeStatus(status: TaskNodeRecord["status"]): boolean {
+export function isTerminalTaskNodeStatus(
+  status: TaskNodeRecord["status"],
+): boolean {
   return terminalNodeStates.has(status);
 }

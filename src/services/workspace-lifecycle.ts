@@ -28,7 +28,10 @@ export async function removeScratchDir(
   const allAllowed = [baseDir, ...(allowedDirs ?? [])];
   const isAllowed = allAllowed.some((dir) => {
     const resolvedDir = path.resolve(expandTilde(dir)) + path.sep;
-    return resolved.startsWith(resolvedDir) || resolved === path.resolve(expandTilde(dir));
+    return (
+      resolved.startsWith(resolvedDir) ||
+      resolved === path.resolve(expandTilde(dir))
+    );
   });
 
   if (!isAllowed) {

@@ -22,7 +22,8 @@ export const codingAgentExamplesProvider: Provider = {
   name: "CODING_AGENT_EXAMPLES",
   description:
     "Structured examples showing how to use open-ended task-agent actions, framework availability, and subscription-aware defaults",
-  descriptionCompressed: "Task-agent action examples, framework availability, subscription defaults.",
+  descriptionCompressed:
+    "Task-agent action examples, framework availability, subscription defaults.",
   position: -1,
 
   get: async (runtime: IAgentRuntime, message: Memory, _state: State) => {
@@ -33,7 +34,10 @@ export const codingAgentExamplesProvider: Provider = {
     const ptyService = runtime.getService("PTY_SERVICE") as unknown as
       | PTYService
       | undefined;
-    const frameworkState = await getTaskAgentFrameworkState(runtime, ptyService);
+    const frameworkState = await getTaskAgentFrameworkState(
+      runtime,
+      ptyService,
+    );
     const frameworkLines = frameworkState.frameworks.map(
       formatTaskAgentFrameworkLine,
     );

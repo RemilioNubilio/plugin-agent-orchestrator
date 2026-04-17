@@ -603,7 +603,9 @@ export async function handleAgentRoutes(
         credentials = buildAgentCredentials(ctx.runtime);
       } catch (error) {
         const message =
-          error instanceof Error ? error.message : "Failed to build credentials";
+          error instanceof Error
+            ? error.message
+            : "Failed to build credentials";
         sendError(res, message, 400);
         return true;
       }

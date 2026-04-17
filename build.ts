@@ -86,7 +86,9 @@ async function build() {
     }
 
     if (!declResult.success) {
-      console.error("✗ Build aborted: TypeScript declarations could not be generated");
+      console.error(
+        "✗ Build aborted: TypeScript declarations could not be generated",
+      );
       return false;
     }
 

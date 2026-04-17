@@ -13,7 +13,10 @@ function collectTaskText(input: CreateTaskThreadInput): string {
   const subtasks = Array.isArray(
     (input.currentPlan as { subtasks?: unknown } | undefined)?.subtasks,
   )
-    ? (((input.currentPlan as { subtasks?: unknown }).subtasks as unknown[]) ?? [])
+    ? (
+        ((input.currentPlan as { subtasks?: unknown }).subtasks as unknown[]) ??
+        []
+      )
         .filter((entry): entry is string => typeof entry === "string")
         .join("\n")
     : "";

@@ -17,10 +17,7 @@ export interface AgentMetrics {
   totalCompletionMs: number;
 }
 
-export type CompletionMethod =
-  | "fast-path"
-  | "classifier"
-  | "output-reconcile";
+export type CompletionMethod = "fast-path" | "classifier" | "output-reconcile";
 
 export class AgentMetricsTracker {
   private metrics: Map<string, AgentMetrics> = new Map();

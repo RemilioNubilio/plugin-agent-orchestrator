@@ -29,7 +29,8 @@ export const taskShareAction: Action = {
   ],
   description:
     "Discover the best available way to view or share a task result, including artifacts, live preview URLs, workspace paths, and environment share capabilities.",
-  descriptionCompressed: "Find best way to view/share task result: artifacts, URLs, paths.",
+  descriptionCompressed:
+    "Find best way to view/share task result: artifacts, URLs, paths.",
   examples: [
     [
       {
@@ -84,7 +85,8 @@ export const taskShareAction: Action = {
       return { success: false, error: "SERVICE_UNAVAILABLE" };
     }
 
-    const params = (options?.parameters as Record<string, unknown> | undefined) ?? {};
+    const params =
+      (options?.parameters as Record<string, unknown> | undefined) ?? {};
     const thread = await resolveTaskThreadTarget({
       coordinator,
       message,
@@ -109,14 +111,20 @@ export const taskShareAction: Action = {
         success: false,
         error: "NO_SHARE_TARGET",
         text: fallback,
-        data: { threadId: thread.id, shareCapabilities: discovery?.shareCapabilities ?? [] },
+        data: {
+          threadId: thread.id,
+          shareCapabilities: discovery?.shareCapabilities ?? [],
+        },
       };
     }
 
     const detail = await coordinator.getTaskThread(thread.id);
     const existingKeys = new Set(
-      (detail?.artifacts ?? []).map((artifact) =>
-        artifact.uri?.trim() || artifact.path?.trim() || `${artifact.artifactType}:${artifact.title}`,
+      (detail?.artifacts ?? []).map(
+        (artifact) =>
+          artifact.uri?.trim() ||
+          artifact.path?.trim() ||
+          `${artifact.artifactType}:${artifact.title}`,
       ),
     );
     for (const target of discovery.targets) {
@@ -143,10 +151,12 @@ export const taskShareAction: Action = {
       preferred
         ? `Best available view for "${thread.title}": ${preferred.value}`
         : `I found share options for "${thread.title}".`,
-      ...discovery.targets.slice(0, 5).map(
-        (target) =>
-          `- ${target.label}: ${target.value}${target.remoteAccessible ? " (remote-ready)" : ""}`,
-      ),
+      ...discovery.targets
+        .slice(0, 5)
+        .map(
+          (target) =>
+            `- ${target.label}: ${target.value}${target.remoteAccessible ? " (remote-ready)" : ""}`,
+        ),
       discovery.shareCapabilities.length > 0
         ? `Environment share capabilities: ${discovery.shareCapabilities.join(", ")}`
         : "No explicit remote-share capability is configured, so local artifact paths and preview URLs are the only confirmed options right now.",

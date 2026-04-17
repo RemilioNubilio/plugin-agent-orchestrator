@@ -135,9 +135,9 @@ export function createCodingAgentRouteHandler(
   return (req: IncomingMessage, res: ServerResponse, pathname: string) => {
     const ctx: RouteContext = {
       runtime,
-      ptyService: runtime.getService("PTY_SERVICE") as unknown as
-        | PTYService
-        | null,
+      ptyService: runtime.getService(
+        "PTY_SERVICE",
+      ) as unknown as PTYService | null,
       workspaceService: runtime.getService(
         "CODING_WORKSPACE_SERVICE",
       ) as unknown as CodingWorkspaceService | null,

@@ -201,12 +201,16 @@ export const sendToAgentAction: Action = {
                       : `agent-${sessionId.slice(-8)}`),
                   originalRequest: trackedTask,
                   roomId:
-                    typeof (message as unknown as Record<string, unknown>).roomId === "string"
-                      ? ((message as unknown as Record<string, unknown>).roomId as string)
+                    typeof (message as unknown as Record<string, unknown>)
+                      .roomId === "string"
+                      ? ((message as unknown as Record<string, unknown>)
+                          .roomId as string)
                       : null,
                   ownerUserId:
-                    typeof (message as unknown as Record<string, unknown>).userId === "string"
-                      ? ((message as unknown as Record<string, unknown>).userId as string)
+                    typeof (message as unknown as Record<string, unknown>)
+                      .userId === "string"
+                      ? ((message as unknown as Record<string, unknown>)
+                          .userId as string)
                       : null,
                   scenarioId: evalMetadata.scenarioId,
                   batchId: evalMetadata.batchId,
@@ -245,8 +249,14 @@ export const sendToAgentAction: Action = {
         }
         return {
           success: true,
-          text: trackedTask ? "Assigned new task to agent" : "Sent input to agent",
-          data: { sessionId, input, ...(trackedTask ? { task: trackedTask } : {}) },
+          text: trackedTask
+            ? "Assigned new task to agent"
+            : "Sent input to agent",
+          data: {
+            sessionId,
+            input,
+            ...(trackedTask ? { task: trackedTask } : {}),
+          },
         };
       } else {
         if (callback) {

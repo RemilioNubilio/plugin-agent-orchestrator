@@ -124,7 +124,11 @@ export function diagnoseWorkspaceBootstrapFailure(
     );
   }
 
-  if (/could not resolve host|name or service not known|getaddrinfo/i.test(errorMessage)) {
+  if (
+    /could not resolve host|name or service not known|getaddrinfo/i.test(
+      errorMessage,
+    )
+  ) {
     return (
       `Workspace bootstrap failed on DNS or network resolution. ` +
       `Verify the clone host is valid and reachable from this machine.`

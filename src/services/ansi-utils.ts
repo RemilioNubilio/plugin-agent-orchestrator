@@ -162,10 +162,7 @@ function isWorkdirEchoLine(line: string, workdir?: string): boolean {
   if (line === normalizedWorkdir || line === `/private${normalizedWorkdir}`) {
     return true;
   }
-  const basename = normalizedWorkdir
-    .split("/")
-    .filter(Boolean)
-    .at(-1);
+  const basename = normalizedWorkdir.split("/").filter(Boolean).at(-1);
   return Boolean(
     basename &&
       line.includes(basename) &&
@@ -184,7 +181,10 @@ export function cleanForFailoverContext(raw: string, workdir?: string): string {
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line.length > 0)
-    .filter((line) => !FAILOVER_CONTEXT_NOISE_PATTERNS.some((pattern) => pattern.test(line)))
+    .filter(
+      (line) =>
+        !FAILOVER_CONTEXT_NOISE_PATTERNS.some((pattern) => pattern.test(line)),
+    )
     .filter((line) => !isWorkdirEchoLine(line, workdir))
     .join("\n")
     .trim();

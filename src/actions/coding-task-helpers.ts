@@ -12,10 +12,7 @@ import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import {
-  type HandlerCallback,
-  logger,
-} from "@elizaos/core";
+import { type HandlerCallback, logger } from "@elizaos/core";
 import type { IAgentRuntime } from "@elizaos/core";
 import { readConfigEnvKey } from "../services/config-env.js";
 import type { PTYService } from "../services/pty-service.js";
