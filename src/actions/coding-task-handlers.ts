@@ -7,8 +7,11 @@
  * @module actions/coding-task-handlers
  */
 
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
 import {
   type ActionResult,
+  getTrajectoryContext,
   type HandlerCallback,
   type IAgentRuntime,
   logger,
@@ -29,6 +32,14 @@ import {
   type SessionInfo,
   toPiCommand,
 } from "../services/pty-types.js";
+import {
+  buildSkillsManifest,
+  type SkillsManifestResult,
+} from "../services/skill-manifest.js";
+import {
+  recommendSkillsForTask,
+  type RecommendedSkill,
+} from "../services/skill-recommender.js";
 import { withTrajectoryContext } from "../services/trajectory-context.js";
 import {
   formatPastExperience,
@@ -61,6 +72,125 @@ const KNOWN_AGENT_PREFIXES = [
   "shell",
   "bash",
 ] as const;
+
+/** Filename written into each spawned agent's workspace listing parent skills. */
+const SKILLS_MANIFEST_FILENAME = "SKILLS.md";
+
+interface PreparedSkillAwareness {
+  manifestPath: string;
+  recommendations: RecommendedSkill[];
+  manifest: SkillsManifestResult;
+}
+
+/**
+ * Compute per-task skill recommendations, render SKILLS.md into the workspace,
+ * and return the absolute manifest path so the spawned agent can find it via
+ * MILADY_SKILLS_MANIFEST.
+ *
+ * Returns null only when no skills service is registered or no skills are
+ * eligible — both legitimate states that should not block task spawn.
+ */
+async function prepareSkillAwareness(
+  runtime: IAgentRuntime,
+  workdir: string,
+  taskText: string,
+  taskKind: string | undefined,
+  repo: string | undefined,
+): Promise<PreparedSkillAwareness | null> {
+  const recommendations = await recommendSkillsForTask(runtime, {
+    taskText,
+    taskKind,
+    repoContext: repo ? { framework: repo } : undefined,
+    max: 5,
+  });
+  const recommendedSlugs = recommendations.map((rec) => rec.slug);
+  const manifest = await buildSkillsManifest(runtime, {
+    onlyEligible: true,
+    recommendedSlugs,
+  });
+
+  if (manifest.slugs.length === 0 && recommendations.length === 0) {
+    return null;
+  }
+
+  const manifestPath = path.join(workdir, SKILLS_MANIFEST_FILENAME);
+  await fs.writeFile(manifestPath, manifest.markdown, "utf8");
+  return { manifestPath, recommendations, manifest };
+}
+
+/**
+ * Append a recommended-skills hint to the task description that the spawned
+ * agent receives. The agent already gets the full SKILLS.md via path, but
+ * surfacing slugs in the prompt makes the suggestion impossible to miss.
+ */
+function decorateTaskWithSkillHint(
+  taskBody: string,
+  awareness: PreparedSkillAwareness | null,
+  manifestPath: string | null,
+): string {
+  if (!awareness || awareness.recommendations.length === 0) {
+    return taskBody;
+  }
+  const slugList = awareness.recommendations
+    .map((rec) => `\`${rec.slug}\``)
+    .join(", ");
+  const lines = [
+    taskBody,
+    "",
+    "--- Skills available in the parent agent ---",
+    `Recommended for this task: ${slugList}.`,
+  ];
+  if (manifestPath) {
+    lines.push(
+      `See ${SKILLS_MANIFEST_FILENAME} in the workspace root (also at \`${manifestPath}\`) for the full list and invocation protocol.`,
+    );
+  }
+  lines.push("--- End skills ---");
+  return lines.join("\n");
+}
+
+/**
+ * Trajectory logger surface we depend on. We resolve it via getService rather
+ * than importing the @elizaos/core annotateActiveTrajectoryStep helper —
+ * not every pinned core version in the elizaOS-plugins matrix exposes that
+ * helper, while annotateStep on the trajectory service has been stable.
+ */
+interface TrajectoryAnnotator {
+  annotateStep?: (params: {
+    stepId: string;
+    usedSkills?: string[];
+  }) => Promise<void> | void;
+}
+
+/**
+ * Annotate the active trajectory step with the skill slugs that were
+ * recommended for this spawn. No-op when there is no active trajectory or
+ * when the trajectory logger does not implement annotateStep.
+ */
+async function recordSkillRecommendationOnTrajectory(
+  runtime: IAgentRuntime,
+  awareness: PreparedSkillAwareness | null,
+): Promise<void> {
+  if (!awareness || awareness.recommendations.length === 0) return;
+
+  const stepId = getTrajectoryContext()?.trajectoryStepId;
+  if (typeof stepId !== "string" || stepId.trim() === "") {
+    return;
+  }
+
+  const annotator = runtime.getService("trajectories") as
+    | TrajectoryAnnotator
+    | null
+    | undefined;
+  if (!annotator || typeof annotator.annotateStep !== "function") {
+    return;
+  }
+
+  await annotator.annotateStep({
+    stepId,
+    usedSkills: awareness.recommendations.map((rec) => rec.slug),
+  });
+}
 
 /**
  * Strip an agent-type prefix from a spec string (e.g. "claude:Fix the bug" → "Fix the bug").
@@ -442,14 +572,30 @@ export async function handleMultiAgent(
         }
       }
 
+      // Skill awareness: render SKILLS.md, recommend top skills for this
+      // spec, and surface them in both the workspace and the prompt.
+      const skillAwareness = await prepareSkillAwareness(
+        runtime,
+        workdir,
+        specTask || userRequest,
+        undefined,
+        repo,
+      );
+      await recordSkillRecommendationOnTrajectory(runtime, skillAwareness);
+
       // Check if coordinator is active — route blocking prompts through it
       // Spawn the agent — prepend shared context brief if available
       const taskWithContext = swarmContext
         ? `${specTask}\n\n--- Shared Context (from project planning) ---\n${swarmContext}\n--- End Shared Context ---`
         : specTask;
+      const taskWithSkills = decorateTaskWithSkillHint(
+        taskWithContext,
+        skillAwareness,
+        skillAwareness?.manifestPath ?? null,
+      );
       const initialTask = specPiRequested
-        ? toPiCommand(taskWithContext)
-        : taskWithContext;
+        ? toPiCommand(taskWithSkills)
+        : taskWithSkills;
       const displayType = specPiRequested ? "pi" : specAgentType;
 
       // Append swarm coordination instructions to agent memory so the agent
@@ -467,6 +613,9 @@ export async function handleMultiAgent(
       const useDirectCallbackResponses = Boolean(callback);
 
       failureStage = "spawn";
+      const skillEnv: Record<string, string> | undefined = skillAwareness
+        ? { MILADY_SKILLS_MANIFEST: skillAwareness.manifestPath }
+        : undefined;
       const session: SessionInfo = await ptyService.spawnSession({
         name: `coding-${Date.now()}-${i}`,
         agentType: specAgentType,
@@ -478,6 +627,7 @@ export async function handleMultiAgent(
           (approvalPreset as ApprovalPreset | undefined) ??
           ptyService.defaultApprovalPreset,
         customCredentials,
+        ...(skillEnv ? { env: skillEnv } : {}),
         ...(coordinatorManagedSession ? { skipAdapterAutoResponse: true } : {}),
         metadata: {
           threadId: taskThread?.id,
