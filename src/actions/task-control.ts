@@ -64,6 +64,7 @@ export const taskControlAction: Action = {
   ],
   description:
     "Pause, stop, resume, continue, archive, or reopen a coordinator task thread while preserving the durable thread history.",
+  descriptionCompressed: "Pause/stop/resume/archive/reopen coordinator task thread.",
   examples: [
     [
       {

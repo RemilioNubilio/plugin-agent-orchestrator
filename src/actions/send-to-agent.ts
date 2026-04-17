@@ -273,6 +273,7 @@ export const sendToAgentAction: Action = {
       name: "sessionId",
       description:
         "ID of the task-agent session to send to. If not specified, uses the current session.",
+      descriptionCompressed: "Send input/keypresses to running task agent.",
       required: false,
       schema: { type: "string" as const },
     },

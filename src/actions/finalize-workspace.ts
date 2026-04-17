@@ -229,6 +229,7 @@ export const finalizeWorkspaceAction: Action = {
       name: "workspaceId",
       description:
         "ID of the workspace to finalize. Uses current workspace if not specified.",
+      descriptionCompressed: "Commit, push, opt. create PR for workspace changes.",
       required: false,
       schema: { type: "string" as const },
     },

@@ -178,6 +178,7 @@ export const taskHistoryAction: Action = {
   ],
   description:
     "Query coordinator task history without stuffing raw transcripts into model context. Use this for active work, yesterday/last-week summaries, topic search, counts, and thread detail lookup.",
+  descriptionCompressed: "Query task history: active work, summaries, search, thread details.",
   examples: [
     [
       {

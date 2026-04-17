@@ -228,6 +228,7 @@ export const stopAgentAction: Action = {
       name: "sessionId",
       description:
         "ID of the session to stop. If not specified, stops the current session.",
+      descriptionCompressed: "Stop running task agent, cleanup resources.",
       required: false,
       schema: { type: "string" as const },
     },

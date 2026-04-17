@@ -179,6 +179,7 @@ export const manageIssuesAction: Action = {
       name: "operation",
       description:
         "The operation to perform: create, list, get, update, comment, close, reopen, add_labels",
+      descriptionCompressed: "Manage GitHub issues: create, list, comment, close, reopen.",
       required: true,
       schema: { type: "string" as const },
     },

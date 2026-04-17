@@ -22,6 +22,7 @@ export const codingAgentExamplesProvider: Provider = {
   name: "CODING_AGENT_EXAMPLES",
   description:
     "Structured examples showing how to use open-ended task-agent actions, framework availability, and subscription-aware defaults",
+  descriptionCompressed: "Task-agent action examples, framework availability, subscription defaults.",
   position: -1,
 
   get: async (runtime: IAgentRuntime, message: Memory, _state: State) => {

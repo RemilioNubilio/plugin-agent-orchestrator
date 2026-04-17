@@ -65,6 +65,7 @@ export const listAgentsAction: Action = {
 
   description:
     "List active task agents together with current task progress so the main agent can keep the user updated while work continues asynchronously.",
+  descriptionCompressed: "List active task agents with progress for async status updates.",
 
   examples: [
     [

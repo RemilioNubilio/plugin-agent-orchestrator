@@ -63,6 +63,7 @@ export const activeWorkspaceContextProvider: Provider = {
   name: "ACTIVE_WORKSPACE_CONTEXT",
   description:
     "Live status of active workspaces, task-agent sessions, and current task progress",
+  descriptionCompressed: "Live status of workspaces, task agents, and progress.",
   position: 1,
 
   get: async (runtime: IAgentRuntime, _message: Memory, _state: State) => {

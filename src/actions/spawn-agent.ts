@@ -444,6 +444,7 @@ export const spawnAgentAction: Action = {
       name: "workdir",
       description:
         "Working directory for the agent. Defaults to current directory.",
+      descriptionCompressed: "Spawn task agent in existing workspace for direct control.",
       required: false,
       schema: { type: "string" as const },
     },
