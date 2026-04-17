@@ -218,7 +218,7 @@ export const provisionWorkspaceAction: Action = {
   parameters: [
     {
       name: "repo",
-      description: "Git repository URL to clone."
+      description: "Git repository URL to clone.",
       descriptionCompressed: "Create git workspace for coding tasks.",
       required: false,
       schema: { type: "string" as const },
