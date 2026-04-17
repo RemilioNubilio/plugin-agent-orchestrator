@@ -32,6 +32,7 @@ import {
   type SessionInfo,
   toPiCommand,
 } from "../services/pty-types.js";
+import { ensureSkillCallbackBridge } from "../services/skill-callback-bridge.js";
 import {
   buildSkillsManifest,
   type SkillsManifestResult,
@@ -383,6 +384,10 @@ export async function handleMultiAgent(
   // prompt ack rule) and the task-progress-streamer delivers the final
   // result. Emitting "Launching N agents..." here duplicates the ack and
   // spams discord. See milady nubs/full-working-state clean Discord UX fix.
+
+  // Install the child→parent USE_SKILL bridge once per runtime. Idempotent —
+  // subsequent task spawns are no-ops.
+  ensureSkillCallbackBridge({ runtime, ptyService });
 
   // Planning phase: generate shared context brief for multi-agent coordination.
   // Strip agent-type prefixes from specs to get clean subtask descriptions.

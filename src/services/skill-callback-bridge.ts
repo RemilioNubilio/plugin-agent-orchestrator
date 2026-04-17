@@ -1,0 +1,248 @@
+/**
+ * Skill callback bridge — child→parent USE_SKILL routing.
+ *
+ * Spawned task agents (Claude Code, Codex, Gemini CLI, etc.) cannot directly
+ * invoke parent skills. The bridge listens to PTY session output and, when
+ * the child emits a directive of the form
+ *
+ *   USE_SKILL <slug> <json_args>
+ *
+ * dispatches to the parent's USE_SKILL action and pipes the result back into
+ * the same session via `ptyService.sendToSession`.
+ *
+ * Default-on per the Hermes-style project direction. Disable by setting
+ * `MILADY_ENABLE_CHILD_SKILL_CALLBACK=0`.
+ *
+ * @module services/skill-callback-bridge
+ */
+
+import type { Action, IAgentRuntime, Logger } from "@elizaos/core";
+import type { PTYService } from "./pty-service.js";
+
+const LOG_PREFIX = "[SkillCallback]";
+/**
+ * Match `USE_SKILL <slug>` followed by an optional JSON args blob. The slug
+ * shape mirrors `SKILL_NAME_PATTERN` in @elizaos/plugin-agent-skills.
+ */
+const USE_SKILL_DIRECTIVE_RE =
+  /^\s*USE_SKILL\s+([a-z0-9]+(?:-[a-z0-9]+)*)\s*(\{[\s\S]*?\}|\[[\s\S]*?\])?\s*$/im;
+const RESULT_PREVIEW_MAX = 1500;
+
+interface SkillUseAction extends Action {
+  name: string;
+}
+
+interface SkillCallbackInvocation {
+  slug: string;
+  args: unknown;
+}
+
+interface SkillCallbackResult {
+  success: boolean;
+  text: string;
+}
+
+function getLogger(runtime: IAgentRuntime): Logger | Console {
+  const candidate = (runtime as unknown as { logger?: Logger }).logger;
+  return candidate ?? console;
+}
+
+function isCallbackEnabled(runtime: IAgentRuntime): boolean {
+  const raw =
+    (runtime.getSetting("MILADY_ENABLE_CHILD_SKILL_CALLBACK") as
+      | string
+      | undefined) ??
+    process.env.MILADY_ENABLE_CHILD_SKILL_CALLBACK;
+  if (raw === undefined || raw === null || raw === "") return true;
+  const normalized = String(raw).trim().toLowerCase();
+  return normalized !== "0" && normalized !== "false" && normalized !== "no";
+}
+
+/**
+ * Parse the first USE_SKILL directive in a chunk of agent output, if any.
+ * The directive must be on its own line (after optional whitespace).
+ */
+export function parseUseSkillDirective(
+  text: string,
+): SkillCallbackInvocation | null {
+  if (!text) return null;
+  const match = USE_SKILL_DIRECTIVE_RE.exec(text);
+  if (!match) return null;
+  const slug = match[1];
+  const argsRaw = match[2];
+  if (!slug) return null;
+
+  let args: unknown = undefined;
+  if (argsRaw && argsRaw.trim()) {
+    try {
+      args = JSON.parse(argsRaw);
+    } catch {
+      // Treat unparseable args as a string literal — user intent is clear,
+      // and the USE_SKILL handler can decide how to coerce it.
+      args = argsRaw.trim();
+    }
+  }
+  return { slug, args };
+}
+
+function formatResultForChild(
+  slug: string,
+  result: SkillCallbackResult,
+): string {
+  const trimmed = result.text.length > RESULT_PREVIEW_MAX
+    ? `${result.text.slice(0, RESULT_PREVIEW_MAX)}\n…[truncated]`
+    : result.text;
+  const status = result.success ? "ok" : "error";
+  return [
+    `--- USE_SKILL response (${slug}, ${status}) ---`,
+    trimmed,
+    `--- End USE_SKILL response ---`,
+  ].join("\n");
+}
+
+/**
+ * Locate the USE_SKILL action on the runtime. Returns null when the agent
+ * skills plugin is not loaded — in that case the bridge stays inert.
+ */
+function resolveUseSkillAction(runtime: IAgentRuntime): SkillUseAction | null {
+  const actions = (runtime as unknown as { actions?: Action[] }).actions;
+  if (!Array.isArray(actions)) return null;
+  for (const action of actions) {
+    if (!action || typeof action.name !== "string") continue;
+    if (
+      action.name === "USE_SKILL" ||
+      action.similes?.includes("USE_SKILL")
+    ) {
+      return action as SkillUseAction;
+    }
+  }
+  return null;
+}
+
+interface BridgeDeps {
+  runtime: IAgentRuntime;
+  ptyService: PTYService;
+}
+
+/**
+ * Per-runtime install guard — prevents stacking duplicate listeners when
+ * many spawn calls fire concurrently. Keyed by the WeakRef to the runtime
+ * so the entry naturally drops when the runtime is GC'd.
+ */
+const installedRuntimes = new WeakSet<object>();
+
+/**
+ * Ensure the bridge is installed exactly once for this runtime+PTY pair.
+ * Safe to call from every task spawn — subsequent calls are no-ops.
+ */
+export function ensureSkillCallbackBridge(deps: BridgeDeps): void {
+  const runtimeKey = deps.runtime as unknown as object;
+  if (installedRuntimes.has(runtimeKey)) return;
+  installedRuntimes.add(runtimeKey);
+  installSkillCallbackBridge(deps);
+}
+
+/**
+ * Install the child→parent USE_SKILL bridge for the given PTY service. Safe
+ * to call multiple times — duplicate listeners are idempotent because the
+ * unsubscribe handle is returned to the caller.
+ *
+ * Returns a teardown function. Call it on shutdown to remove the listener.
+ */
+export function installSkillCallbackBridge(deps: BridgeDeps): () => void {
+  const { runtime, ptyService } = deps;
+  const log = getLogger(runtime);
+
+  if (!isCallbackEnabled(runtime)) {
+    log.debug?.(
+      `${LOG_PREFIX} disabled via MILADY_ENABLE_CHILD_SKILL_CALLBACK=0`,
+    );
+    return () => undefined;
+  }
+
+  const useSkillAction = resolveUseSkillAction(runtime);
+  if (!useSkillAction || typeof useSkillAction.handler !== "function") {
+    log.debug?.(
+      `${LOG_PREFIX} USE_SKILL action not registered; bridge inactive`,
+    );
+    return () => undefined;
+  }
+
+  const dispatchToParent = async (
+    sessionId: string,
+    invocation: SkillCallbackInvocation,
+  ): Promise<void> => {
+    log.info?.(
+      `${LOG_PREFIX} child session ${sessionId} requested skill ${invocation.slug}`,
+    );
+
+    const captured: string[] = [];
+    const captureCallback = async (response: { text?: string }): Promise<unknown[]> => {
+      if (typeof response?.text === "string") {
+        captured.push(response.text);
+      }
+      return [];
+    };
+
+    const handlerResult = await useSkillAction.handler(
+      runtime,
+      // The action does not consume the message in our path — pass a minimal
+      // stub that satisfies the Memory shape.
+      {
+        content: { text: `USE_SKILL ${invocation.slug}` },
+        entityId: `child-session:${sessionId}`,
+        roomId: `child-session:${sessionId}`,
+      } as never,
+      undefined,
+      { slug: invocation.slug, args: invocation.args } as never,
+      captureCallback as never,
+    );
+
+    const success =
+      handlerResult && typeof handlerResult === "object"
+        ? Boolean((handlerResult as { success?: unknown }).success)
+        : false;
+    const handlerText =
+      handlerResult && typeof handlerResult === "object"
+        ? typeof (handlerResult as { text?: unknown }).text === "string"
+          ? ((handlerResult as { text: string }).text)
+          : ""
+        : "";
+    const text = handlerText || captured.join("\n").trim() || "(no output)";
+
+    const reply = formatResultForChild(invocation.slug, { success, text });
+    await ptyService.sendToSession(sessionId, reply);
+  };
+
+  const unsubscribe = ptyService.onSessionEvent((sessionId, event, data) => {
+    if (event !== "task_complete" && event !== "message") return;
+    const responseText =
+      typeof (data as { response?: unknown })?.response === "string"
+        ? ((data as { response: string }).response)
+        : typeof (data as { text?: unknown })?.text === "string"
+          ? ((data as { text: string }).text)
+          : "";
+    const invocation = parseUseSkillDirective(responseText);
+    if (!invocation) return;
+
+    // Fire-and-forget: skill dispatch must not block the PTY event loop. We
+    // surface failures via logger.error rather than swallowing them silently.
+    void dispatchToParent(sessionId, invocation).catch((err) => {
+      log.error?.(
+        `${LOG_PREFIX} dispatch failed for session ${sessionId} skill ${invocation.slug}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    });
+  });
+
+  log.info?.(
+    `${LOG_PREFIX} child→parent USE_SKILL bridge installed`,
+  );
+
+  return () => {
+    if (typeof unsubscribe === "function") {
+      unsubscribe();
+    }
+  };
+}
