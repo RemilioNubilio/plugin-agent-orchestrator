@@ -16,6 +16,7 @@ import { type HandlerCallback, logger } from "@elizaos/core";
 import type { IAgentRuntime } from "@elizaos/core";
 import { readConfigEnvKey } from "../services/config-env.js";
 import type { PTYService } from "../services/pty-service.js";
+import type { SkillSessionAllowList } from "../services/skill-callback-bridge.js";
 import type { CodingWorkspaceService } from "../services/workspace-service.js";
 
 /**
@@ -139,10 +140,20 @@ export function registerSessionEvents(
   scratchDir: string | null,
   callback?: HandlerCallback,
   coordinatorActive = false,
+  skillSessionAllowList?: SkillSessionAllowList,
 ): void {
   let scratchRegistered = false;
   ptyService.onSessionEvent((sid, event, data) => {
     if (sid !== sessionId) return;
+
+    // Clear per-session skill allow-list on terminal events so the entry
+    // doesn't linger after the PTY session is gone.
+    if (
+      skillSessionAllowList &&
+      (event === "stopped" || event === "task_complete" || event === "error")
+    ) {
+      skillSessionAllowList.clear(sessionId);
+    }
 
     // When coordinator is active it handles chat + lifecycle for these events
     if (!coordinatorActive) {

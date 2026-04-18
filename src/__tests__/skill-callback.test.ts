@@ -9,6 +9,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Action, IAgentRuntime } from "@elizaos/core";
 import {
+  createSkillSessionAllowList,
   installSkillCallbackBridge,
   parseUseSkillDirective,
 } from "../services/skill-callback-bridge.js";
@@ -223,6 +224,86 @@ describe("installSkillCallbackBridge", () => {
     const [, replyText] = pty.sendToSession.mock.calls[0];
     expect(replyText).toContain("--- USE_SKILL response (weather, error) ---");
     expect(replyText).toContain("disabled");
+  });
+
+  it("rejects a USE_SKILL directive whose slug is not on the session's allow-list", async () => {
+    const pty = createFakePty();
+    const handler = vi.fn();
+    const runtime = createRuntime({ useSkillHandler: handler as never });
+    const allowList = createSkillSessionAllowList();
+    allowList.register("session-allow", ["pdf-tools", "github-issues"]);
+
+    installSkillCallbackBridge({
+      runtime,
+      ptyService: pty as never,
+      sessionAllowList: allowList,
+    });
+
+    pty.emit("session-allow", "task_complete", {
+      response: "USE_SKILL weather", // not on allow-list
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(pty.sendToSession).toHaveBeenCalledTimes(1);
+    const [sessionId, replyText] = pty.sendToSession.mock.calls[0];
+    expect(sessionId).toBe("session-allow");
+    expect(replyText).toContain("--- USE_SKILL response (weather, error) ---");
+    expect(replyText).toContain("not on this task's allow-list");
+    expect(replyText).toContain("`pdf-tools`");
+    expect(replyText).toContain("`github-issues`");
+  });
+
+  it("permits a USE_SKILL directive whose slug is on the session's allow-list", async () => {
+    const pty = createFakePty();
+    const handler = vi.fn(async (_r, _m, _s, options, callback) => {
+      const slug = (options as { slug: string }).slug;
+      const text = `ran ${slug}`;
+      if (callback) await callback({ text });
+      return { success: true, text, data: { slug, mode: "guidance" as const } };
+    });
+    const runtime = createRuntime({ useSkillHandler: handler });
+    const allowList = createSkillSessionAllowList();
+    allowList.register("session-allow", ["pdf-tools"]);
+
+    installSkillCallbackBridge({
+      runtime,
+      ptyService: pty as never,
+      sessionAllowList: allowList,
+    });
+
+    pty.emit("session-allow", "task_complete", {
+      response: "USE_SKILL pdf-tools",
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    const [, replyText] = pty.sendToSession.mock.calls[0];
+    expect(replyText).toContain("--- USE_SKILL response (pdf-tools, ok) ---");
+  });
+
+  it("falls back to permissive behavior when no allow-list entry is registered", async () => {
+    const pty = createFakePty();
+    const handler = vi.fn(async (_r, _m, _s, _options, callback) => {
+      if (callback) await callback({ text: "ok" });
+      return { success: true, text: "ok", data: { slug: "weather", mode: "guidance" as const } };
+    });
+    const runtime = createRuntime({ useSkillHandler: handler });
+    // Allow-list exists but no entry for this session.
+    const allowList = createSkillSessionAllowList();
+
+    installSkillCallbackBridge({
+      runtime,
+      ptyService: pty as never,
+      sessionAllowList: allowList,
+    });
+
+    pty.emit("session-none", "task_complete", {
+      response: "USE_SKILL weather",
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(handler).toHaveBeenCalledTimes(1);
   });
 
   it("stays inert when the runtime does not register a USE_SKILL action", async () => {

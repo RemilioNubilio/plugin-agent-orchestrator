@@ -124,6 +124,47 @@ function resolveUseSkillAction(runtime: IAgentRuntime): SkillUseAction | null {
 interface BridgeDeps {
   runtime: IAgentRuntime;
   ptyService: PTYService;
+  /**
+   * Optional: per-session allow-list of skill slugs. The bridge consults the
+   * registry below when dispatching a child USE_SKILL directive. A directive
+   * whose slug is not on the session's allow-list is rejected back into the
+   * child with an error message listing the recommended slugs.
+   *
+   * If omitted (or no entry is registered for the session), the bridge falls
+   * back to permissive behavior — any enabled skill may be invoked. This
+   * preserves backwards-compatible behavior for callers that do not yet wire
+   * per-spawn recommendations.
+   */
+  sessionAllowList?: SkillSessionAllowList;
+}
+
+/**
+ * Session-scoped allow-list registry. Callers register a session's allow-list
+ * at spawn time (see `coding-task-handlers.ts` after
+ * `recommendSkillsForTask`). The bridge reads the entry when a USE_SKILL
+ * directive arrives.
+ *
+ * Using a plain Map instead of a WeakMap — the key is the PTY sessionId
+ * string assigned at spawn time, which we must explicitly clear on session
+ * teardown to avoid leaks.
+ */
+export interface SkillSessionAllowList {
+  register: (sessionId: string, slugs: readonly string[]) => void;
+  clear: (sessionId: string) => void;
+  get: (sessionId: string) => readonly string[] | undefined;
+}
+
+export function createSkillSessionAllowList(): SkillSessionAllowList {
+  const entries = new Map<string, readonly string[]>();
+  return {
+    register: (sessionId, slugs) => {
+      entries.set(sessionId, [...slugs]);
+    },
+    clear: (sessionId) => {
+      entries.delete(sessionId);
+    },
+    get: (sessionId) => entries.get(sessionId),
+  };
 }
 
 /**
@@ -135,7 +176,10 @@ const installedRuntimes = new WeakSet<object>();
 
 /**
  * Ensure the bridge is installed exactly once for this runtime+PTY pair.
- * Safe to call from every task spawn — subsequent calls are no-ops.
+ * Safe to call from every task spawn — subsequent calls are no-ops. The
+ * session allow-list registry, when supplied, is attached on the first
+ * install and reused thereafter; callers can look up the registry they
+ * passed in to register per-session slugs.
  */
 export function ensureSkillCallbackBridge(deps: BridgeDeps): void {
   const runtimeKey = deps.runtime as unknown as object;
@@ -152,7 +196,7 @@ export function ensureSkillCallbackBridge(deps: BridgeDeps): void {
  * Returns a teardown function. Call it on shutdown to remove the listener.
  */
 export function installSkillCallbackBridge(deps: BridgeDeps): () => void {
-  const { runtime, ptyService } = deps;
+  const { runtime, ptyService, sessionAllowList } = deps;
   const log = getLogger(runtime);
 
   if (!isCallbackEnabled(runtime)) {
@@ -174,6 +218,25 @@ export function installSkillCallbackBridge(deps: BridgeDeps): () => void {
     sessionId: string,
     invocation: SkillCallbackInvocation,
   ): Promise<void> => {
+    // Enforce the per-session recommended-skills allow-list when one is
+    // registered. Without an entry we preserve permissive behavior.
+    const allowedSlugs = sessionAllowList?.get(sessionId);
+    if (allowedSlugs && !allowedSlugs.includes(invocation.slug)) {
+      const recommended =
+        allowedSlugs.length > 0
+          ? allowedSlugs.map((slug) => `\`${slug}\``).join(", ")
+          : "(none)";
+      const text = `Skill \`${invocation.slug}\` is not on this task's allow-list. Recommended: ${recommended}.`;
+      log.warn?.(
+        `${LOG_PREFIX} session ${sessionId} requested non-recommended skill ${invocation.slug}; allow-list=[${allowedSlugs.join(",")}]`,
+      );
+      const reply = formatResultForChild(invocation.slug, {
+        success: false,
+        text,
+      });
+      await ptyService.sendToSession(sessionId, reply);
+      return;
+    }
     log.info?.(
       `${LOG_PREFIX} child session ${sessionId} requested skill ${invocation.slug}`,
     );

@@ -32,7 +32,11 @@ import {
   type SessionInfo,
   toPiCommand,
 } from "../services/pty-types.js";
-import { ensureSkillCallbackBridge } from "../services/skill-callback-bridge.js";
+import {
+  createSkillSessionAllowList,
+  ensureSkillCallbackBridge,
+  type SkillSessionAllowList,
+} from "../services/skill-callback-bridge.js";
 import {
   buildSkillsManifest,
   type SkillsManifestResult,
@@ -76,6 +80,21 @@ const KNOWN_AGENT_PREFIXES = [
 
 /** Filename written into each spawned agent's workspace listing parent skills. */
 const SKILLS_MANIFEST_FILENAME = "SKILLS.md";
+
+/**
+ * Shared registry that maps spawned PTY session IDs to the recommended-skills
+ * allow-list for that spawn. Created once at module load; the skill-callback
+ * bridge reads from it when a child emits a USE_SKILL directive, and the
+ * multi-agent spawn loop registers entries after `recommendSkillsForTask`.
+ *
+ * Entries must be cleared explicitly on session teardown to avoid leaks;
+ * `registerSessionEvents` owns that responsibility.
+ */
+const sessionSkillAllowList: SkillSessionAllowList = createSkillSessionAllowList();
+
+export function getSkillSessionAllowList(): SkillSessionAllowList {
+  return sessionSkillAllowList;
+}
 
 interface PreparedSkillAwareness {
   manifestPath: string;
@@ -386,8 +405,13 @@ export async function handleMultiAgent(
   // spams discord. See milady nubs/full-working-state clean Discord UX fix.
 
   // Install the child→parent USE_SKILL bridge once per runtime. Idempotent —
-  // subsequent task spawns are no-ops.
-  ensureSkillCallbackBridge({ runtime, ptyService });
+  // subsequent task spawns are no-ops. Pass the module-level session allow-
+  // list so the bridge can reject directives for non-recommended slugs.
+  ensureSkillCallbackBridge({
+    runtime,
+    ptyService,
+    sessionAllowList: sessionSkillAllowList,
+  });
 
   // Planning phase: generate shared context brief for multi-agent coordination.
   // Strip agent-type prefixes from specs to get clean subtask descriptions.
@@ -651,6 +675,15 @@ export async function handleMultiAgent(
         },
       });
 
+      // Register this session's recommended-skills allow-list so the skill
+      // callback bridge can reject out-of-scope USE_SKILL directives.
+      if (skillAwareness && skillAwareness.recommendations.length > 0) {
+        sessionSkillAllowList.register(
+          session.id,
+          skillAwareness.recommendations.map((rec) => rec.slug),
+        );
+      }
+
       // Register event handler
       const isScratch = !repo;
       const scratchDir = isScratch ? workdir : null;
@@ -669,6 +702,7 @@ export async function handleMultiAgent(
         scratchDir,
         callback,
         coordinatorManagedSession && !useDirectCallbackResponses,
+        sessionSkillAllowList,
       );
       if (coordinator && specTask) {
         failureStage = "register";
