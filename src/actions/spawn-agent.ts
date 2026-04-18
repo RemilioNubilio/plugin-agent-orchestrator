@@ -216,12 +216,35 @@ export const spawnAgentAction: Action = {
       workdir = createScratchDir(runtime);
     }
 
-    // Validate workdir is within allowed directories
+    // Validate workdir is within allowed directories. The default set is the
+    // standard scratch base + the bot's cwd; operators with broader trust
+    // (single-tenant VPS, managed-fork deployments) can extend the allowlist
+    // via CODING_AGENT_ALLOWED_WORKDIRS (comma-separated absolute paths) or
+    // via PARALLAX_CODING_DIRECTORY (the user's configured coding root; the
+    // same env var already governs where createScratchDir puts dirs).
     const resolvedWorkdir = path.resolve(workdir);
     const workspaceBaseDir = path.join(os.homedir(), ".milady", "workspaces");
+    const extraAllowed =
+      (runtime.getSetting("CODING_AGENT_ALLOWED_WORKDIRS") as string) ??
+      process.env.CODING_AGENT_ALLOWED_WORKDIRS ??
+      "";
+    const parallaxCodingDir =
+      (runtime.getSetting("PARALLAX_CODING_DIRECTORY") as string) ??
+      readConfigEnvKey("PARALLAX_CODING_DIRECTORY") ??
+      process.env.PARALLAX_CODING_DIRECTORY;
+    const expandHome = (p: string) =>
+      p.startsWith("~") ? path.join(os.homedir(), p.slice(1)) : p;
     const allowedPrefixes = [
       path.resolve(workspaceBaseDir),
       path.resolve(process.cwd()),
+      ...(parallaxCodingDir?.trim()
+        ? [path.resolve(expandHome(parallaxCodingDir.trim()))]
+        : []),
+      ...extraAllowed
+        .split(",")
+        .map((p) => p.trim())
+        .filter((p) => p.length > 0)
+        .map((p) => path.resolve(expandHome(p))),
     ];
     const isAllowed = allowedPrefixes.some(
       (prefix) =>
@@ -231,7 +254,9 @@ export const spawnAgentAction: Action = {
     if (!isAllowed) {
       if (callback) {
         await callback({
-          text: "The specified workdir is outside of allowed directories. Please use a workspace directory.",
+          text:
+            `can't write to \`${resolvedWorkdir}\` — not in my sandbox. ` +
+            `tell the operator to add it to CODING_AGENT_ALLOWED_WORKDIRS or move to a scratch path.`,
         });
       }
       return { success: false, error: "WORKDIR_OUTSIDE_ALLOWED" };
