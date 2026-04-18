@@ -774,27 +774,30 @@ export async function handleMultiAgent(
 
   const succeeded = results.filter((r) => r.sessionId);
   const failed = results.filter((r) => !r.sessionId);
-  const summary = [
-    `Launched ${succeeded.length}/${agentSpecs.length} agents${repo ? ` on ${repo}` : ""}:`,
-    ...succeeded.map(
-      (r) => `  - "${r.label}" (${r.agentType}) [session: ${r.sessionId}]`,
-    ),
-    ...(failed.length > 0
-      ? [`Failed: ${failed.map((r) => `"${r.label}": ${r.error}`).join(", ")}`]
-      : []),
-  ].join("\n");
 
-  // The final summary is suppressed from chat in favor of the
-  // task-progress-streamer, which delivers the actual subagent answer.
-  // We still include `summary` in the ActionResult.text so programmatic
-  // consumers (tests, logs) see the full detail.
-  if (callback && failed.length > 0) {
-    await callback({ text: summary });
+  // Only surface spawn outcomes in chat on failure — the synthesis
+  // callback delivers the actual subagent answer when the task finishes.
+  // ActionResult.text must stay empty on success because the bootstrap
+  // runtime auto-forwards a non-empty `text` to the user's channel when
+  // the handler didn't emit its own callback (see
+  // packages/typescript/src/services/message.ts action-result routing).
+  if (failed.length > 0) {
+    const failureSummary =
+      `Failed to launch ${failed.length}/${agentSpecs.length} agent${failed.length === 1 ? "" : "s"}: ` +
+      failed.map((r) => `"${r.label}" — ${r.error}`).join("; ");
+    if (callback) {
+      await callback({ text: failureSummary });
+    }
+    return {
+      success: false,
+      text: failureSummary,
+      data: { agents: results },
+    };
   }
 
   return {
-    success: failed.length === 0,
-    text: summary,
+    success: true,
+    text: "",
     data: { agents: results },
   };
 }

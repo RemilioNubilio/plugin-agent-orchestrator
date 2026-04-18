@@ -412,21 +412,11 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
       | undefined;
     if (wsService?.setScratchDecisionCallback) {
       const chatCb = this.chatCallback;
-      wsService.setScratchDecisionCallback(async (record) => {
-        const ttlNote = record.expiresAt
-          ? (() => {
-              const remainMs = record.expiresAt - Date.now();
-              const hours = Math.round(remainMs / (60 * 60 * 1000));
-              return hours >= 1
-                ? `It will be automatically cleaned up in ~${hours} hour${hours === 1 ? "" : "s"}.`
-                : `It will be automatically cleaned up shortly.`;
-            })()
-          : "It will be automatically cleaned up after the configured retention period.";
-        await chatCb(
-          `Task "${record.label}" finished. Code is at \`${record.path}\`.\n` +
-            `${ttlNote} To keep it, say "keep the workspace" or manage it in Settings -> Task Agents.`,
-          "task-agent",
-        );
+      wsService.setScratchDecisionCallback(async (_record) => {
+        // Scratch workspace TTL notices are runtime-internal; the real
+        // task output is delivered by the synthesis path. Keeping this
+        // callback registered (so the coordinator wiring is complete)
+        // but silent in chat to avoid "Code is at …" leaks to Discord.
       });
       this.scratchDecisionWired = true;
       this.log("Scratch decision callback wired");
@@ -2350,10 +2340,9 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
       );
     }
 
-    this.sendChatMessage(
-      `"${taskCtx.label}" recovered after provider authentication and is continuing on ${replacement.replacementFramework}.`,
-      "coding-agent",
-    );
+    // Successful auto-recovery is runtime-internal; synthesis reports
+    // the final outcome. Chat only needs auth prompts the user has to
+    // act on, not recovery commentary.
     return replacement;
   }
 
@@ -2403,10 +2392,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
         reason: "provider_auth_recovered",
       },
     });
-    this.sendChatMessage(
-      `"${taskCtx.label}" refreshed provider authentication and is continuing automatically.`,
-      "coding-agent",
-    );
+    // Token refresh is invisible plumbing — no chat message needed.
     return true;
   }
 
@@ -2803,10 +2789,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
           }
         }
         if (recoveryResult) {
-          this.sendChatMessage(
-            `"${taskCtx.label}" hit an error: ${errorMsg}. Milady is continuing the same task on ${recoveryResult.replacementFramework}.`,
-            "coding-agent",
-          );
+          // Auto-recovery succeeded — stay quiet; synthesis will report.
         } else if (!failoverResult) {
           this.sendChatMessage(
             `"${taskCtx.label}" hit an error and needs your attention: ${errorMsg}`,
@@ -2850,12 +2833,8 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
           summary: `Task "${taskCtx.label}" stopped`,
           data: { status: taskCtx.status },
         });
-        if (!alreadyTerminal && !taskCtx.suppressStopNotice) {
-          this.sendChatMessage(
-            `"${taskCtx.label}" stopped before completion.`,
-            "coding-agent",
-          );
-        }
+        // "Stopped before completion" is redundant with the synthesis
+        // path, which reports the actual state on terminal events.
         checkAllTasksComplete(this);
         break;
       }
@@ -3031,7 +3010,8 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 
           const message = `[${taskCtx.label}] Running ${toolDesc}.${urlSuffix} The agent is working outside the terminal.`;
           this.log(message);
-          this.sendChatMessage(message, "coding-agent");
+          // Tool-running progress is broadcast to the web UI above; chat
+          // stays quiet (synthesis delivers the final result).
         }
         break;
       }

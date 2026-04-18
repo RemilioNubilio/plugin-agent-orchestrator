@@ -575,10 +575,10 @@ async function checkAllTasksCompleteAsync(
         threads: failingThreads,
       },
     });
-    ctx.sendChatMessage(
-      `Task agents finished running, but the coordinator could not prove completion. ${summary}`,
-      "task-agent",
-    );
+    // Coordinator-internal completion-proof failures are noisy debug
+    // signals; the synthesis path reports actual results. The web UI's
+    // swarm_attention_required event (broadcast above) still surfaces
+    // this state for operators — chat just stays quiet.
     return;
   }
 
@@ -969,10 +969,8 @@ export async function executeDecision(
           await ctx.ptyService.sendToSession(sessionId, followUpPrompt);
           taskCtx.lastInputSentAt = Date.now();
           await ctx.syncTaskContext(taskCtx);
-          ctx.sendChatMessage(
-            `[${taskCtx.label}] Validation asked the agent to continue: ${validation.summary}`,
-            "coding-agent",
-          );
+          // Validator-driven continuation is coordinator-internal;
+          // synthesis reports the final outcome.
         } else {
           ctx.broadcast({
             type: "escalation",
@@ -983,10 +981,8 @@ export async function executeDecision(
               summary: validation.summary,
             },
           });
-          ctx.sendChatMessage(
-            `[${taskCtx.label}] Validation needs human review: ${validation.summary}`,
-            "coding-agent",
-          );
+          // Escalations surface via the broadcast event above; chat
+          // stays quiet until the coordinator reaches a terminal state.
         }
         break;
       }
@@ -1644,10 +1640,8 @@ export async function handleTurnComplete(
             ? `${instruction.slice(0, 120)}...`
             : instruction;
         ctx.log(`[${taskCtx.label}] Turn done, continuing: ${preview}`);
-        ctx.sendChatMessage(
-          `[${taskCtx.label}] Continuing work: ${preview || "sent follow-up instructions."}`,
-          "coding-agent",
-        );
+        // Mid-task continuation is coordinator-internal; the synthesis
+        // callback delivers the final answer once the thread completes.
       } else if (decision.action === "escalate") {
         ctx.sendChatMessage(
           `[${taskCtx.label}] Turn finished — needs your attention: ${decision.reasoning}`,

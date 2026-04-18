@@ -73,10 +73,9 @@ export async function scanIdleSessions(
           timestamp: now,
           data: { reason: "pty_session_gone" },
         });
-        ctx.sendChatMessage(
-          `[${taskCtx.label}] Session lost — the agent process is no longer running (likely killed during a restart).`,
-          "coding-agent",
-        );
+        // Session-lost is a runtime-internal signal; the coordinator's
+        // completion path posts the final outcome. Emitting this to chat
+        // surfaces bot-restart internals to users.
         checkAllTasksComplete(ctx);
         continue;
       }
