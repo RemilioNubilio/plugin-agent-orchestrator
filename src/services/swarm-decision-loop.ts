@@ -541,13 +541,6 @@ async function checkAllTasksCompleteAsync(
   }
 
   if (failingThreads.length > 0) {
-    if (ctx.swarmCompleteNotified) {
-      ctx.log(
-        "checkAllTasksComplete: failure notification already sent — skipping",
-      );
-      return;
-    }
-    ctx.swarmCompleteNotified = true;
     const summary = failingThreads
       .map((thread) =>
         [
@@ -575,11 +568,30 @@ async function checkAllTasksCompleteAsync(
         threads: failingThreads,
       },
     });
-    // Coordinator-internal completion-proof failures are noisy debug
-    // signals; the synthesis path reports actual results. The web UI's
-    // swarm_attention_required event (broadcast above) still surfaces
-    // this state for operators — chat just stays quiet.
-    return;
+    // If any subagent produced a Shared decision the real work landed —
+    // a failing verifier or a task that got swept to "stopped" by the
+    // idle watchdog after its PTY session exited shouldn't swallow the
+    // final chat reply. The broadcast above is enough for operators to
+    // see the validator disagreement in the web UI; fall through to
+    // normal synthesis so the user still gets the agent's actual text
+    // (buildTaskLine will read the jsonl end_turn regardless of the
+    // coordinator's validator verdict).
+    //
+    // Only short-circuit when no subagent reached a meaningful end —
+    // that's the genuine unrecoverable-failure case where synthesis
+    // has nothing meaningful to say beyond the coordinator's signal.
+    const labelsWithDecisions = new Set(
+      ctx.sharedDecisions.map((decision) => decision.agentLabel),
+    );
+    const anyMeaningful = tasks.some(
+      (task) =>
+        task.status === "completed" || labelsWithDecisions.has(task.label),
+    );
+    if (!anyMeaningful) {
+      if (ctx.swarmCompleteNotified) return;
+      ctx.swarmCompleteNotified = true;
+      return;
+    }
   }
 
   // Guard: only fire once per swarm (reset by coordinator on stop/new swarm)
