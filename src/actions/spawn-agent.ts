@@ -41,6 +41,22 @@ import type { CodingWorkspaceService } from "../services/workspace-service.js";
 import { mergeTaskThreadEvalMetadata } from "./eval-metadata.js";
 import { createScratchDir } from "./coding-task-helpers.js";
 
+/**
+ * Once-per-process warn when CODING_AGENT_SANDBOX=off is in effect, so
+ * operators tailing logs can see the app-level workdir check has been
+ * deliberately disabled (the OS user + systemd unit are then the only
+ * line of defense). Kept outside the handler body so repeated spawns
+ * don't spam the log.
+ */
+let sandboxDisabledWarned = false;
+function warnSandboxDisabledOnce(): void {
+  if (sandboxDisabledWarned) return;
+  sandboxDisabledWarned = true;
+  logger.warn(
+    "[SPAWN_AGENT] CODING_AGENT_SANDBOX=off — app-level workdir allowlist disabled; relying on the OS user + systemd unit for isolation.",
+  );
+}
+
 function hasExplicitSpawnPayload(message: Memory): boolean {
   const content =
     message.content && typeof message.content === "object"
@@ -84,6 +100,16 @@ export const spawnAgentAction: Action = {
     "Spawn a specific task agent inside an existing workspace when you need direct control. " +
     "These agents are intentionally open-ended and can handle investigation, writing, planning, testing, synthesis, repo work, and general async task execution. " +
     "Returns a session ID that can be used to interact with the agent.",
+
+  // Spawning kicks off an async subagent whose final answer lands via the
+  // synthesis callback, not via this action's ActionResult. Without this
+  // flag the bootstrap runtime fires a second action-planning pass as
+  // soon as the spawn returns; the planner sees the user's prompt still
+  // unanswered (ActionResult.text is intentionally empty to avoid the
+  // workspace-path leak — see the text:"" on success above) and invokes
+  // SPAWN_AGENT again, producing a duplicate subagent per user prompt.
+  // Matches CREATE_TASK, which already has this for the same reason.
+  suppressPostActionContinuation: true,
 
   examples: [
     [
@@ -216,52 +242,71 @@ export const spawnAgentAction: Action = {
       workdir = createScratchDir(runtime);
     }
 
-    // Validate workdir is within allowed directories. The default set is the
-    // standard scratch base + the bot's cwd; operators with broader trust
-    // (single-tenant VPS, managed-fork deployments) can extend the allowlist
-    // via CODING_AGENT_ALLOWED_WORKDIRS (comma-separated absolute paths) or
-    // via PARALLAX_CODING_DIRECTORY (the user's configured coding root; the
-    // same env var already governs where createScratchDir puts dirs).
+    // Validate workdir is within allowed directories. Upstream default is
+    // conservative (scratch base + bot cwd); operators extend the allowlist
+    // via CODING_AGENT_ALLOWED_WORKDIRS (comma-separated absolute paths,
+    // `~`-expansion) or disable the app-level sandbox entirely via
+    // CODING_AGENT_SANDBOX=off. The latter is appropriate on single-tenant
+    // deployments where the OS-level user + systemd unit are the real
+    // boundary and the app-level check is just duplicating their work.
     const resolvedWorkdir = path.resolve(workdir);
-    const workspaceBaseDir = path.join(os.homedir(), ".milady", "workspaces");
-    const extraAllowed =
-      (runtime.getSetting("CODING_AGENT_ALLOWED_WORKDIRS") as string) ??
-      process.env.CODING_AGENT_ALLOWED_WORKDIRS ??
-      "";
-    const parallaxCodingDir =
-      (runtime.getSetting("PARALLAX_CODING_DIRECTORY") as string) ??
-      readConfigEnvKey("PARALLAX_CODING_DIRECTORY") ??
-      process.env.PARALLAX_CODING_DIRECTORY;
-    const expandHome = (p: string) =>
-      p.startsWith("~") ? path.join(os.homedir(), p.slice(1)) : p;
-    const allowedPrefixes = [
-      path.resolve(workspaceBaseDir),
-      path.resolve(process.cwd()),
-      ...(parallaxCodingDir?.trim()
-        ? [path.resolve(expandHome(parallaxCodingDir.trim()))]
-        : []),
-      ...extraAllowed
-        .split(",")
-        .map((p) => p.trim())
-        .filter((p) => p.length > 0)
-        .map((p) => path.resolve(expandHome(p))),
-    ];
-    const isAllowed = allowedPrefixes.some(
-      (prefix) =>
-        resolvedWorkdir.startsWith(prefix + path.sep) ||
-        resolvedWorkdir === prefix,
-    );
-    if (!isAllowed) {
-      if (callback) {
-        await callback({
-          text:
-            `can't write to \`${resolvedWorkdir}\` — not in my sandbox. ` +
-            `tell the operator to add it to CODING_AGENT_ALLOWED_WORKDIRS or move to a scratch path.`,
-        });
+    const sandboxSetting = (
+      (runtime.getSetting("CODING_AGENT_SANDBOX") as string | undefined) ??
+      readConfigEnvKey("CODING_AGENT_SANDBOX") ??
+      process.env.CODING_AGENT_SANDBOX ??
+      ""
+    )
+      .trim()
+      .toLowerCase();
+    const sandboxDisabled =
+      sandboxSetting === "off" ||
+      sandboxSetting === "false" ||
+      sandboxSetting === "0";
+    if (sandboxDisabled) {
+      warnSandboxDisabledOnce();
+      workdir = resolvedWorkdir;
+    } else {
+      const extraAllowed =
+        (runtime.getSetting("CODING_AGENT_ALLOWED_WORKDIRS") as string) ??
+        process.env.CODING_AGENT_ALLOWED_WORKDIRS ??
+        "";
+      const workspaceBaseDir = path.join(os.homedir(), ".milady", "workspaces");
+      const parallaxCodingDir =
+        (runtime.getSetting("PARALLAX_CODING_DIRECTORY") as string) ??
+        readConfigEnvKey("PARALLAX_CODING_DIRECTORY") ??
+        process.env.PARALLAX_CODING_DIRECTORY;
+      const expandHome = (p: string) =>
+        p.startsWith("~") ? path.join(os.homedir(), p.slice(1)) : p;
+      const allowedPrefixes = [
+        path.resolve(workspaceBaseDir),
+        path.resolve(process.cwd()),
+        ...(parallaxCodingDir?.trim()
+          ? [path.resolve(expandHome(parallaxCodingDir.trim()))]
+          : []),
+        ...extraAllowed
+          .split(",")
+          .map((p) => p.trim())
+          .filter((p) => p.length > 0)
+          .map((p) => path.resolve(expandHome(p))),
+      ];
+      const isAllowed = allowedPrefixes.some(
+        (prefix) =>
+          resolvedWorkdir.startsWith(prefix + path.sep) ||
+          resolvedWorkdir === prefix,
+      );
+      if (!isAllowed) {
+        if (callback) {
+          await callback({
+            text:
+              `can't write to \`${resolvedWorkdir}\` — not in my sandbox. ` +
+              `tell the operator to add it to CODING_AGENT_ALLOWED_WORKDIRS ` +
+              `or set CODING_AGENT_SANDBOX=off for full VPS access.`,
+          });
+        }
+        return { success: false, error: "WORKDIR_OUTSIDE_ALLOWED" };
       }
-      return { success: false, error: "WORKDIR_OUTSIDE_ALLOWED" };
+      workdir = resolvedWorkdir;
     }
-    workdir = resolvedWorkdir;
 
     const memoryContent =
       (params?.memoryContent as string) ?? (content.memoryContent as string);
