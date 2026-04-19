@@ -211,6 +211,23 @@ export const startCodingTaskAction: BackgroundAction = {
         },
       },
     ],
+    [
+      {
+        name: "{{user1}}",
+        content: {
+          text: "Can you implement a quicksort algorithm? Can you also analyze this CSV and generate some charts? And can you draft a one-page doc summarizing both for me?",
+        },
+      },
+      {
+        name: "{{agentName}}",
+        content: {
+          text: "on it",
+          action: "CREATE_TASK",
+          agents:
+            "implement a quicksort algorithm in typescript with tests | analyze the user's CSV and generate charts (matplotlib or similar) | draft a one-page doc summarizing the quicksort implementation and the CSV findings",
+        },
+      },
+    ],
   ],
 
   validate: async (
@@ -470,7 +487,11 @@ export const startCodingTaskAction: BackgroundAction = {
       description:
         "Pipe-delimited list of task-agent assignments for multi-agent mode. Each segment is a task description. " +
         "Optionally prefix with an agent type: 'claude:Fix auth | gemini:Write tests | codex:Update docs'. " +
-        "Each task agent gets its own workspace clone. If provided, the 'task' parameter is ignored.",
+        "Each task agent gets its own workspace clone. If provided, the 'task' parameter is ignored. " +
+        "USE THIS when the user message contains multiple distinct asks in one prompt — bullets, " +
+        "numbered list, or 'can you... can you also...' phrasing. Map every distinct ask to one " +
+        "pipe-separated segment so each request gets its own subagent. Never silently drop any of " +
+        "the asks in favor of just one.",
       required: false,
       schema: { type: "string" as const },
     },
