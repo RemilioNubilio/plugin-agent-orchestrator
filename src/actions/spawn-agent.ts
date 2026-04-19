@@ -39,6 +39,7 @@ import { looksLikeTaskAgentRequest } from "../services/task-agent-frameworks.js"
 import { requireTaskAgentAccess } from "../services/task-policy.js";
 import type { CodingWorkspaceService } from "../services/workspace-service.js";
 import { mergeTaskThreadEvalMetadata } from "./eval-metadata.js";
+import { createScratchDir } from "./coding-task-helpers.js";
 
 function hasExplicitSpawnPayload(message: Memory): boolean {
   const content =
@@ -207,20 +208,43 @@ export const spawnAgentAction: Action = {
       }
     }
     if (!workdir) {
-      if (callback) {
-        await callback({
-          text: "No workspace found. Please provision a workspace first using PROVISION_WORKSPACE or provide a workdir.",
-        });
-      }
-      return { success: false, error: "NO_WORKSPACE" };
+      // No explicit workdir, no prior PROVISION_WORKSPACE state, no existing
+      // service-tracked workspace — fall back to an ephemeral scratch dir
+      // (same path START_CODING_TASK takes when the user omits a repo). The
+      // previous behavior errored with an API-internal hint; a normie prompt
+      // like "build a timer page" shouldn't be blocked by workspace plumbing.
+      workdir = createScratchDir(runtime);
     }
 
-    // Validate workdir is within allowed directories
+    // Validate workdir is within allowed directories. The default set is the
+    // standard scratch base + the bot's cwd; operators with broader trust
+    // (single-tenant VPS, managed-fork deployments) can extend the allowlist
+    // via CODING_AGENT_ALLOWED_WORKDIRS (comma-separated absolute paths) or
+    // via PARALLAX_CODING_DIRECTORY (the user's configured coding root; the
+    // same env var already governs where createScratchDir puts dirs).
     const resolvedWorkdir = path.resolve(workdir);
     const workspaceBaseDir = path.join(os.homedir(), ".milady", "workspaces");
+    const extraAllowed =
+      (runtime.getSetting("CODING_AGENT_ALLOWED_WORKDIRS") as string) ??
+      process.env.CODING_AGENT_ALLOWED_WORKDIRS ??
+      "";
+    const parallaxCodingDir =
+      (runtime.getSetting("PARALLAX_CODING_DIRECTORY") as string) ??
+      readConfigEnvKey("PARALLAX_CODING_DIRECTORY") ??
+      process.env.PARALLAX_CODING_DIRECTORY;
+    const expandHome = (p: string) =>
+      p.startsWith("~") ? path.join(os.homedir(), p.slice(1)) : p;
     const allowedPrefixes = [
       path.resolve(workspaceBaseDir),
       path.resolve(process.cwd()),
+      ...(parallaxCodingDir?.trim()
+        ? [path.resolve(expandHome(parallaxCodingDir.trim()))]
+        : []),
+      ...extraAllowed
+        .split(",")
+        .map((p) => p.trim())
+        .filter((p) => p.length > 0)
+        .map((p) => path.resolve(expandHome(p))),
     ];
     const isAllowed = allowedPrefixes.some(
       (prefix) =>
@@ -230,7 +254,9 @@ export const spawnAgentAction: Action = {
     if (!isAllowed) {
       if (callback) {
         await callback({
-          text: "The specified workdir is outside of allowed directories. Please use a workspace directory.",
+          text:
+            `can't write to \`${resolvedWorkdir}\` — not in my sandbox. ` +
+            `tell the operator to add it to CODING_AGENT_ALLOWED_WORKDIRS or move to a scratch path.`,
         });
       }
       return { success: false, error: "WORKDIR_OUTSIDE_ALLOWED" };
@@ -408,15 +434,14 @@ export const spawnAgentAction: Action = {
         };
       }
 
-      if (callback) {
-        await callback({
-          text: `Started ${piRequested ? "pi" : agentType} task agent in ${workdir}${task ? ` with task: "${task}"` : ""}. Session ID: ${session.id}`,
-        });
-      }
-
+      // Spawn-success is coordinator-internal — the synthesis callback
+      // delivers the real outcome once the subagent finishes. Returning
+      // non-empty `text` here triggers the bootstrap runtime to auto-post
+      // it (see runtime.ts action-result routing), which is what leaked
+      // the workdir + task prompt + Session ID dump into Discord.
       return {
         success: true,
-        text: `Started ${piRequested ? "pi" : agentType} task agent`,
+        text: "",
         data: {
           sessionId: session.id,
           agentType: piRequested ? "pi" : session.agentType,

@@ -45,15 +45,19 @@ export async function scanIdleSessions(
 ): Promise<void> {
   const now = Date.now();
   for (const taskCtx of ctx.tasks.values()) {
-    if (taskCtx.status !== "active" && taskCtx.status !== "tool_running") {
-      continue;
-    }
-
-    // Liveness check: if the PTY session no longer exists in the worker
-    // (e.g. parent process was SIGKILL'd and restarted), mark it dead.
+    // Always run the liveness check — a task stuck at "blocked"
+    // (login_required, pending_approval, ...) whose PTY has actually
+    // exited would otherwise remain blocked forever and prevent the
+    // swarm from reaching a terminal state, so synthesis never fires.
+    // The status-based skip only applies to the idle-timer path below.
     if (ctx.ptyService) {
       const session = ctx.ptyService.getSession(taskCtx.sessionId);
-      if (!session) {
+      if (
+        !session &&
+        taskCtx.status !== "completed" &&
+        taskCtx.status !== "stopped" &&
+        taskCtx.status !== "error"
+      ) {
         ctx.log(
           `Idle watchdog: "${taskCtx.label}" — PTY session no longer exists, marking as stopped`,
         );
@@ -73,13 +77,18 @@ export async function scanIdleSessions(
           timestamp: now,
           data: { reason: "pty_session_gone" },
         });
-        ctx.sendChatMessage(
-          `[${taskCtx.label}] Session lost — the agent process is no longer running (likely killed during a restart).`,
-          "coding-agent",
-        );
+        // Session-lost is a runtime-internal signal; the coordinator's
+        // completion path posts the final outcome. Emitting this to chat
+        // surfaces bot-restart internals to users.
         checkAllTasksComplete(ctx);
         continue;
       }
+    }
+
+    // Idle-timer path below only applies to live, running sessions — skip
+    // anything already in a non-running state.
+    if (taskCtx.status !== "active" && taskCtx.status !== "tool_running") {
+      continue;
     }
 
     const idleMs = now - taskCtx.lastActivityAt;
