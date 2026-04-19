@@ -1544,9 +1544,19 @@ export async function handleTurnComplete(
     const PR_CREATED_RE =
       /(?:Created|Opened)\s+pull\s+request\s+#?\d+|gh\s+pr\s+create/i;
     if (PR_CREATED_RE.test(turnOutput)) {
+      // Set `keyDecision` so recordKeyDecision pushes this into
+      // ctx.sharedDecisions. That ledger is what
+      // checkAllTasksComplete uses to decide whether to fall through
+      // to synthesis when a task's validator verifier fails — without
+      // this, a fast-path-completed task whose validator happens to
+      // fail gets its real output (the PR URL) swallowed because the
+      // fallthrough predicate sees neither status=completed (idle
+      // watchdog may have downgraded it to `stopped`) nor a recorded
+      // shared decision.
       const fastDecision: CoordinationLLMResponse = {
         action: "complete",
-        reasoning: "PR detected in turn output — task complete.",
+        reasoning: "PR detected in turn output - task complete.",
+        keyDecision: "PR created and pushed; task complete.",
       };
       ctx.log(
         `Turn assessment for "${taskCtx.label}": complete (fast-path: PR detected in output)`,
