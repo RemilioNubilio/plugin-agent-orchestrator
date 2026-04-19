@@ -15,7 +15,11 @@ import path from "node:path";
 import type { IAgentRuntime } from "@elizaos/core";
 import type { PreflightResult } from "coding-agent-adapters";
 import type { AgentMetrics } from "./agent-metrics.js";
-import { readConfigCloudKey, readConfigEnvKey } from "./config-env.js";
+import {
+  readConfigCloudKey,
+  readConfigCodexSubscriptionRestrictedToCodexFramework,
+  readConfigEnvKey,
+} from "./config-env.js";
 
 export type SupportedTaskAgentAdapter = "claude" | "codex" | "gemini" | "aider";
 export type TaskAgentFrameworkId = SupportedTaskAgentAdapter | "pi";
@@ -480,6 +484,14 @@ async function computeTaskAgentFrameworkState(
     preflightByAdapter.get("aider"),
   );
 
+  // When the user opts in to restricting the Codex subscription to the codex
+  // framework only, non-codex frameworks must not treat Codex sub availability
+  // as contributing to `subscriptionReady` or `authReady` (so scoring and
+  // fallback logic skip the Codex-sub path). Claude subscription tokens are
+  // already restricted upstream to the claude CLI, so no gate is needed there.
+  const codexSubRestrictedToCodexFramework =
+    readConfigCodexSubscriptionRestrictedToCodexFramework();
+
   const claudeSubscriptionReady =
     claudePreflightAuth === "authenticated" || hasClaudeSubscriptionAuth();
   const claudeAuthReady =
@@ -488,6 +500,12 @@ async function computeTaskAgentFrameworkState(
     codexPreflightAuth === "authenticated" || hasCodexSubscriptionAuth();
   const codexAuthReady =
     cloudReady || codexSubscriptionReady || hasCodexApiKey(runtime);
+  // When the flag is set, drop Codex sub from aider's fallback chain — aider
+  // must use its own API key (claude/gemini subs are already restricted or
+  // non-existent for aider's path, and the Codex API key path still works).
+  const codexAuthReadyForNonCodex = codexSubRestrictedToCodexFramework
+    ? cloudReady || hasCodexApiKey(runtime)
+    : codexAuthReady;
   // Eliza Cloud doesn't proxy Gemini, so cloud mode does NOT make Gemini auth-ready
   const geminiAuthReady =
     geminiPreflightAuth === "authenticated" || hasGeminiCredential(runtime);
@@ -495,7 +513,7 @@ async function computeTaskAgentFrameworkState(
     cloudReady ||
     aiderPreflightAuth === "authenticated" ||
     claudeAuthReady ||
-    codexAuthReady ||
+    codexAuthReadyForNonCodex ||
     geminiAuthReady;
   const piReady = hasPiBinary();
 
