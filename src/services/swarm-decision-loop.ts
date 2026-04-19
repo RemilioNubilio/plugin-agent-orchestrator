@@ -634,6 +634,13 @@ async function checkAllTasksCompleteAsync(
     ctx.log(
       "checkAllTasksComplete: swarm complete callback is wired — calling synthesis",
     );
+    // Pull thread roomIds up-front so synthesis knows where to deliver
+    // (TaskContext itself doesn't carry roomId; the taskThread does).
+    const threadRoomIds = new Map<string, string>();
+    for (const tid of [...new Set(tasks.map((task) => task.threadId))]) {
+      const thread = await ctx.taskRegistry.getThread(tid);
+      if (thread?.roomId) threadRoomIds.set(tid, thread.roomId);
+    }
     const taskSummaries = tasks.map((t) => {
       // Fold in shared decisions relevant to this task so the synthesis
       // prompt includes the agent's actual findings, not just PR URLs.
@@ -650,6 +657,13 @@ async function checkAllTasksCompleteAsync(
         originalTask: t.originalTask,
         status: t.status,
         completionSummary: summaryParts.join("\n") || "",
+        // Forward the task's workdir so buildTaskLine in synthesis can
+        // read the agent's end_turn jsonl directly. Without this, the
+        // session is already killed by the time synthesis runs and
+        // resolveSessionWorkdir returns null → fallback to the honest
+        // placeholder even though the jsonl has the real answer.
+        workdir: t.workdir,
+        roomId: threadRoomIds.get(t.threadId),
       };
     });
     // Wrap in Promise.resolve().then() to catch sync throws, and race against
@@ -1074,12 +1088,13 @@ export async function executeDecision(
         },
       });
 
-      ctx.sendChatMessage(
-        taskCtx.completionSummary
-          ? `Finished "${taskCtx.label}".\n\n${taskCtx.completionSummary}`
-          : `Finished "${taskCtx.label}".`,
-        "coding-agent",
-      );
+      // Per-task completion message is runtime-internal. The validator's
+      // `completionSummary` is an analysis paragraph ("The agent wrote the
+      // files, verified ..., reported the URL") — NOT the subagent's
+      // actual last message, so pasting it to chat hides the real URL /
+      // result. The synthesis callback (handleSwarmSynthesis) reads the
+      // subagent's jsonl end_turn text and delivers the actual answer;
+      // this chat write would just land first with a stale narrative.
 
       // Force-kill the session — task is done, nothing to save.
       // SIGKILL ensures the PTY and all child processes exit immediately,
