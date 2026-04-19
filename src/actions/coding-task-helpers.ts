@@ -157,14 +157,14 @@ export function registerSessionEvents(
 
     // When coordinator is active it handles chat + lifecycle for these events
     if (!coordinatorActive) {
-      // Intentionally no chat message on `blocked`. The SwarmCoordinator runs
-      // in parallel regardless of the direct-callback wiring — its decision
-      // loop auto-accepts routine prompts (Bypass Permissions, trust dialogs,
-      // tool permissions) within ~1s. Announcing "Agent X is waiting for
-      // input: unknown prompt" to Discord every time a dialog appears
-      // produces noisy status chatter for prompts the coordinator has
-      // already resolved. If the coordinator escalates (rare), its own
-      // sendChatMessage path still posts an actionable message.
+      // No chat message on `blocked`. The SwarmCoordinator runs in
+      // parallel regardless of the direct-callback wiring; its decision
+      // loop auto-accepts routine prompts (Bypass Permissions, trust
+      // dialogs, tool permissions) within ~1s. Announcing "waiting for
+      // input: unknown prompt" to Discord produces noisy status chatter
+      // for prompts the coordinator already resolved. If the coordinator
+      // escalates (rare), its own sendChatMessage path posts an actionable
+      // message.
       if (event === "task_complete") {
         if (callback) {
           const response = (data as { response?: string }).response ?? "";
@@ -198,14 +198,14 @@ export function registerSessionEvents(
       !scratchRegistered
     ) {
       logger.info(
-        `[scratch-lifecycle] Terminal event "${event}" for "${label}" — registering scratch workspace at ${scratchDir}`,
+        `[scratch-lifecycle] Terminal event "${event}" for "${label}": registering scratch workspace at ${scratchDir}`,
       );
       const wsService = runtime.getService(
         "CODING_WORKSPACE_SERVICE",
       ) as unknown as CodingWorkspaceService | undefined;
       if (!wsService) {
         logger.warn(
-          `[scratch-lifecycle] CODING_WORKSPACE_SERVICE not found — cannot register scratch workspace`,
+          `[scratch-lifecycle] CODING_WORKSPACE_SERVICE not found, cannot register scratch workspace`,
         );
         // Leave scratchRegistered false so a later event can retry
       } else {

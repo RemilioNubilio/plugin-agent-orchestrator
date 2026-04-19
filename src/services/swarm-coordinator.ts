@@ -1,5 +1,5 @@
 /**
- * Swarm Coordinator — Event Bridge & Autonomous Coordination Loop
+ * Swarm Coordinator: event bridge and autonomous coordination loop.
  *
  * Bridges PTY session events to:
  * 1. SSE clients (frontend dashboard) for real-time status
@@ -142,7 +142,7 @@ export interface TaskContext {
   taskDelivered: boolean;
   /** Summary of what the agent accomplished, populated on completion. */
   completionSummary?: string;
-  /** Index into sharedDecisions[] — tracks which decisions this agent has already seen. */
+  /** Index into sharedDecisions[]: tracks which decisions this agent has already seen. */
   lastSeenDecisionIndex: number;
   /** Timestamp of last coordinator-sent input. Used to suppress stall/turn-complete
    *  events for a grace period so the agent has time to process the input. */
@@ -186,7 +186,7 @@ export interface PendingDecision {
 
 /**
  * Context interface exposing internal state and helpers to extracted modules.
- * Implemented by SwarmCoordinator — passed as `this` to module-level functions.
+ * Implemented by SwarmCoordinator. Passed as `this` to module-level functions.
  */
 export interface SwarmCoordinatorContext {
   readonly runtime: IAgentRuntime;
@@ -197,13 +197,13 @@ export interface SwarmCoordinatorContext {
   readonly pendingDecisions: Map<string, PendingDecision>;
   /** Buffered task_complete events that arrived while an in-flight decision was running. */
   readonly pendingTurnComplete: Map<string, unknown>;
-  /** Fingerprint of the last blocked prompt per session — for re-render dedup. */
+  /** Fingerprint of the last blocked prompt per session, for re-render dedup. */
   readonly lastBlockedPromptFingerprint: Map<string, string>;
   /** Buffered blocked events that arrived while an in-flight decision was running. */
   readonly pendingBlocked: Map<string, unknown>;
-  /** Last-seen output snapshot per session — used by idle watchdog. */
+  /** Last-seen output snapshot per session, used by idle watchdog. */
   readonly lastSeenOutput: Map<string, string>;
-  /** Timestamp of last tool_running chat notification per session — for throttling. */
+  /** Timestamp of last tool_running chat notification per session, for throttling. */
   readonly lastToolNotification: Map<string, number>;
 
   /** Whether LLM decisions are paused (user sent a chat message). */
@@ -219,8 +219,8 @@ export interface SwarmCoordinatorContext {
    * Guard flag: whether the swarm_complete event has already been fired
    * for the current swarm lifecycle. Set to `true` by `checkAllTasksComplete()`
    * when all tasks reach terminal state. Reset to `false` by:
-   * - `stop()` — full coordinator teardown
-   * - `registerTask()` — when detecting a new swarm (all previous tasks terminal)
+   * - `stop()`: full coordinator teardown
+   * - `registerTask()`: when detecting a new swarm (all previous tasks terminal)
    */
   swarmCompleteNotified: boolean;
 
@@ -296,13 +296,13 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
   /** Pending confirmations for "confirm" mode. */
   readonly pendingDecisions: Map<string, PendingDecision> = new Map();
 
-  /** In-flight decision lock — prevents parallel LLM calls for same session. */
+  /** In-flight decision lock: prevents parallel LLM calls for same session. */
   readonly inFlightDecisions: Set<string> = new Set();
 
   /** Buffered task_complete events that arrived while an in-flight decision was running. */
   readonly pendingTurnComplete: Map<string, unknown> = new Map();
 
-  /** Fingerprint of the last blocked prompt per session — for re-render dedup. */
+  /** Fingerprint of the last blocked prompt per session, for re-render dedup. */
   readonly lastBlockedPromptFingerprint: Map<string, string> = new Map();
 
   /** Buffered blocked events that arrived while an in-flight decision was running. */
@@ -317,7 +317,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
   /** Callback to route coordinator events through Milaidy's full pipeline. */
   private agentDecisionCb: AgentDecisionCallback | null = null;
 
-  /** Callback fired when all swarm tasks complete — for synthesis. */
+  /** Callback fired when all swarm tasks complete, for synthesis. */
   private swarmCompleteCb: SwarmCompleteCallback | null = null;
 
   /** Buffer for events arriving before task registration. */
@@ -329,10 +329,10 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
   /** Idle watchdog timer handle. */
   private idleWatchdogTimer: ReturnType<typeof setInterval> | null = null;
 
-  /** Last-seen output snapshot per session — used by idle watchdog to detect data flow. */
+  /** Last-seen output snapshot per session, used by idle watchdog to detect data flow. */
   readonly lastSeenOutput: Map<string, string> = new Map();
 
-  /** Timestamp of last tool_running chat notification per session — for throttling. */
+  /** Timestamp of last tool_running chat notification per session, for throttling. */
   readonly lastToolNotification: Map<string, number> = new Map();
 
   /** Whether LLM decisions are paused (user sent a chat message). */
@@ -347,7 +347,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
   /** @see SwarmCoordinatorContext.swarmCompleteNotified */
   swarmCompleteNotified = false;
 
-  /** Buffered events during pause — replayed on resume. */
+  /** Buffered events during pause, replayed on resume. */
   private pauseBuffer: CoordinatorNormalizedEvent[] = [];
 
   /** Buffered broadcasts waiting for wsBroadcast to be wired. */
@@ -356,20 +356,20 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
   /** Auto-resume timeout handle. */
   private pauseTimeout: ReturnType<typeof setTimeout> | null = null;
 
-  /** Coordinator startup timestamp — ignore events from sessions created before this. */
+  /** Coordinator startup timestamp: ignore events from sessions created before this. */
   private readonly startedAt = Date.now();
 
   /** Active retry timers for unregistered session buffers. */
   private unregisteredRetryTimers: Map<string, ReturnType<typeof setTimeout>> =
     new Map();
 
-  /** Turn-complete coalescing timers — debounces rapid events per session. */
+  /** Turn-complete coalescing timers: debounces rapid events per session. */
   private turnCompleteCoalesceTimers: Map<
     string,
     ReturnType<typeof setTimeout>
   > = new Map();
 
-  /** Persistent swarm history — JSONL log that survives restarts. */
+  /** Persistent swarm history: JSONL log that survives restarts. */
   readonly history = new SwarmHistory();
 
   constructor(runtime: IAgentRuntime) {
@@ -411,7 +411,6 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
         }
       | undefined;
     if (wsService?.setScratchDecisionCallback) {
-      const chatCb = this.chatCallback;
       wsService.setScratchDecisionCallback(async (_record) => {
         // Scratch workspace TTL notices are runtime-internal; the real
         // task output is delivered by the synthesis path. Keeping this
@@ -429,7 +428,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
     // Replay any events that were broadcast before the bridge was wired
     if (this.preBridgeBroadcastBuffer.length > 0) {
       this.log(
-        `WS broadcast callback wired — replaying ${this.preBridgeBroadcastBuffer.length} buffered event(s)`,
+        `WS broadcast callback wired: replaying ${this.preBridgeBroadcastBuffer.length} buffered event(s)`,
       );
       for (const event of this.preBridgeBroadcastBuffer) {
         cb(event);
@@ -466,7 +465,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
   setAgentDecisionCallback(cb: AgentDecisionCallback): void {
     this.agentDecisionCb = cb;
     this.log(
-      "Agent decision callback wired — events will route through Milaidy",
+      "Agent decision callback wired, events will route through Milaidy",
     );
   }
 
@@ -478,7 +477,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
   /**
    * Null-safe chat dispatcher.
    *
-   * CALLING POLICY — keep this consistent or you'll either spam users or
+   * CALLING POLICY. Keep this consistent or you'll either spam users or
    * hide important signals:
    *
    *   POST to chat:   user must act (auth prompts, "needs your attention"
@@ -490,7 +489,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
    *                   recovery, token refresh, scratch-decision TTL,
    *                   tool_running progress, mid-task continuation
    *                   decisions, PTY session-lost on restart). Web UI
-   *                   still sees these via `broadcast()` — chat should
+   *                   still sees these via `broadcast()`; chat should
    *                   not duplicate them, because synthesis will deliver
    *                   the final outcome once a terminal state is reached.
    */
@@ -742,7 +741,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
     if (this._paused) return;
     this._paused = true;
     this.log(
-      "Coordinator paused — buffering LLM decisions until user message is processed",
+      "Coordinator paused: buffering LLM decisions until user message is processed",
     );
     this.broadcast({
       type: "coordinator_paused",
@@ -770,7 +769,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
     }
 
     this.log(
-      `Coordinator resumed — replaying ${this.pauseBuffer.length} buffered events`,
+      `Coordinator resumed: replaying ${this.pauseBuffer.length} buffered events`,
     );
     this.broadcast({
       type: "coordinator_resumed",
@@ -1032,7 +1031,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
   }
 
   /**
-   * Async version that also checks disk history — survives process restarts.
+   * Async version that also checks disk history, survives process restarts.
    * Callers that can await should prefer this over the sync version.
    */
   async getLastUsedRepoAsync(): Promise<string | undefined> {
@@ -2410,7 +2409,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
         reason: "provider_auth_recovered",
       },
     });
-    // Token refresh is invisible plumbing — no chat message needed.
+    // Token refresh is invisible plumbing, no chat message needed.
     return true;
   }
 
@@ -2458,7 +2457,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 
       const ctx = this.tasks.get(sessionId);
       if (ctx) {
-        // Task was registered — flush
+        // Task was registered, flush
         this.unregisteredBuffer.delete(sessionId);
         for (const entry of stillBuffered) {
           this.handleNormalizedSessionEvent(entry.normalized).catch((err) => {
@@ -2535,7 +2534,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
     for (const d of dead) {
       this.sseClients.delete(d);
     }
-    // Relay to WebSocket clients — buffer if bridge isn't wired yet
+    // Relay to WebSocket clients, buffer if bridge isn't wired yet
     if (this.wsBroadcast) {
       this.wsBroadcast(event);
     } else if (this.preBridgeBroadcastBuffer.length < MAX_PRE_BRIDGE_BUFFER) {
@@ -2583,7 +2582,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
     }
 
     // Ignore events from sessions created before this coordinator started.
-    // Session IDs are formatted as "pty-{timestamp}-{hex}" — extract the timestamp.
+    // Session IDs are formatted as "pty-{timestamp}-{hex}": extract the timestamp.
     // Defensive: upstream event normalizer has occasionally emitted non-string
     // sessionIds during teardown, which previously surfaced as a TypeError in
     // this path and poisoned the coordinator's event queue.
@@ -2624,7 +2623,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
     }
 
     // Skip decision-making events for terminal states, but always allow
-    // "stopped" and "error" through — they're definitive lifecycle signals
+    // "stopped" and "error" through: they're definitive lifecycle signals
     // that the frontend needs to close consoles and clean up.
     // Exception: allow a late "task_complete" to recover a recently-stopped task.
     let recoveredFromStopped = false;
@@ -2658,15 +2657,15 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
       }
     }
 
-    // Update activity timestamp — resets idle watchdog for this session.
+    // Update activity timestamp: resets idle watchdog for this session.
     // This runs before buffering so buffered events still reset the idle timer.
     taskCtx.lastActivityAt = Date.now();
     taskCtx.idleCheckCount = 0;
 
     // Buffer decision-making events when paused (user sent a chat message).
-    // Auto-responses still flow through handleBlocked — only LLM decisions are deferred.
+    // Auto-responses still flow through handleBlocked. Only LLM decisions are deferred.
     if (this._paused && (event === "blocked" || event === "task_complete")) {
-      // Auto-responded blocked events don't need LLM — let them through
+      // Auto-responded blocked events don't need LLM, let them through
       const blockedAutoResponded =
         event === "blocked" &&
         (normalized as CoordinatorBlockedEvent).autoResponded === true;
@@ -2740,7 +2739,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 
       case "task_complete": {
         // Broadcast immediately for UI visibility, but coalesce the
-        // expensive LLM assessment — rapid turn-complete events within
+        // expensive LLM assessment: rapid turn-complete events within
         // 500ms are debounced so only the last one triggers an LLM call.
         this.broadcast({
           type: "turn_complete",
@@ -2759,7 +2758,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
           // Accept both "active" and "tool_running" as live pre-validation
           // states. Subagents that use tools (curl, file ops, etc.) sit in
           // "tool_running" almost continuously, so by the time task_complete
-          // arrives the status is usually "tool_running" — the prior strict
+          // arrives the status is usually "tool_running"; the prior strict
           // "=== active" check meant validation never ran for tool-heavy
           // scratch tasks, leaving them stuck and propagating goal failure
           // through the watchdog.
@@ -2811,7 +2810,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
           }
         }
         if (recoveryResult) {
-          // Auto-recovery succeeded — stay quiet; synthesis will report.
+          // Auto-recovery succeeded: stay quiet; synthesis will report.
         } else if (!failoverResult) {
           this.sendChatMessage(
             `"${taskCtx.label}" hit an error and needs your attention: ${errorMsg}`,
@@ -2835,7 +2834,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
       case "stopped": {
         const alreadyTerminal =
           taskCtx.status === "completed" || taskCtx.status === "error";
-        // Don't downgrade "completed" or "error" to "stopped" — the async
+        // Don't downgrade "completed" or "error" to "stopped": the async
         // stopSession fires after executeDecision already marked the task.
         if (taskCtx.status !== "completed" && taskCtx.status !== "error") {
           taskCtx.status = "stopped";
@@ -2975,7 +2974,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
       }
 
       case "tool_running": {
-        // Agent is actively working via an external tool — keep watchdog happy
+        // Agent is actively working via an external tool, keep watchdog happy
         taskCtx.status = "tool_running";
         taskCtx.lastActivityAt = Date.now();
         taskCtx.idleCheckCount = 0;
@@ -2988,7 +2987,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
         });
 
         // Hook-sourced tool_running events fire for every tool call.
-        // Only broadcast to SSE (for activity box) — skip chat messages.
+        // Only broadcast to SSE (for activity box), skip chat messages.
         const toolData = data as {
           toolName?: string;
           description?: string;
@@ -2999,7 +2998,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
         }
 
         // Throttle chat notifications: at most one per 30s per session.
-        // Suppress during the first 10s after registration — startup status
+        // Suppress during the first 10s after registration: startup status
         // lines (e.g. "Claude in Chrome enabled") can trigger tool_running
         // before the agent has actually begun working.
         const now = Date.now();
@@ -3026,7 +3025,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
                 urlSuffix = ` Dev server running at ${devUrl}`;
               }
             } catch {
-              // Best-effort — don't block on failure
+              // Best-effort, don't block on failure
             }
           }
 
@@ -3057,7 +3056,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
     promptText: string,
     recentOutput: string,
   ): Promise<CoordinationLLMResponse | null> {
-    // Re-export for backward compatibility — delegates to module function
+    // Re-export for backward compatibility. Delegates to module function.
     const { makeCoordinationDecision: mkDecision } = await import(
       "./swarm-decision-loop.js"
     );
@@ -3182,7 +3181,7 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
         );
       }
     } else {
-      // Rejected — record and broadcast
+      // Rejected: record and broadcast
       if (taskCtx) {
         taskCtx.status = "blocked";
         await this.recordDecision(taskCtx, {

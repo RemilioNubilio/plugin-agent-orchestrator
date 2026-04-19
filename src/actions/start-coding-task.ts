@@ -1,5 +1,5 @@
 /**
- * CREATE_TASK action - Unified (patch applied) action to set up and launch task agents.
+ * CREATE_TASK action - Unified action to set up and launch task agents.
  *
  * Combines workspace provisioning and agent spawning into a single atomic action.
  * - If a repo URL is provided, clones it into a fresh workspace
@@ -79,12 +79,10 @@ function getMessageText(message: Memory): string {
  * todo insert.
  *
  * Pattern: imperative LIFE verb at the start followed by a LIFE noun within
- * the first few words. Keeps false positives rare — "build a todo app" has
+ * the first few words. Keeps false positives rare: "build a todo app" has
  * verb=build (not in list) so it still routes to CREATE_TASK as intended.
  */
-export function looksLikeLifeOpsRequest(
-  text: string | undefined | null,
-): boolean {
+function looksLikeLifeOpsRequest(text: string | undefined | null): boolean {
   if (!text) return false;
   const normalized = text.toLowerCase().replace(/\s+/g, " ").trim();
   if (normalized.length === 0) return false;
@@ -112,7 +110,7 @@ export function looksLikeLifeOpsRequest(
  * stay shell; "check disk usage on this vps" or "add a todo" route to a
  * reasoning agent.
  */
-export function looksLikeProseTask(text: string | undefined | null): boolean {
+function looksLikeProseTask(text: string | undefined | null): boolean {
   if (!text) return false;
   const trimmed = text.trim();
   if (trimmed.length === 0) return false;
@@ -123,6 +121,31 @@ export function looksLikeProseTask(text: string | undefined | null): boolean {
   }
   if (/[.!?]/.test(trimmed)) return true;
   return false;
+}
+
+/**
+ * Reject a shell/pi/bash agentType hint when the task text is prose, so both
+ * CREATE_TASK and SPAWN_AGENT upgrade to a reasoning framework via
+ * `resolveAgentType`. Returns the sanitized hint (original value or `undefined`
+ * if it was rejected). `callerTag` is the [PREFIX] string used when warning
+ * so the log line points at the actual callsite.
+ */
+export function coerceShellAgentTypeForProse(
+  explicitRawType: string | undefined,
+  taskText: string | undefined | null,
+  callerTag: string,
+): string | undefined {
+  if (
+    explicitRawType &&
+    /^(shell|pi|bash)$/i.test(explicitRawType.trim()) &&
+    looksLikeProseTask(taskText)
+  ) {
+    logger.warn(
+      `${callerTag} ignoring agentType="${explicitRawType}": task text is prose, upgrading to default reasoning framework`,
+    );
+    return undefined;
+  }
+  return explicitRawType;
 }
 
 type BackgroundAction = Action & {
@@ -151,7 +174,7 @@ export const startCodingTaskAction: BackgroundAction = {
     "IMPORTANT: If the user references a repository from conversation history (e.g. 'in the same repo', " +
     "'on that project', 'add a feature to it'), you MUST include the repo URL in the `repo` parameter. " +
     "If the task involves code changes to a real project but you don't know the repo URL, ASK the user for it " +
-    "before calling this action — do not default to a scratch directory for real project work.",
+    "before calling this action. Do not default to a scratch directory for real project work.",
   descriptionCompressed:
     "Spawn async task agents for multi-step jobs: code, debug, research, write, analyze. Auto-provisions workspace from repo URL.",
 
@@ -256,27 +279,18 @@ export const startCodingTaskAction: BackgroundAction = {
     const params = options?.parameters;
     const content = message.content as Record<string, unknown>;
 
-    let explicitRawType: string | undefined =
-      (params?.agentType as string | undefined) ??
-      (content.agentType as string | undefined);
     // Shell/pi/bash agents pipe initialTask straight to /bin/bash. When the
     // LLM picks them for a prose prompt the subagent dies on turn 1 with
     // "command not found" spam. Reject the hint and let resolveAgentType
-    // pick a reasoning framework instead.
-    if (
-      explicitRawType &&
-      /^(shell|pi|bash)$/i.test(explicitRawType.trim()) &&
-      looksLikeProseTask(
-        (params?.task as string) ??
-          (content.task as string) ??
-          (content.text as string),
-      )
-    ) {
-      logger.warn(
-        `[CREATE_TASK] ignoring agentType="${explicitRawType}" — task text is prose, upgrading to default reasoning framework`,
-      );
-      explicitRawType = undefined;
-    }
+    // pick a reasoning framework instead. (Shared with SPAWN_AGENT.)
+    const explicitRawType = coerceShellAgentTypeForProse(
+      (params?.agentType as string | undefined) ??
+        (content.agentType as string | undefined),
+      (params?.task as string) ??
+        (content.task as string) ??
+        (content.text as string),
+      "[CREATE_TASK]",
+    );
     const memoryContent =
       (params?.memoryContent as string) ?? (content.memoryContent as string);
     const approvalPreset =
@@ -414,7 +428,7 @@ export const startCodingTaskAction: BackgroundAction = {
 
     // Single-agent mode: build a single-element agents string so we can
     // reuse handleMultiAgent (which handles length-1 specs fine).
-    // Fall back to the user's message text when params extraction fails —
+    // Fall back to the user's message text when params extraction fails:
     // the user's request IS the task (e.g. "build me a todo app").
     const task = (params?.task as string) ?? (content.task as string);
     const userText = (content.text as string)?.trim() || "";
@@ -438,7 +452,7 @@ export const startCodingTaskAction: BackgroundAction = {
       description:
         "Specific reasoning task-agent framework to use. Options: claude, codex, gemini, aider. " +
         "If omitted, the orchestrator picks the current preferred framework automatically. " +
-        "Do NOT select 'shell' or 'pi' here — those are non-reasoning raw bash sessions " +
+        "Do NOT select 'shell' or 'pi' here: those are non-reasoning raw bash sessions " +
         "that cannot interpret natural-language tasks; leave this unset and the orchestrator " +
         "routes to the preferred reasoning framework.",
       required: false,

@@ -1,5 +1,5 @@
 /**
- * Swarm Coordinator — Decision Loop & Blocked/Turn-Complete Handlers
+ * Swarm Coordinator: decision loop and blocked/turn-complete handlers.
  *
  * Extracted from swarm-coordinator.ts for modularity.
  * All functions are pure async helpers that receive a SwarmCoordinatorContext
@@ -466,7 +466,7 @@ async function checkAllTasksCompleteAsync(
 
   if (!allDone) {
     const statuses = tasks.map((t) => `${t.label}=${t.status}`).join(", ");
-    ctx.log(`checkAllTasksComplete: not all done yet — ${statuses}`);
+    ctx.log(`checkAllTasksComplete: not all done yet: ${statuses}`);
     return;
   }
 
@@ -506,7 +506,7 @@ async function checkAllTasksCompleteAsync(
         .map((node) => `${node.title}=${node.status}`)
         .join(", ");
       ctx.log(
-        `checkAllTasksComplete: thread ${threadId} still has non-terminal goal nodes — ${pendingGoals}`,
+        `checkAllTasksComplete: thread ${threadId} still has non-terminal goal nodes: ${pendingGoals}`,
       );
       return;
     }
@@ -557,7 +557,7 @@ async function checkAllTasksCompleteAsync(
       )
       .join("; ");
     ctx.log(
-      `checkAllTasksComplete: sessions are terminal but acceptance failed — ${summary}`,
+      `checkAllTasksComplete: sessions are terminal but acceptance failed: ${summary}`,
     );
     ctx.broadcast({
       type: "swarm_attention_required",
@@ -568,18 +568,17 @@ async function checkAllTasksCompleteAsync(
         threads: failingThreads,
       },
     });
-    // If any subagent produced a Shared decision the real work landed —
-    // a failing verifier or a task that got swept to "stopped" by the
-    // idle watchdog after its PTY session exited shouldn't swallow the
-    // final chat reply. The broadcast above is enough for operators to
-    // see the validator disagreement in the web UI; fall through to
-    // normal synthesis so the user still gets the agent's actual text
-    // (buildTaskLine will read the jsonl end_turn regardless of the
-    // coordinator's validator verdict).
+    // If any subagent produced a Shared decision the real work landed.
+    // A failing verifier or a task swept to "stopped" by the idle watchdog
+    // after PTY session exit must not swallow the final chat reply. The
+    // broadcast above is enough for operators to see the validator
+    // disagreement in the web UI; fall through to normal synthesis so the
+    // user still gets the agent's actual text (buildTaskLine reads the
+    // jsonl end_turn regardless of the coordinator's validator verdict).
     //
-    // Only short-circuit when no subagent reached a meaningful end —
-    // that's the genuine unrecoverable-failure case where synthesis
-    // has nothing meaningful to say beyond the coordinator's signal.
+    // Only short-circuit when no subagent reached a meaningful end: the
+    // genuine unrecoverable-failure case where synthesis has nothing
+    // meaningful to say beyond the coordinator's signal.
     const labelsWithDecisions = new Set(
       ctx.sharedDecisions.map((decision) => decision.agentLabel),
     );
@@ -596,7 +595,7 @@ async function checkAllTasksCompleteAsync(
 
   // Guard: only fire once per swarm (reset by coordinator on stop/new swarm)
   if (ctx.swarmCompleteNotified) {
-    ctx.log("checkAllTasksComplete: already notified — skipping");
+    ctx.log("checkAllTasksComplete: already notified, skipping");
     return;
   }
   ctx.swarmCompleteNotified = true;
@@ -617,7 +616,7 @@ async function checkAllTasksCompleteAsync(
   }
 
   ctx.log(
-    `checkAllTasksComplete: all ${tasks.length} tasks terminal (${parts.join(", ")}) — firing swarm_complete`,
+    `checkAllTasksComplete: all ${tasks.length} tasks terminal (${parts.join(", ")}): firing swarm_complete`,
   );
 
   ctx.broadcast({
@@ -632,17 +631,16 @@ async function checkAllTasksCompleteAsync(
     },
   });
 
-  // Fire swarm complete callback for synthesis — if wired, the host
+  // Fire swarm complete callback for synthesis. If wired, the host
   // (milaidy) will use this to generate a synthesized overview.
   const swarmCompleteCb = ctx.getSwarmCompleteCallback();
   // When no callback is wired (first-coordinator race during plugin init)
-  // or the callback throws, post the subagent's actual output if we have it
-  // instead of a generic "all done" status. The SharedDecision ledger is the
-  // coordinator's own record of per-turn assessor findings — the best
-  // proxy for "what did the subagent actually produce" without going
-  // through the full synthesis LLM. Falling back to the generic string
-  // here caused nubs's "still checking, hold" UX because real output
-  // never reached the user.
+  // or the callback throws, post the subagent's actual output if we have
+  // it instead of a generic "all done" status. The SharedDecision ledger
+  // is the coordinator's own record of per-turn assessor findings: the
+  // best proxy for "what did the subagent actually produce" without going
+  // through the full synthesis LLM. Falling back to a generic status
+  // string drops real subagent output from chat.
   const sendFallbackSummary = () => {
     const taskLines = tasks.map((t) => {
       const decisions = ctx.sharedDecisions
@@ -655,13 +653,13 @@ async function checkAllTasksCompleteAsync(
     const text =
       tasks.length === 1
         ? taskLines[0]
-        : `done — ${tasks.length} tasks:\n${taskLines.join("\n")}`;
+        : `done: ${tasks.length} tasks:\n${taskLines.join("\n")}`;
     ctx.sendChatMessage(text, "task-agent");
   };
 
   if (swarmCompleteCb) {
     ctx.log(
-      "checkAllTasksComplete: swarm complete callback is wired — calling synthesis",
+      "checkAllTasksComplete: swarm complete callback is wired, calling synthesis",
     );
     // Pull thread roomIds up-front so synthesis knows where to deliver
     // (TaskContext itself doesn't carry roomId; the taskThread does).
@@ -711,13 +709,13 @@ async function checkAllTasksCompleteAsync(
       "swarmCompleteCb",
     ).catch((err) => {
       ctx.log(
-        `Swarm complete callback failed: ${err} — falling back to generic summary`,
+        `Swarm complete callback failed: ${err}; falling back to generic summary`,
       );
       sendFallbackSummary();
     });
   } else {
     ctx.log(
-      "checkAllTasksComplete: no synthesis callback — sending generic message",
+      "checkAllTasksComplete: no synthesis callback, sending generic message",
     );
     sendFallbackSummary();
   }
@@ -780,7 +778,7 @@ export async function makeCoordinationDecision(
 }
 
 /**
- * Execute a coordination decision — send response, complete session, escalate, or ignore.
+ * Execute a coordination decision: send response, complete session, escalate, or ignore.
  */
 export async function executeDecision(
   ctx: SwarmCoordinatorContext,
@@ -805,7 +803,7 @@ export async function executeDecision(
           decision.response,
         );
         await ctx.ptyService.sendToSession(sessionId, enriched);
-        // Only advance the high-water mark after send succeeds — if the send
+        // Only advance the high-water mark after send succeeds: if the send
         // fails, the decisions will be retried on the next enrichment.
         if (snapshotIndex !== undefined) {
           commitSharedDecisionIndex(ctx, sessionId, snapshotIndex);
@@ -880,9 +878,7 @@ export async function executeDecision(
       // subagent's own response IS the deliverable and there is no
       // workspace evidence to grade; running the verifier there produces
       // false "acceptance failed" signals that block synthesis from
-      // delivering the actual answer. Ported from nubs's prior standalone
-      // orchestrator commit fac4c62 that got lost in the submodule
-      // consolidation.
+      // delivering the actual answer.
       const verifierJob =
         taskCtx.taskNodeId && taskCtx.repo
           ? await ctx.taskRegistry.createTaskVerifierJob({
@@ -1131,20 +1127,20 @@ export async function executeDecision(
 
       // Per-task completion message is runtime-internal. The validator's
       // `completionSummary` is an analysis paragraph ("The agent wrote the
-      // files, verified ..., reported the URL") — NOT the subagent's
+      // files, verified ..., reported the URL"): NOT the subagent's
       // actual last message, so pasting it to chat hides the real URL /
       // result. The synthesis callback (handleSwarmSynthesis) reads the
       // subagent's jsonl end_turn text and delivers the actual answer;
       // this chat write would just land first with a stale narrative.
 
-      // Force-kill the session — task is done, nothing to save.
+      // Force-kill the session: task is done, nothing to save.
       // SIGKILL ensures the PTY and all child processes exit immediately,
       // preventing orphaned workspace processes.
       ctx.ptyService.stopSession(sessionId, /* force */ true).catch((err) => {
         ctx.log(`Failed to stop session after LLM-detected completion: ${err}`);
       });
 
-      // Check if all tasks are now done — send a swarm-wide summary if so
+      // Check if all tasks are now done, send a swarm-wide summary if so
       checkAllTasksComplete(ctx);
       break;
     }
@@ -1169,7 +1165,7 @@ export async function executeDecision(
 // ─── Event Handlers ───
 
 /**
- * Handle a "blocked" session event — auto-resolved, escalated, or routed to decision loop.
+ * Handle a "blocked" session event: auto-resolved, escalated, or routed to decision loop.
  */
 export async function handleBlocked(
   ctx: SwarmCoordinatorContext,
@@ -1245,7 +1241,7 @@ export async function handleBlocked(
     return;
   }
 
-  // Auto-responded by rules — log and broadcast, no LLM needed
+  // Auto-responded by rules: log and broadcast, no LLM needed
   if (eventData.autoResponded) {
     // Safety: check if the auto-approved prompt accessed out-of-scope paths.
     // The approval already happened in pty-manager, but we can stop the session
@@ -1306,7 +1302,7 @@ export async function handleBlocked(
       },
     });
 
-    // Log auto-approvals server-side only — don't persist to chat.
+    // Log auto-approvals server-side only, don't persist to chat.
     const count = taskCtx.autoResolvedCount;
     if (count <= 2 || count % 5 === 0) {
       const excerpt =
@@ -1315,6 +1311,22 @@ export async function handleBlocked(
     }
     return;
   }
+
+  // Known-safe prompts the fast-path can handle without an LLM hop even when
+  // the worker doesn't forward canAutoRespond (the pty-manager strips it from
+  // promptInfo when `skipAdapterAutoResponse` is set). Bypass Permissions is
+  // the motivating case: without this the dialog falls through to LLM
+  // supervision and defaults to Enter ("No, exit"), killing claude before work
+  // starts. Used both to pick the "2" suggested-response override below and
+  // to admit the prompt into the autonomous fast-path below the
+  // inferredPromptResponse check.
+  //
+  // Covers failure mode: layer-1 (seedClaudeTrustForWorkdir) failed AND the
+  // session is coordinator-managed in subscription mode (adapter auto-
+  // response is skipped, so the layer-2 session rule never fires).
+  const knownRoutinePermissionPrompt =
+    eventData.promptInfo?.type === "permission" &&
+    /bypass\s+permissions/i.test(promptText);
 
   const adapterSuggestedResponse =
     typeof eventData.promptInfo?.suggestedResponse === "string" &&
@@ -1325,8 +1337,7 @@ export async function handleBlocked(
         // (Yes, I accept). The raw permission-fallback below presses Enter,
         // which resolves to option 1 and kills claude with exit code 1 before
         // any work starts. Detect the prompt by text and send "2" directly.
-        eventData.promptInfo?.type === "permission" &&
-          /bypass\s+permissions/i.test(promptText)
+        knownRoutinePermissionPrompt
         ? "2"
         : eventData.promptInfo?.canAutoRespond &&
             eventData.promptInfo?.type === "permission"
@@ -1338,16 +1349,6 @@ export async function handleBlocked(
   );
   const routineSuggestedResponse =
     adapterSuggestedResponse ?? inferredPromptResponse?.suggestedResponse;
-
-  // Known-safe prompts the fast-path can handle without an LLM hop even when
-  // the worker doesn't forward canAutoRespond (the pty-manager strips it from
-  // promptInfo when `skipAdapterAutoResponse` is set). Bypass Permissions is
-  // the motivating case: without this the dialog falls through to LLM
-  // supervision and defaults to Enter ("No, exit"), killing claude before work
-  // starts.
-  const knownRoutinePermissionPrompt =
-    eventData.promptInfo?.type === "permission" &&
-    /bypass\s+permissions/i.test(promptText);
 
   if (
     ctx.getSupervisionLevel() === "autonomous" &&
@@ -1400,9 +1401,9 @@ export async function handleBlocked(
       );
       return;
     }
-    // Different prompt — buffer it so it's replayed after the current decision completes.
+    // Different prompt: buffer it so it's replayed after the current decision completes.
     ctx.log(
-      `New blocked prompt for ${taskCtx.label} while decision in-flight — buffering`,
+      `New blocked prompt for ${taskCtx.label} while decision in-flight: buffering`,
     );
     ctx.pendingBlocked.set(sessionId, data);
     ctx.lastBlockedPromptFingerprint.set(sessionId, promptFingerprint);
@@ -1474,13 +1475,13 @@ export async function handleBlocked(
       break;
 
     case "notify":
-      // Notify mode — broadcast only, no action
+      // Notify mode: broadcast only, no action
       await ctx.recordDecision(taskCtx, {
         timestamp: Date.now(),
         event: "blocked",
         promptText,
         decision: "escalate",
-        reasoning: "Supervision level is notify — broadcasting only",
+        reasoning: "Supervision level is notify, broadcasting only",
       });
       ctx.sendChatMessage(
         `[${taskCtx.label}] Waiting on a blocked prompt: ${truncateForUser(promptText, 180)}`,
@@ -1502,7 +1503,7 @@ export async function handleTurnComplete(
   taskCtx: TaskContext,
   data: unknown,
 ): Promise<void> {
-  // Accept both "active" and "tool_running" — subagents using tools sit in
+  // Accept both "active" and "tool_running": subagents using tools sit in
   // tool_running almost continuously, and we still want to run validation
   // when they hit task_complete. Only bail on truly terminal/blocked states.
   if (taskCtx.status !== "active" && taskCtx.status !== "tool_running") {
@@ -1557,7 +1558,7 @@ export async function handleTurnComplete(
         deferredTurnCompleteTimers.set(sessionId, timer);
       }
       ctx.log(
-        `Suppressing turn-complete for "${taskCtx.label}" — ` +
+        `Suppressing turn-complete for "${taskCtx.label}": ` +
           `${Math.round(elapsed / 1000)}s since last input (cooldown ${POST_SEND_COOLDOWN_MS / 1000}s)`,
       );
       return;
@@ -1574,10 +1575,10 @@ export async function handleTurnComplete(
   ctx.inFlightDecisions.add(sessionId);
   try {
     ctx.log(
-      `Turn complete for "${taskCtx.label}" — assessing whether task is done`,
+      `Turn complete for "${taskCtx.label}": assessing whether task is done`,
     );
 
-    // Get the turn output — prefer the captured response, fall back to PTY output
+    // Get the turn output: prefer the captured response, fall back to PTY output
     const rawResponse = (data as { response?: string }).response ?? "";
     let turnOutput = cleanForChat(rawResponse);
     if (!turnOutput) {
@@ -1586,10 +1587,10 @@ export async function handleTurnComplete(
     }
 
     // Fast-path: if the turn output contains a PR URL or "Created pull request",
-    // the task is done — skip the LLM assessment entirely. The LLM (especially
+    // the task is done: skip the LLM assessment entirely. The LLM (especially
     // Gemini Flash) tends to ignore "do not verify" instructions and sends
     // unnecessary verification follow-ups, adding 2-5 extra rounds per agent.
-    // Only match explicit PR creation signals — not references to existing PRs.
+    // Only match explicit PR creation signals, not references to existing PRs.
     const PR_CREATED_RE =
       /(?:Created|Opened)\s+pull\s+request\s+#?\d+|gh\s+pr\s+create/i;
     // `gh pr create` in the output matches even when the command actually
@@ -1603,7 +1604,7 @@ export async function handleTurnComplete(
       // Set `keyDecision` so recordKeyDecision pushes this into
       // ctx.sharedDecisions. That ledger is what
       // checkAllTasksComplete uses to decide whether to fall through
-      // to synthesis when a task's validator verifier fails — without
+      // to synthesis when a task's validator verifier fails. Without
       // this, a fast-path-completed task whose validator happens to
       // fail gets its real output (the PR URL) swallowed because the
       // fallthrough predicate sees neither status=completed (idle
@@ -1707,7 +1708,7 @@ export async function handleTurnComplete(
         decision.action === "respond"
           ? ` → "${(decision.response ?? "").slice(0, 80)}"`
           : ""
-      } — ${decision.reasoning.slice(0, 120)}`,
+      }: ${decision.reasoning.slice(0, 120)}`,
     );
 
     // Record
@@ -1754,7 +1755,7 @@ export async function handleTurnComplete(
         // Mid-task continuation is coordinator-internal; the synthesis
         // callback delivers the final answer once the thread completes.
       }
-      // "escalate" no longer posts its own chat message here — the swarm
+      // "escalate" no longer posts its own chat message here. The swarm
       // synthesis callback delivers the same reasoning in its final wrap-up
       // once the task reaches terminal state, so announcing it twice (once
       // as "[label] needs your attention: ..." and again inside the
@@ -1774,7 +1775,7 @@ export async function handleTurnComplete(
 // ─── Autonomous / Confirm Decision Flows ───
 
 /**
- * Handle an autonomous decision for a blocked session — call the LLM and execute immediately.
+ * Handle an autonomous decision for a blocked session: call the LLM and execute immediately.
  */
 export async function handleAutonomousDecision(
   ctx: SwarmCoordinatorContext,
@@ -1823,7 +1824,7 @@ export async function handleAutonomousDecision(
         output,
       );
     } else {
-      // Creative — try Milaidy pipeline, fall back to small LLM
+      // Creative: try Milaidy pipeline, fall back to small LLM
       if (agentDecisionCb) {
         const eventMessage = buildBlockedEventMessage(
           toContextSummary(taskCtx),
@@ -1843,7 +1844,7 @@ export async function handleAutonomousDecision(
           if (decision) decisionFromPipeline = true;
         } catch (err) {
           ctx.log(
-            `Agent decision callback failed: ${err} — falling back to small LLM`,
+            `Agent decision callback failed: ${err}; falling back to small LLM`,
           );
         }
       }
@@ -1859,7 +1860,7 @@ export async function handleAutonomousDecision(
     }
 
     if (!decision) {
-      // All decision paths returned invalid response — escalate
+      // All decision paths returned invalid response, escalate
       await ctx.recordDecision(taskCtx, {
         timestamp: Date.now(),
         event: "blocked",
@@ -1892,7 +1893,7 @@ export async function handleAutonomousDecision(
     ) {
       decision = {
         action: "respond",
-        response: `No — that path is outside your workspace. Use ${taskCtx.workdir} instead. Create any files or directories you need there.`,
+        response: `No, that path is outside your workspace. Use ${taskCtx.workdir} instead. Create any files or directories you need there.`,
         reasoning: `Declined out-of-scope access (outside ${taskCtx.workdir}) and redirected agent to workspace.`,
       };
       // Surface to human so they can grant broader access if intended
@@ -1943,7 +1944,7 @@ export async function handleAutonomousDecision(
           decision.reasoning.length > 150
             ? `${decision.reasoning.slice(0, 150)}...`
             : decision.reasoning;
-        ctx.log(`[${taskCtx.label}] ${actionDesc} — ${reasonExcerpt}`);
+        ctx.log(`[${taskCtx.label}] ${actionDesc}: ${reasonExcerpt}`);
       } else if (decision.action === "escalate") {
         ctx.sendChatMessage(
           `[${taskCtx.label}] Needs your attention: ${decision.reasoning}`,
@@ -1962,7 +1963,7 @@ export async function handleAutonomousDecision(
 }
 
 /**
- * Handle a confirm-mode decision — call LLM, then queue for human approval.
+ * Handle a confirm-mode decision: call LLM, then queue for human approval.
  */
 export async function handleConfirmDecision(
   ctx: SwarmCoordinatorContext,
@@ -2006,7 +2007,7 @@ export async function handleConfirmDecision(
         output,
       );
     } else {
-      // Creative — try Milaidy pipeline, fall back to small LLM
+      // Creative: try Milaidy pipeline, fall back to small LLM
       if (agentDecisionCb) {
         const eventMessage = buildBlockedEventMessage(
           toContextSummary(taskCtx),
@@ -2026,7 +2027,7 @@ export async function handleConfirmDecision(
           if (decision) decisionFromPipeline = true;
         } catch (err) {
           ctx.log(
-            `Agent decision callback failed (confirm): ${err} — falling back to small LLM`,
+            `Agent decision callback failed (confirm): ${err}; falling back to small LLM`,
           );
         }
       }
@@ -2052,7 +2053,7 @@ export async function handleConfirmDecision(
         llmDecision: {
           action: "escalate",
           reasoning:
-            "All decision paths returned invalid response — needs human review",
+            "All decision paths returned invalid response, needs human review",
         },
         taskContext: taskCtx,
         createdAt: Date.now(),
