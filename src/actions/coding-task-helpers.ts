@@ -157,11 +157,14 @@ export function registerSessionEvents(
 
     // When coordinator is active it handles chat + lifecycle for these events
     if (!coordinatorActive) {
-      if (event === "blocked" && callback) {
-        callback({
-          text: `Agent "${label}" is waiting for input: ${(data as { prompt?: string }).prompt ?? "unknown prompt"}`,
-        });
-      }
+      // Intentionally no chat message on `blocked`. The SwarmCoordinator runs
+      // in parallel regardless of the direct-callback wiring — its decision
+      // loop auto-accepts routine prompts (Bypass Permissions, trust dialogs,
+      // tool permissions) within ~1s. Announcing "Agent X is waiting for
+      // input: unknown prompt" to Discord every time a dialog appears
+      // produces noisy status chatter for prompts the coordinator has
+      // already resolved. If the coordinator escalates (rare), its own
+      // sendChatMessage path still posts an actionable message.
       if (event === "task_complete") {
         if (callback) {
           const response = (data as { response?: string }).response ?? "";

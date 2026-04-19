@@ -40,6 +40,7 @@ import { requireTaskAgentAccess } from "../services/task-policy.js";
 import type { CodingWorkspaceService } from "../services/workspace-service.js";
 import { mergeTaskThreadEvalMetadata } from "./eval-metadata.js";
 import { createScratchDir } from "./coding-task-helpers.js";
+import { looksLikeProseTask } from "./start-coding-task.js";
 
 /**
  * Once-per-process warn when CODING_AGENT_SANDBOX=off is in effect, so
@@ -201,9 +202,22 @@ export const spawnAgentAction: Action = {
     const params = options?.parameters;
     const content = message.content as Record<string, unknown>;
 
-    const explicitRawType =
-      (params?.agentType as string) ?? (content.agentType as string);
+    let explicitRawType: string | undefined =
+      (params?.agentType as string | undefined) ??
+      (content.agentType as string | undefined);
     const task = (params?.task as string) ?? (content.task as string);
+    // Same guard as CREATE_TASK: ignore an LLM-supplied shell/pi/bash hint
+    // when the task text is prose. See looksLikeProseTask in start-coding-task.
+    if (
+      explicitRawType &&
+      /^(shell|pi|bash)$/i.test(explicitRawType.trim()) &&
+      looksLikeProseTask(task)
+    ) {
+      logger.warn(
+        `[SPAWN_AGENT] ignoring agentType="${explicitRawType}" — task text is prose, upgrading to default reasoning framework`,
+      );
+      explicitRawType = undefined;
+    }
     const rawAgentType =
       explicitRawType ??
       (await ptyService.resolveAgentType({

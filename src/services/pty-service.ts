@@ -1,6 +1,7 @@
 /** @module services/pty-service */
 
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { type IAgentRuntime, logger, type Service } from "@elizaos/core";
 import {
@@ -141,6 +142,46 @@ export type {
 } from "./pty-types.js";
 // Re-export for backward compatibility
 export { normalizeAgentType } from "./pty-types.js";
+
+/**
+ * Pre-accept Claude Code's one-time trust dialog for a workdir by writing
+ * `hasTrustDialogAccepted: true` into `~/.claude.json`'s `projects` map.
+ *
+ * Why: Claude Code shows a Bypass Permissions / Trust dialog the first time
+ * it runs in any unrecognised directory. On a fresh scratch workdir that
+ * dialog is blocking — the auto-response path ends up pressing Enter, which
+ * defaults to "No, exit" and kills the subagent with exit code 1 before any
+ * work happens. Seeding the trust entry upfront skips the dialog entirely.
+ *
+ * Idempotent and best-effort: returns without throwing if the config file
+ * does not yet exist, is unreadable, or is not valid JSON. In those cases
+ * claude will show the dialog the normal way, which is no worse than before.
+ */
+async function seedClaudeTrustForWorkdir(workdir: string): Promise<void> {
+  const configPath = join(homedir(), ".claude.json");
+  let raw: string;
+  try {
+    raw = await readFile(configPath, "utf8");
+  } catch {
+    return;
+  }
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return;
+  }
+  const projects =
+    (parsed.projects as Record<string, Record<string, unknown>> | undefined) ??
+    {};
+  const existing = projects[workdir];
+  if (existing && existing.hasTrustDialogAccepted === true) {
+    return;
+  }
+  projects[workdir] = { ...(existing ?? {}), hasTrustDialogAccepted: true };
+  parsed.projects = projects;
+  await writeFile(configPath, JSON.stringify(parsed, null, 2), "utf8");
+}
 
 /**
  * Retrieve the SwarmCoordinator from the PTYService registered on the runtime.
@@ -440,6 +481,19 @@ export class PTYService {
 
     // Store workdir for later retrieval
     this.sessionWorkdirs.set(sessionId, workdir);
+
+    // Pre-seed trust-dialog acceptance for claude workdirs. Claude Code shows
+    // a one-time "Bypass Permissions" confirmation in every workdir whose
+    // trust dialog hasn't been accepted. The dialog defaults "No, exit" on
+    // Enter and kills the subagent before any work runs. Writing
+    // `hasTrustDialogAccepted: true` into ~/.claude.json's `projects` map
+    // skips both that dialog and the per-workdir trust prompt. No-op for
+    // other agent types.
+    if (resolvedAgentType === "claude" && workdir) {
+      await seedClaudeTrustForWorkdir(workdir).catch((err) =>
+        this.log(`Failed to pre-seed claude trust for ${workdir}: ${err}`),
+      );
+    }
 
     // Write memory content before spawning so the agent reads it on startup.
     // Always prepend the workspace lock so the spawned agent stays inside its

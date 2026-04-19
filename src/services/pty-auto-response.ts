@@ -1,5 +1,5 @@
 /**
- * Auto-response rule management for PTY sessions.
+ * Auto-response rule management for PTY sessions (bypass-fix).
  *
  * Contains logic for pushing default auto-response rules per agent type
  * and handling Gemini authentication flow.
@@ -82,6 +82,27 @@ export async function pushDefaultRules(
         once: true,
       });
     }
+
+    // Bypass Permissions warning — fresh workdirs trigger a one-time
+    // "Yes, I accept / No, exit" confirmation. Must be handled explicitly
+    // because pty-manager's TUI-aware default for permission-type rules
+    // without keys is to press Enter, which on this dialog resolves to
+    // option 1 "No, exit" and terminates claude with exit code 1 before
+    // any work runs. The correct acceptance is option "2". Encode the
+    // response as explicit keys so the worker bypasses the Enter default
+    // and types "2" followed by Enter. No `once` — TUI may redraw the
+    // dialog before the selection is committed.
+    rules.push({
+      pattern:
+        /WARNING.{0,200}Bypass Permissions mode|Bypass Permissions mode.{0,200}accept all responsibility/is,
+      type: "permission",
+      response: "",
+      responseType: "keys" as const,
+      keys: ["2", "enter"],
+      description:
+        "Accept Claude Bypass Permissions dialog (option 2 — 'Yes, I accept')",
+      safe: true,
+    });
   }
 
   // Gemini — auth flow (update notices are informational, don't need a response)

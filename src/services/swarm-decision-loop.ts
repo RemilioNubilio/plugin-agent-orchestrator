@@ -635,11 +635,28 @@ async function checkAllTasksCompleteAsync(
   // Fire swarm complete callback for synthesis — if wired, the host
   // (milaidy) will use this to generate a synthesized overview.
   const swarmCompleteCb = ctx.getSwarmCompleteCallback();
+  // When no callback is wired (first-coordinator race during plugin init)
+  // or the callback throws, post the subagent's actual output if we have it
+  // instead of a generic "all done" status. The SharedDecision ledger is the
+  // coordinator's own record of per-turn assessor findings — the best
+  // proxy for "what did the subagent actually produce" without going
+  // through the full synthesis LLM. Falling back to the generic string
+  // here caused nubs's "still checking, hold" UX because real output
+  // never reached the user.
   const sendFallbackSummary = () => {
-    ctx.sendChatMessage(
-      `All ${tasks.length} task agents finished (${parts.join(", ")}). Review their work when you're ready.`,
-      "task-agent",
-    );
+    const taskLines = tasks.map((t) => {
+      const decisions = ctx.sharedDecisions
+        .filter((sd) => sd.agentLabel === t.label)
+        .map((sd) => sd.summary)
+        .join("; ");
+      const body = decisions || t.completionSummary || "no output captured";
+      return tasks.length === 1 ? body : `• ${t.label}: ${body}`;
+    });
+    const text =
+      tasks.length === 1
+        ? taskLines[0]
+        : `done — ${tasks.length} tasks:\n${taskLines.join("\n")}`;
+    ctx.sendChatMessage(text, "task-agent");
   };
 
   if (swarmCompleteCb) {
@@ -1303,10 +1320,18 @@ export async function handleBlocked(
     typeof eventData.promptInfo?.suggestedResponse === "string" &&
     eventData.promptInfo.suggestedResponse.trim().length > 0
       ? eventData.promptInfo.suggestedResponse.trim()
-      : eventData.promptInfo?.canAutoRespond &&
-          eventData.promptInfo?.type === "permission"
-        ? "keys:enter"
-        : undefined;
+      : // The Claude Bypass Permissions dialog ("WARNING: ... Bypass Permissions
+        // mode accept all responsibility") exposes options 1 (No, exit) and 2
+        // (Yes, I accept). The raw permission-fallback below presses Enter,
+        // which resolves to option 1 and kills claude with exit code 1 before
+        // any work starts. Detect the prompt by text and send "2" directly.
+        eventData.promptInfo?.type === "permission" &&
+          /bypass\s+permissions/i.test(promptText)
+        ? "2"
+        : eventData.promptInfo?.canAutoRespond &&
+            eventData.promptInfo?.type === "permission"
+          ? "keys:enter"
+          : undefined;
   const inferredPromptResponse = inferRoutinePromptResponse(
     promptText,
     eventData.promptInfo?.type,
@@ -1314,9 +1339,21 @@ export async function handleBlocked(
   const routineSuggestedResponse =
     adapterSuggestedResponse ?? inferredPromptResponse?.suggestedResponse;
 
+  // Known-safe prompts the fast-path can handle without an LLM hop even when
+  // the worker doesn't forward canAutoRespond (the pty-manager strips it from
+  // promptInfo when `skipAdapterAutoResponse` is set). Bypass Permissions is
+  // the motivating case: without this the dialog falls through to LLM
+  // supervision and defaults to Enter ("No, exit"), killing claude before work
+  // starts.
+  const knownRoutinePermissionPrompt =
+    eventData.promptInfo?.type === "permission" &&
+    /bypass\s+permissions/i.test(promptText);
+
   if (
     ctx.getSupervisionLevel() === "autonomous" &&
-    (eventData.promptInfo?.canAutoRespond || inferredPromptResponse) &&
+    (eventData.promptInfo?.canAutoRespond ||
+      inferredPromptResponse ||
+      knownRoutinePermissionPrompt) &&
     routineSuggestedResponse
   ) {
     const fastDecision = decisionFromSuggestedResponse(
@@ -1716,12 +1753,13 @@ export async function handleTurnComplete(
         ctx.log(`[${taskCtx.label}] Turn done, continuing: ${preview}`);
         // Mid-task continuation is coordinator-internal; the synthesis
         // callback delivers the final answer once the thread completes.
-      } else if (decision.action === "escalate") {
-        ctx.sendChatMessage(
-          `[${taskCtx.label}] needs your attention: ${decision.reasoning}`,
-          "coding-agent",
-        );
       }
+      // "escalate" no longer posts its own chat message here — the swarm
+      // synthesis callback delivers the same reasoning in its final wrap-up
+      // once the task reaches terminal state, so announcing it twice (once
+      // as "[label] needs your attention: ..." and again inside the
+      // synthesis output) produces duplicated, noisy messages. Let the
+      // synthesis path own the user-facing notification.
     }
     // "complete" chat message is handled by executeDecision
 

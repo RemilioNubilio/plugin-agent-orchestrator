@@ -1,5 +1,5 @@
 /**
- * CREATE_TASK action - Unified action to set up and launch task agents.
+ * CREATE_TASK action - Unified (patch applied) action to set up and launch task agents.
  *
  * Combines workspace provisioning and agent spawning into a single atomic action.
  * - If a repo URL is provided, clones it into a fresh workspace
@@ -65,6 +65,64 @@ function getMessageText(message: Memory): string {
   }
 
   return typeof message.content?.text === "string" ? message.content.text : "";
+}
+
+/**
+ * Detect prompts that belong to LifeOps (LIFE action), not the coding
+ * orchestrator. Mirror of `looksLikeCodingTaskRequest` in app-lifeops, so
+ * CREATE_TASK can decline when LIFE should win.
+ *
+ * Why: LIFE and CREATE_TASK share a lot of verb surface ("add a task ...",
+ * "create a reminder ..."). The action-selector LLM can pick CREATE_TASK when
+ * a coding keyword appears anywhere in the prompt (e.g. "add a todo to fix
+ * that PR"), spawning a subagent for something LIFE should handle as a simple
+ * todo insert.
+ *
+ * Pattern: imperative LIFE verb at the start followed by a LIFE noun within
+ * the first few words. Keeps false positives rare — "build a todo app" has
+ * verb=build (not in list) so it still routes to CREATE_TASK as intended.
+ */
+export function looksLikeLifeOpsRequest(
+  text: string | undefined | null,
+): boolean {
+  if (!text) return false;
+  const normalized = text.toLowerCase().replace(/\s+/g, " ").trim();
+  if (normalized.length === 0) return false;
+  return /^(?:@\S+\s+)?(?:add|set|schedule|remind|track|log)\b[^.!?]{0,40}\b(todo|habit|reminder|goal|routine|alarm|chore|tasks?\s+for\s+(?:today|tomorrow|this\s+week))\b/i.test(
+    normalized,
+  );
+}
+
+/**
+ * Detect natural-language prose vs. a bare shell command.
+ *
+ * Why: the action-planner LLM occasionally fills agentType with "shell"/"pi"
+ * for short prompts even though the task text is full natural language. Piping
+ * prose into /bin/bash produces "command not found" spam; the subagent then
+ * fails its first turn and the SwarmCoordinator assessor is left trying to
+ * unstick it. Shell agents are only sane when initialTask is already a bare
+ * command (e.g. `df -h`, `git status`).
+ *
+ * Heuristic:
+ *   - short strings with no whitespace that look like a single token → command
+ *   - anything containing a natural-language article ("a/an/the"), multiple
+ *     clause words, or > 5 whitespace-separated words → prose
+ *
+ * Tuned to be conservative: short commands like "df -h" or "git status -s"
+ * stay shell; "check disk usage on this vps" or "add a todo" route to a
+ * reasoning agent.
+ */
+export function looksLikeProseTask(text: string | undefined | null): boolean {
+  if (!text) return false;
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return false;
+  const words = trimmed.split(/\s+/);
+  if (words.length > 5) return true;
+  if (/\b(a|an|the|this|that|please|my|your|our)\b/i.test(trimmed)) {
+    return true;
+  }
+  if (/[.!?]/.test(trimmed)) return true;
+  return false;
 }
 
 type BackgroundAction = Action & {
@@ -152,6 +210,12 @@ export const startCodingTaskAction: BackgroundAction = {
       return true;
     }
 
+    // LifeOps prompts ("add a todo to fix that PR I made yesterday") share
+    // verb surface with CREATE_TASK similes. Decline so LIFE wins.
+    if (looksLikeLifeOpsRequest(text)) {
+      return false;
+    }
+
     return looksLikeTaskAgentRequest(text);
   },
 
@@ -192,8 +256,27 @@ export const startCodingTaskAction: BackgroundAction = {
     const params = options?.parameters;
     const content = message.content as Record<string, unknown>;
 
-    const explicitRawType =
-      (params?.agentType as string) ?? (content.agentType as string);
+    let explicitRawType: string | undefined =
+      (params?.agentType as string | undefined) ??
+      (content.agentType as string | undefined);
+    // Shell/pi/bash agents pipe initialTask straight to /bin/bash. When the
+    // LLM picks them for a prose prompt the subagent dies on turn 1 with
+    // "command not found" spam. Reject the hint and let resolveAgentType
+    // pick a reasoning framework instead.
+    if (
+      explicitRawType &&
+      /^(shell|pi|bash)$/i.test(explicitRawType.trim()) &&
+      looksLikeProseTask(
+        (params?.task as string) ??
+          (content.task as string) ??
+          (content.text as string),
+      )
+    ) {
+      logger.warn(
+        `[CREATE_TASK] ignoring agentType="${explicitRawType}" — task text is prose, upgrading to default reasoning framework`,
+      );
+      explicitRawType = undefined;
+    }
     const memoryContent =
       (params?.memoryContent as string) ?? (content.memoryContent as string);
     const approvalPreset =
@@ -353,8 +436,11 @@ export const startCodingTaskAction: BackgroundAction = {
     {
       name: "agentType",
       description:
-        "Specific task-agent framework to use. Options: claude, codex, gemini, aider, pi, shell. " +
-        "If omitted, the orchestrator picks the current preferred framework automatically.",
+        "Specific reasoning task-agent framework to use. Options: claude, codex, gemini, aider. " +
+        "If omitted, the orchestrator picks the current preferred framework automatically. " +
+        "Do NOT select 'shell' or 'pi' here — those are non-reasoning raw bash sessions " +
+        "that cannot interpret natural-language tasks; leave this unset and the orchestrator " +
+        "routes to the preferred reasoning framework.",
       required: false,
       schema: { type: "string" as const },
     },
@@ -403,3 +489,4 @@ export const startCodingTaskAction: BackgroundAction = {
 };
 
 export const createTaskAction = startCodingTaskAction;
+

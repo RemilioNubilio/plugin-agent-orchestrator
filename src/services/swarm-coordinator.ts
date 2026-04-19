@@ -2584,7 +2584,11 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
 
     // Ignore events from sessions created before this coordinator started.
     // Session IDs are formatted as "pty-{timestamp}-{hex}" — extract the timestamp.
-    const tsMatch = sessionId.match(/^pty-(\d+)-/);
+    // Defensive: upstream event normalizer has occasionally emitted non-string
+    // sessionIds during teardown, which previously surfaced as a TypeError in
+    // this path and poisoned the coordinator's event queue.
+    const tsMatch =
+      typeof sessionId === "string" ? sessionId.match(/^pty-(\d+)-/) : null;
     if (tsMatch) {
       const sessionCreatedAt = Number(tsMatch[1]);
       if (sessionCreatedAt < this.startedAt - 60_000) {
