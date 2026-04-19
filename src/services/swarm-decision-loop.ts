@@ -1605,16 +1605,34 @@ export async function handleTurnComplete(
     }
 
     if (!decision) {
-      // Both paths failed — escalate so a human can decide rather than
-      // prematurely completing unfinished work on a transient LLM failure.
-      ctx.log(
-        `Turn-complete for "${taskCtx.label}": all decision paths failed — escalating`,
-      );
-      decision = {
-        action: "escalate",
-        reasoning:
-          "All decision paths returned invalid response — escalating for human review",
-      };
+      // The small LLM's response didn't parse into a valid decision. Before
+      // defaulting to "escalate" (which surfaces "needs your attention" in
+      // chat even when the agent actually finished cleanly), trust the
+      // subagent's own terminal signal: this handler only runs on
+      // `task_complete` events, and `turnOutput` above is the subagent's
+      // captured response text. When turnOutput has content, treating the
+      // task as complete lets synthesis deliver the real answer. A
+      // transient assessor-LLM misfire shouldn't shadow output the agent
+      // actually produced. Escalate only when we genuinely have nothing.
+      if (turnOutput.trim().length > 0) {
+        ctx.log(
+          `Turn-complete for "${taskCtx.label}": assessor LLM failed but turn output is non-empty, treating as complete`,
+        );
+        decision = {
+          action: "complete",
+          reasoning:
+            "Assessor LLM returned an invalid response, but the subagent emitted task_complete with captured output. Trusting the subagent.",
+        };
+      } else {
+        ctx.log(
+          `Turn-complete for "${taskCtx.label}": all decision paths failed, escalating`,
+        );
+        decision = {
+          action: "escalate",
+          reasoning:
+            "Assessor LLM returned an invalid response and the subagent produced no captured output. Escalating for human review.",
+        };
+      }
     }
 
     // Log the decision
@@ -1671,7 +1689,7 @@ export async function handleTurnComplete(
         // callback delivers the final answer once the thread completes.
       } else if (decision.action === "escalate") {
         ctx.sendChatMessage(
-          `[${taskCtx.label}] Turn finished — needs your attention: ${decision.reasoning}`,
+          `[${taskCtx.label}] needs your attention: ${decision.reasoning}`,
           "coding-agent",
         );
       }
