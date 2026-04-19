@@ -1543,7 +1543,14 @@ export async function handleTurnComplete(
     // Only match explicit PR creation signals — not references to existing PRs.
     const PR_CREATED_RE =
       /(?:Created|Opened)\s+pull\s+request\s+#?\d+|gh\s+pr\s+create/i;
-    if (PR_CREATED_RE.test(turnOutput)) {
+    // `gh pr create` in the output matches even when the command actually
+    // errored with "a pull request already exists for branch ...". That
+    // false positive was fast-path-marking the task complete and echoing
+    // the pre-existing PR URL as if the subagent had just created it.
+    // Skip the fast-path when the output contains the gh-cli error.
+    const PR_ALREADY_EXISTS_RE =
+      /a pull request (?:for branch)?.*already exists|pull request already exists/i;
+    if (PR_CREATED_RE.test(turnOutput) && !PR_ALREADY_EXISTS_RE.test(turnOutput)) {
       // Set `keyDecision` so recordKeyDecision pushes this into
       // ctx.sharedDecisions. That ledger is what
       // checkAllTasksComplete uses to decide whether to fall through
