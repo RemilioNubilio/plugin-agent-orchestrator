@@ -855,32 +855,44 @@ export async function executeDecision(
         },
       });
 
-      const verifierJob = taskCtx.taskNodeId
-        ? await ctx.taskRegistry.createTaskVerifierJob({
-            threadId: taskCtx.threadId,
-            nodeId: taskCtx.taskNodeId,
-            status: "running",
-            verifierType: "task_completion",
-            title: `Validate ${taskCtx.label}`,
-            instructions: [
-              `Task: ${taskCtx.originalTask}`,
-              taskCtx.completionSummary
-                ? `Completion summary: ${taskCtx.completionSummary}`
-                : "",
-              decision.reasoning ? `Reasoning: ${decision.reasoning}` : "",
-            ]
-              .filter(Boolean)
-              .join("\n"),
-            config: {
-              sessionId,
-              agentType: taskCtx.agentType,
-            },
-            metadata: {
-              source: "swarm-decision-loop",
-            },
-            startedAt: new Date().toISOString(),
-          })
-        : null;
+      // Only spin up the acceptance verifier when the task is actually a
+      // code/build task against a real repo. The verifier is an LLM pass
+      // that judges whether file/test evidence matches acceptance criteria,
+      // which is only meaningful for tasks that produce artifacts on disk.
+      // For scratch tasks (no repo) and info/question-answering tasks, the
+      // subagent's own response IS the deliverable and there is no
+      // workspace evidence to grade; running the verifier there produces
+      // false "acceptance failed" signals that block synthesis from
+      // delivering the actual answer. Ported from nubs's prior standalone
+      // orchestrator commit fac4c62 that got lost in the submodule
+      // consolidation.
+      const verifierJob =
+        taskCtx.taskNodeId && taskCtx.repo
+          ? await ctx.taskRegistry.createTaskVerifierJob({
+              threadId: taskCtx.threadId,
+              nodeId: taskCtx.taskNodeId,
+              status: "running",
+              verifierType: "task_completion",
+              title: `Validate ${taskCtx.label}`,
+              instructions: [
+                `Task: ${taskCtx.originalTask}`,
+                taskCtx.completionSummary
+                  ? `Completion summary: ${taskCtx.completionSummary}`
+                  : "",
+                decision.reasoning ? `Reasoning: ${decision.reasoning}` : "",
+              ]
+                .filter(Boolean)
+                .join("\n"),
+              config: {
+                sessionId,
+                agentType: taskCtx.agentType,
+              },
+              metadata: {
+                source: "swarm-decision-loop",
+              },
+              startedAt: new Date().toISOString(),
+            })
+          : null;
 
       const validation = await validateTaskCompletion(ctx, {
         sessionId,
