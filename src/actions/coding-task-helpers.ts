@@ -155,39 +155,28 @@ export function registerSessionEvents(
       skillSessionAllowList.clear(sessionId);
     }
 
-    // When coordinator is active it handles chat + lifecycle for these events
-    if (!coordinatorActive) {
-      // No chat message on `blocked`. The SwarmCoordinator runs in
-      // parallel regardless of the direct-callback wiring; its decision
-      // loop auto-accepts routine prompts (Bypass Permissions, trust
-      // dialogs, tool permissions) within ~1s. Announcing "waiting for
-      // input: unknown prompt" to Discord produces noisy status chatter
-      // for prompts the coordinator already resolved. If the coordinator
-      // escalates (rare), its own sendChatMessage path posts an actionable
-      // message.
-      if (event === "task_complete") {
-        if (callback) {
-          const response = (data as { response?: string }).response ?? "";
-          const preview =
-            response.length > 500 ? `${response.slice(0, 500)}...` : response;
-          callback({
-            text: preview
-              ? `Agent "${label}" completed the task.\n\n${preview}`
-              : `Agent "${label}" completed the task.`,
-          });
-        }
-        // NOTE: do NOT force-kill the session here. task_complete fires after
-        // every tool call (when the prompt reappears), not only when the agent
-        // is truly finished. killing here causes the agent to be reaped mid-
-        // work (e.g. after WebSearch but before composing the answer). the
-        // session will be cleaned up by the idle watchdog after 5 minutes of
-        // real inactivity, or when the agent naturally exits.
-      }
-      if (event === "error" && callback) {
-        callback({
-          text: `Agent "${label}" encountered an error: ${(data as { message?: string }).message ?? "unknown error"}`,
-        });
-      }
+    // No chat messages on `blocked` or `task_complete` regardless of the
+    // coordinatorActive flag. The SwarmCoordinator runs in parallel and
+    // owns user-facing delivery: blocking prompts (Bypass Permissions,
+    // trust dialogs, tool permissions) are auto-resolved within ~1s, and
+    // the swarm-complete callback emits a single combined synthesis once
+    // all swarm tasks reach terminal state. Posting per-agent
+    // "Agent X completed the task" messages here produced noisy duplicate
+    // chatter and a leak of raw subagent output before the synthesis ran,
+    // most visibly when SPAWN_AGENT redirected a multi-intent prompt
+    // through CREATE_TASK and the first finished sub-agent fired its own
+    // "completed" callback ahead of the combined synthesis.
+    //
+    // task_complete intentionally does NOT force-kill the session here:
+    // it fires after every tool call when the prompt reappears, not only
+    // when the agent is truly finished. Killing here would reap the agent
+    // mid-work (e.g. after WebSearch but before composing the answer).
+    // The session is cleaned up by the idle watchdog after 5 minutes of
+    // real inactivity, or when the agent naturally exits.
+    if (!coordinatorActive && event === "error" && callback) {
+      callback({
+        text: `Agent "${label}" encountered an error: ${(data as { message?: string }).message ?? "unknown error"}`,
+      });
     }
 
     // Scratch lifecycle: register terminal scratch workspaces for retention

@@ -124,6 +124,41 @@ function looksLikeProseTask(text: string | undefined | null): boolean {
 }
 
 /**
+ * Split a multi-intent task description into one segment per distinct ask.
+ * Matches numbered lists (`1. ...`, `2) ...`) and bullets (`- ...`, `* ...`).
+ * Returns the original text as a single-element array when no multi-intent
+ * structure is detected, so the call site can always pipe-join unconditionally.
+ *
+ * Rationale: the action-selector LLM consistently puts multi-ask user prompts
+ * into the `task` field instead of `agents`. The result is a subagent that
+ * cherry-picks one item and silently drops the rest. Auto-splitting here
+ * guarantees every distinct ask gets its own subagent regardless of which
+ * field the LLM populated.
+ */
+export function splitMultiIntentTask(text: string): string[] {
+  if (!text) return [text];
+  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+
+  const numbered: string[] = [];
+  for (const line of lines) {
+    const match = line.match(/^(\d+)[.):]\s+(.+)$/);
+    if (match) {
+      numbered.push(match[2]);
+    } else if (numbered.length > 0 && !/^\d+[.):]/.test(line)) {
+      numbered[numbered.length - 1] = `${numbered[numbered.length - 1]} ${line}`;
+    }
+  }
+  if (numbered.length >= 2) return numbered;
+
+  const bulleted = lines
+    .filter((l) => /^[-*•]\s+/.test(l))
+    .map((l) => l.replace(/^[-*•]\s+/, ""));
+  if (bulleted.length >= 2) return bulleted;
+
+  return [text];
+}
+
+/**
  * Reject a shell/pi/bash agentType hint when the task text is prose, so both
  * CREATE_TASK and SPAWN_AGENT upgrade to a reasoning framework via
  * `resolveAgentType`. Returns the sanitized hint (original value or `undefined`
@@ -225,6 +260,23 @@ export const startCodingTaskAction: BackgroundAction = {
           action: "CREATE_TASK",
           agents:
             "implement a quicksort algorithm in typescript with tests | analyze the user's CSV and generate charts (matplotlib or similar) | draft a one-page doc summarizing the quicksort implementation and the CSV findings",
+        },
+      },
+    ],
+    [
+      {
+        name: "{{user1}}",
+        content: {
+          text: "ok answers:\n1. quicksort: typescript with a unit test\n2. notes: pull from /tmp/notes.md, summarize back to me\n3. revenue chart: bar chart of the csv I sent earlier\n4. market research: focus on companies + funding\n\ndo all 4 in parallel",
+        },
+      },
+      {
+        name: "{{agentName}}",
+        content: {
+          text: "spawning 4",
+          action: "CREATE_TASK",
+          agents:
+            "implement quicksort in typescript with a small unit test | summarize the markdown file at /tmp/notes.md and report the summary | take the previously provided csv and generate a bar chart of revenue by day | research the market: list companies and their funding/revenue",
         },
       },
     ],
@@ -435,22 +487,36 @@ export const startCodingTaskAction: BackgroundAction = {
       explicitLabel,
     };
 
-    // --- Dispatch: build a pipe-delimited agents string for handleMultiAgent ---
+    // Dispatch: build a pipe-delimited agents string for handleMultiAgent.
+    // Precedence: explicit `agents` param wins. Otherwise use `task` (or
+    // the raw user text when extraction fails) and run it through the
+    // multi-intent splitter so a numbered/bulleted list with several asks
+    // becomes one subagent per item instead of one subagent that
+    // cherry-picks one and drops the rest.
     const agentsParam =
       (params?.agents as string) ?? (content.agents as string);
-
     if (agentsParam) {
       return handleMultiAgent(ctx, agentsParam);
     }
 
-    // Single-agent mode: build a single-element agents string so we can
-    // reuse handleMultiAgent (which handles length-1 specs fine).
-    // Fall back to the user's message text when params extraction fails:
-    // the user's request IS the task (e.g. "build me a todo app").
     const task = (params?.task as string) ?? (content.task as string);
     const userText = (content.text as string)?.trim() || "";
-    const singleAgentSpec = task || userText;
-    return handleMultiAgent(ctx, singleAgentSpec);
+
+    // Run the multi-intent split against the raw user text first. The
+    // action-selector LLM tends to rewrite a multi-ask prompt into a
+    // single-item `task` value before the handler sees it; checking only
+    // `task` would miss that and silently drop the other asks. When the
+    // user text enumerates several distinct asks, prefer it over the
+    // LLM's reduction so each ask becomes its own swarm-managed subagent.
+    const userSegments = splitMultiIntentTask(userText);
+    if (userSegments.length > 1) {
+      logger.info(
+        `[CREATE_TASK] auto-split multi-intent user prompt into ${userSegments.length} parallel agents`,
+      );
+      return handleMultiAgent(ctx, userSegments.join(" | "));
+    }
+
+    return handleMultiAgent(ctx, task || userText);
   },
 
   parameters: [
@@ -478,7 +544,12 @@ export const startCodingTaskAction: BackgroundAction = {
     {
       name: "task",
       description:
-        "The open-ended task or prompt to send once the task agent is ready. Used for single-agent mode.",
+        "The open-ended task or prompt to send once the task agent is ready. Used for single-agent " +
+        "mode ONLY. If the user message contains more than one distinct ask (numbered list, bulleted " +
+        "list, 'and also', 'in parallel', or any phrasing that enumerates several things to do), do " +
+        "NOT use `task` — use `agents` with one pipe-separated segment per distinct ask. Putting " +
+        "multi-intent content in `task` causes the subagent to cherry-pick one item and silently " +
+        "drop the rest.",
       required: false,
       schema: { type: "string" as const },
     },

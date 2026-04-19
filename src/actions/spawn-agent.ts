@@ -40,7 +40,11 @@ import { requireTaskAgentAccess } from "../services/task-policy.js";
 import type { CodingWorkspaceService } from "../services/workspace-service.js";
 import { mergeTaskThreadEvalMetadata } from "./eval-metadata.js";
 import { createScratchDir } from "./coding-task-helpers.js";
-import { coerceShellAgentTypeForProse } from "./start-coding-task.js";
+import {
+  coerceShellAgentTypeForProse,
+  splitMultiIntentTask,
+  startCodingTaskAction,
+} from "./start-coding-task.js";
 
 /**
  * Once-per-process warn when CODING_AGENT_SANDBOX=off is in effect, so
@@ -203,6 +207,32 @@ export const spawnAgentAction: Action = {
     const content = message.content as Record<string, unknown>;
 
     const task = (params?.task as string) ?? (content.task as string);
+    const userText = (content.text as string)?.trim() || "";
+
+    // SPAWN_AGENT spawns a single PTY session and has no `agents` parameter,
+    // so a multi-intent prompt routed here would single-task and silently
+    // drop the other items. The swarm path (CREATE_TASK + `agents:` pipe)
+    // is the correct route. Probe the raw user text, not just `task`, since
+    // the action-selector LLM tends to rewrite multi-ask prompts into a
+    // single-item `task` before the handler sees them. Delegate directly
+    // to CREATE_TASK so the swarm coordinator manages the parallel run;
+    // returning a failure here would just leave the user with no reply
+    // because the bootstrap runtime fires one action per turn and does
+    // not auto-retry on action failure.
+    const splitProbe = splitMultiIntentTask(userText || task);
+    if (splitProbe.length > 1) {
+      logger.info(
+        `[SPAWN_AGENT] redirecting multi-intent prompt with ${splitProbe.length} distinct asks to CREATE_TASK swarm path`,
+      );
+      return startCodingTaskAction.handler!(
+        runtime,
+        message,
+        state,
+        options,
+        callback,
+      );
+    }
+
     // Shared guard with CREATE_TASK: reject shell/pi/bash agentType hints when
     // the task text is prose so the LLM-supplied shortcut doesn't crash the
     // subagent. Helper lives next to looksLikeProseTask in start-coding-task.
