@@ -488,34 +488,36 @@ export const startCodingTaskAction: BackgroundAction = {
     };
 
     // Dispatch: build a pipe-delimited agents string for handleMultiAgent.
-    // Precedence: explicit `agents` param wins. Otherwise use `task` (or
-    // the raw user text when extraction fails) and run it through the
-    // multi-intent splitter so a numbered/bulleted list with several asks
-    // becomes one subagent per item instead of one subagent that
-    // cherry-picks one and drops the rest.
-    const agentsParam =
-      (params?.agents as string) ?? (content.agents as string);
-    if (agentsParam) {
-      return handleMultiAgent(ctx, agentsParam);
-    }
-
+    // Always run the multi-intent splitter against the raw user text, then
+    // use the LARGER of (LLM-supplied `agents`, user-text split). The
+    // action-selector LLM both (a) rewrites multi-ask prompts into a
+    // single-item `task` and (b) populates `agents` with fewer segments
+    // than the user enumerated, dropping items it judged less actionable.
+    // Trusting either field as-is silently loses the dropped asks; the
+    // user text is the source of truth for how many distinct items there
+    // are.
     const task = (params?.task as string) ?? (content.task as string);
     const userText = (content.text as string)?.trim() || "";
+    const agentsParam =
+      (params?.agents as string) ?? (content.agents as string);
 
-    // Run the multi-intent split against the raw user text first. The
-    // action-selector LLM tends to rewrite a multi-ask prompt into a
-    // single-item `task` value before the handler sees it; checking only
-    // `task` would miss that and silently drop the other asks. When the
-    // user text enumerates several distinct asks, prefer it over the
-    // LLM's reduction so each ask becomes its own swarm-managed subagent.
+    const llmSegments = agentsParam
+      ? agentsParam
+          .split("|")
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
     const userSegments = splitMultiIntentTask(userText);
-    if (userSegments.length > 1) {
+
+    if (userSegments.length > llmSegments.length && userSegments.length > 1) {
       logger.info(
-        `[CREATE_TASK] auto-split multi-intent user prompt into ${userSegments.length} parallel agents`,
+        `[CREATE_TASK] auto-split multi-intent user prompt into ${userSegments.length} parallel agents (LLM proposed ${llmSegments.length})`,
       );
       return handleMultiAgent(ctx, userSegments.join(" | "));
     }
-
+    if (agentsParam) {
+      return handleMultiAgent(ctx, agentsParam);
+    }
     return handleMultiAgent(ctx, task || userText);
   },
 
