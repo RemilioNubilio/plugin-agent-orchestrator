@@ -475,7 +475,25 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
     return this.agentDecisionCb;
   }
 
-  /** Null-safe wrapper — sends a message to the user's conversation if callback is set. */
+  /**
+   * Null-safe chat dispatcher.
+   *
+   * CALLING POLICY — keep this consistent or you'll either spam users or
+   * hide important signals:
+   *
+   *   POST to chat:   user must act (auth prompts, "needs your attention"
+   *                   escalations, security violations, unrecoverable
+   *                   errors), or the final result of the swarm (delivered
+   *                   via the synthesis callback, not this method).
+   *
+   *   STAY SILENT:    coordinator-internal state transitions (auto-
+   *                   recovery, token refresh, scratch-decision TTL,
+   *                   tool_running progress, mid-task continuation
+   *                   decisions, PTY session-lost on restart). Web UI
+   *                   still sees these via `broadcast()` — chat should
+   *                   not duplicate them, because synthesis will deliver
+   *                   the final outcome once a terminal state is reached.
+   */
   sendChatMessage(text: string, source?: string): void {
     if (!this.chatCallback) return;
     this.chatCallback(text, source).catch((err) => {

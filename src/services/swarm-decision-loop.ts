@@ -855,32 +855,44 @@ export async function executeDecision(
         },
       });
 
-      const verifierJob = taskCtx.taskNodeId
-        ? await ctx.taskRegistry.createTaskVerifierJob({
-            threadId: taskCtx.threadId,
-            nodeId: taskCtx.taskNodeId,
-            status: "running",
-            verifierType: "task_completion",
-            title: `Validate ${taskCtx.label}`,
-            instructions: [
-              `Task: ${taskCtx.originalTask}`,
-              taskCtx.completionSummary
-                ? `Completion summary: ${taskCtx.completionSummary}`
-                : "",
-              decision.reasoning ? `Reasoning: ${decision.reasoning}` : "",
-            ]
-              .filter(Boolean)
-              .join("\n"),
-            config: {
-              sessionId,
-              agentType: taskCtx.agentType,
-            },
-            metadata: {
-              source: "swarm-decision-loop",
-            },
-            startedAt: new Date().toISOString(),
-          })
-        : null;
+      // Only spin up the acceptance verifier when the task is actually a
+      // code/build task against a real repo. The verifier is an LLM pass
+      // that judges whether file/test evidence matches acceptance criteria,
+      // which is only meaningful for tasks that produce artifacts on disk.
+      // For scratch tasks (no repo) and info/question-answering tasks, the
+      // subagent's own response IS the deliverable and there is no
+      // workspace evidence to grade; running the verifier there produces
+      // false "acceptance failed" signals that block synthesis from
+      // delivering the actual answer. Ported from nubs's prior standalone
+      // orchestrator commit fac4c62 that got lost in the submodule
+      // consolidation.
+      const verifierJob =
+        taskCtx.taskNodeId && taskCtx.repo
+          ? await ctx.taskRegistry.createTaskVerifierJob({
+              threadId: taskCtx.threadId,
+              nodeId: taskCtx.taskNodeId,
+              status: "running",
+              verifierType: "task_completion",
+              title: `Validate ${taskCtx.label}`,
+              instructions: [
+                `Task: ${taskCtx.originalTask}`,
+                taskCtx.completionSummary
+                  ? `Completion summary: ${taskCtx.completionSummary}`
+                  : "",
+                decision.reasoning ? `Reasoning: ${decision.reasoning}` : "",
+              ]
+                .filter(Boolean)
+                .join("\n"),
+              config: {
+                sessionId,
+                agentType: taskCtx.agentType,
+              },
+              metadata: {
+                source: "swarm-decision-loop",
+              },
+              startedAt: new Date().toISOString(),
+            })
+          : null;
 
       const validation = await validateTaskCompletion(ctx, {
         sessionId,
@@ -1543,10 +1555,27 @@ export async function handleTurnComplete(
     // Only match explicit PR creation signals — not references to existing PRs.
     const PR_CREATED_RE =
       /(?:Created|Opened)\s+pull\s+request\s+#?\d+|gh\s+pr\s+create/i;
-    if (PR_CREATED_RE.test(turnOutput)) {
+    // `gh pr create` in the output matches even when the command actually
+    // errored with "a pull request already exists for branch ...". That
+    // false positive was fast-path-marking the task complete and echoing
+    // the pre-existing PR URL as if the subagent had just created it.
+    // Skip the fast-path when the output contains the gh-cli error.
+    const PR_ALREADY_EXISTS_RE =
+      /a pull request (?:for branch)?.*already exists|pull request already exists/i;
+    if (PR_CREATED_RE.test(turnOutput) && !PR_ALREADY_EXISTS_RE.test(turnOutput)) {
+      // Set `keyDecision` so recordKeyDecision pushes this into
+      // ctx.sharedDecisions. That ledger is what
+      // checkAllTasksComplete uses to decide whether to fall through
+      // to synthesis when a task's validator verifier fails — without
+      // this, a fast-path-completed task whose validator happens to
+      // fail gets its real output (the PR URL) swallowed because the
+      // fallthrough predicate sees neither status=completed (idle
+      // watchdog may have downgraded it to `stopped`) nor a recorded
+      // shared decision.
       const fastDecision: CoordinationLLMResponse = {
         action: "complete",
-        reasoning: "PR detected in turn output — task complete.",
+        reasoning: "PR detected in turn output - task complete.",
+        keyDecision: "PR created and pushed; task complete.",
       };
       ctx.log(
         `Turn assessment for "${taskCtx.label}": complete (fast-path: PR detected in output)`,
@@ -1605,16 +1634,34 @@ export async function handleTurnComplete(
     }
 
     if (!decision) {
-      // Both paths failed — escalate so a human can decide rather than
-      // prematurely completing unfinished work on a transient LLM failure.
-      ctx.log(
-        `Turn-complete for "${taskCtx.label}": all decision paths failed — escalating`,
-      );
-      decision = {
-        action: "escalate",
-        reasoning:
-          "All decision paths returned invalid response — escalating for human review",
-      };
+      // The small LLM's response didn't parse into a valid decision. Before
+      // defaulting to "escalate" (which surfaces "needs your attention" in
+      // chat even when the agent actually finished cleanly), trust the
+      // subagent's own terminal signal: this handler only runs on
+      // `task_complete` events, and `turnOutput` above is the subagent's
+      // captured response text. When turnOutput has content, treating the
+      // task as complete lets synthesis deliver the real answer. A
+      // transient assessor-LLM misfire shouldn't shadow output the agent
+      // actually produced. Escalate only when we genuinely have nothing.
+      if (turnOutput.trim().length > 0) {
+        ctx.log(
+          `Turn-complete for "${taskCtx.label}": assessor LLM failed but turn output is non-empty, treating as complete`,
+        );
+        decision = {
+          action: "complete",
+          reasoning:
+            "Assessor LLM returned an invalid response, but the subagent emitted task_complete with captured output. Trusting the subagent.",
+        };
+      } else {
+        ctx.log(
+          `Turn-complete for "${taskCtx.label}": all decision paths failed, escalating`,
+        );
+        decision = {
+          action: "escalate",
+          reasoning:
+            "Assessor LLM returned an invalid response and the subagent produced no captured output. Escalating for human review.",
+        };
+      }
     }
 
     // Log the decision
@@ -1671,7 +1718,7 @@ export async function handleTurnComplete(
         // callback delivers the final answer once the thread completes.
       } else if (decision.action === "escalate") {
         ctx.sendChatMessage(
-          `[${taskCtx.label}] Turn finished — needs your attention: ${decision.reasoning}`,
+          `[${taskCtx.label}] needs your attention: ${decision.reasoning}`,
           "coding-agent",
         );
       }

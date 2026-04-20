@@ -422,9 +422,18 @@ export class PTYService {
     const workspaceLock = buildWorkspaceLockMemory(workdir);
     const shouldWriteMemoryFile =
       resolvedAgentType !== "shell" && Boolean(options.memoryContent?.trim());
-    const effectiveInitialTask = shouldWriteMemoryFile
-      ? options.initialTask
-      : prependWorkspaceLockToTask(options.initialTask, workspaceLock);
+    // The workspace lock is markdown prose meant to be read as CLAUDE.md
+    // (or equivalent) by a reasoning subagent. Shell sessions receive
+    // `initialTask` as literal stdin for /bin/bash, so any prose we prepend
+    // would land as garbage "command not found" output and kick the
+    // coordinator into a respond-loop. For shell agents we never prepend
+    // the lock: shell tasks are expected to be bare commands, and staying
+    // inside the workdir is enforced by the `cwd` we spawn the PTY with
+    // (not by an advisory markdown note).
+    const effectiveInitialTask =
+      shouldWriteMemoryFile || resolvedAgentType === "shell"
+        ? options.initialTask
+        : prependWorkspaceLockToTask(options.initialTask, workspaceLock);
     const resolvedInitialTask = piRequested
       ? toPiCommand(effectiveInitialTask)
       : effectiveInitialTask;
