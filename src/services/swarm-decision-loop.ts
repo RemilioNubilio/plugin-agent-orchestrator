@@ -541,13 +541,6 @@ async function checkAllTasksCompleteAsync(
   }
 
   if (failingThreads.length > 0) {
-    if (ctx.swarmCompleteNotified) {
-      ctx.log(
-        "checkAllTasksComplete: failure notification already sent — skipping",
-      );
-      return;
-    }
-    ctx.swarmCompleteNotified = true;
     const summary = failingThreads
       .map((thread) =>
         [
@@ -575,11 +568,30 @@ async function checkAllTasksCompleteAsync(
         threads: failingThreads,
       },
     });
-    ctx.sendChatMessage(
-      `Task agents finished running, but the coordinator could not prove completion. ${summary}`,
-      "task-agent",
+    // If any subagent produced a Shared decision the real work landed —
+    // a failing verifier or a task that got swept to "stopped" by the
+    // idle watchdog after its PTY session exited shouldn't swallow the
+    // final chat reply. The broadcast above is enough for operators to
+    // see the validator disagreement in the web UI; fall through to
+    // normal synthesis so the user still gets the agent's actual text
+    // (buildTaskLine will read the jsonl end_turn regardless of the
+    // coordinator's validator verdict).
+    //
+    // Only short-circuit when no subagent reached a meaningful end —
+    // that's the genuine unrecoverable-failure case where synthesis
+    // has nothing meaningful to say beyond the coordinator's signal.
+    const labelsWithDecisions = new Set(
+      ctx.sharedDecisions.map((decision) => decision.agentLabel),
     );
-    return;
+    const anyMeaningful = tasks.some(
+      (task) =>
+        task.status === "completed" || labelsWithDecisions.has(task.label),
+    );
+    if (!anyMeaningful) {
+      if (ctx.swarmCompleteNotified) return;
+      ctx.swarmCompleteNotified = true;
+      return;
+    }
   }
 
   // Guard: only fire once per swarm (reset by coordinator on stop/new swarm)
@@ -634,6 +646,13 @@ async function checkAllTasksCompleteAsync(
     ctx.log(
       "checkAllTasksComplete: swarm complete callback is wired — calling synthesis",
     );
+    // Pull thread roomIds up-front so synthesis knows where to deliver
+    // (TaskContext itself doesn't carry roomId; the taskThread does).
+    const threadRoomIds = new Map<string, string>();
+    for (const tid of [...new Set(tasks.map((task) => task.threadId))]) {
+      const thread = await ctx.taskRegistry.getThread(tid);
+      if (thread?.roomId) threadRoomIds.set(tid, thread.roomId);
+    }
     const taskSummaries = tasks.map((t) => {
       // Fold in shared decisions relevant to this task so the synthesis
       // prompt includes the agent's actual findings, not just PR URLs.
@@ -650,6 +669,13 @@ async function checkAllTasksCompleteAsync(
         originalTask: t.originalTask,
         status: t.status,
         completionSummary: summaryParts.join("\n") || "",
+        // Forward the task's workdir so buildTaskLine in synthesis can
+        // read the agent's end_turn jsonl directly. Without this, the
+        // session is already killed by the time synthesis runs and
+        // resolveSessionWorkdir returns null → fallback to the honest
+        // placeholder even though the jsonl has the real answer.
+        workdir: t.workdir,
+        roomId: threadRoomIds.get(t.threadId),
       };
     });
     // Wrap in Promise.resolve().then() to catch sync throws, and race against
@@ -969,10 +995,8 @@ export async function executeDecision(
           await ctx.ptyService.sendToSession(sessionId, followUpPrompt);
           taskCtx.lastInputSentAt = Date.now();
           await ctx.syncTaskContext(taskCtx);
-          ctx.sendChatMessage(
-            `[${taskCtx.label}] Validation asked the agent to continue: ${validation.summary}`,
-            "coding-agent",
-          );
+          // Validator-driven continuation is coordinator-internal;
+          // synthesis reports the final outcome.
         } else {
           ctx.broadcast({
             type: "escalation",
@@ -983,10 +1007,8 @@ export async function executeDecision(
               summary: validation.summary,
             },
           });
-          ctx.sendChatMessage(
-            `[${taskCtx.label}] Validation needs human review: ${validation.summary}`,
-            "coding-agent",
-          );
+          // Escalations surface via the broadcast event above; chat
+          // stays quiet until the coordinator reaches a terminal state.
         }
         break;
       }
@@ -1078,12 +1100,13 @@ export async function executeDecision(
         },
       });
 
-      ctx.sendChatMessage(
-        taskCtx.completionSummary
-          ? `Finished "${taskCtx.label}".\n\n${taskCtx.completionSummary}`
-          : `Finished "${taskCtx.label}".`,
-        "coding-agent",
-      );
+      // Per-task completion message is runtime-internal. The validator's
+      // `completionSummary` is an analysis paragraph ("The agent wrote the
+      // files, verified ..., reported the URL") — NOT the subagent's
+      // actual last message, so pasting it to chat hides the real URL /
+      // result. The synthesis callback (handleSwarmSynthesis) reads the
+      // subagent's jsonl end_turn text and delivers the actual answer;
+      // this chat write would just land first with a stale narrative.
 
       // Force-kill the session — task is done, nothing to save.
       // SIGKILL ensures the PTY and all child processes exit immediately,
@@ -1644,10 +1667,8 @@ export async function handleTurnComplete(
             ? `${instruction.slice(0, 120)}...`
             : instruction;
         ctx.log(`[${taskCtx.label}] Turn done, continuing: ${preview}`);
-        ctx.sendChatMessage(
-          `[${taskCtx.label}] Continuing work: ${preview || "sent follow-up instructions."}`,
-          "coding-agent",
-        );
+        // Mid-task continuation is coordinator-internal; the synthesis
+        // callback delivers the final answer once the thread completes.
       } else if (decision.action === "escalate") {
         ctx.sendChatMessage(
           `[${taskCtx.label}] Turn finished — needs your attention: ${decision.reasoning}`,
