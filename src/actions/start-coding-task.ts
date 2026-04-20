@@ -119,7 +119,8 @@ function looksLikeProseTask(text: string | undefined | null): boolean {
   if (/\b(a|an|the|this|that|please|my|your|our)\b/i.test(trimmed)) {
     return true;
   }
-  if (/[.!?]/.test(trimmed)) return true;
+  if (/[?!]/.test(trimmed)) return true;
+  if (/\w\.(?:\s|$)/.test(trimmed)) return true;
   return false;
 }
 

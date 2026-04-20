@@ -52,6 +52,11 @@ const ENV_ALLOWLIST = [
  * Build a sanitized base environment from process.env, keeping only
  * safe system variables. Agent-specific credentials are injected
  * separately by the adapter's getEnv().
+ *
+ * On Windows, the sanitized env may have lost the per-package-manager bin
+ * directories that hold `claude.cmd` / `codex.cmd` (npm global, Codex
+ * managed install, scoop shims, chocolatey bin). Route through
+ * `appendWindowsPathFallbacks` to add those back after the allowlist copy.
  */
 export function buildSanitizedBaseEnv(): Record<string, string> {
   const env: Record<string, string> = {};
@@ -65,7 +70,86 @@ export function buildSanitizedBaseEnv(): Record<string, string> {
   if (!env.COLORTERM) {
     env.COLORTERM = "truecolor";
   }
+  const mergedPath = appendWindowsPathFallbacks(env.PATH);
+  if (mergedPath) {
+    env.PATH = mergedPath;
+  }
   return env;
+}
+
+/**
+ * Directories that Windows package managers drop `claude.cmd` / `codex.cmd`
+ * / `codex.exe` into. We append these to the sanitized PATH so `cmd.exe`
+ * (via the `shell: true` flag on execFile/spawn for win32) can resolve the
+ * CLI binaries even when the user's PATH has been stripped down by the
+ * ENV_ALLOWLIST-then-systemd-unit chain or otherwise missing the install
+ * location. Each entry is a no-op on non-Windows and a no-op when the
+ * parent env var the path depends on is unset.
+ *
+ * Coverage, in order of popularity for claude/codex installs:
+ *   - npm global (%APPDATA%\npm) — the official CLAUDE_CODE install path
+ *   - Codex managed install (%LOCALAPPDATA%\OpenAI\Codex\bin)
+ *   - Scoop (%USERPROFILE%\scoop\shims)
+ *   - Chocolatey (%ProgramData%\chocolatey\bin)
+ *   - Bun global (%USERPROFILE%\.bun\bin)
+ */
+export function getWindowsPathFallbacks(): string[] {
+  if (process.platform !== "win32") return [];
+  const appData = process.env.APPDATA;
+  const localAppData = process.env.LOCALAPPDATA;
+  const userProfile = process.env.USERPROFILE;
+  const programData = process.env.ProgramData ?? process.env.PROGRAMDATA;
+  const candidates: (string | undefined)[] = [
+    appData ? `${appData}\\npm` : undefined,
+    localAppData ? `${localAppData}\\OpenAI\\Codex\\bin` : undefined,
+    userProfile ? `${userProfile}\\scoop\\shims` : undefined,
+    programData ? `${programData}\\chocolatey\\bin` : undefined,
+    userProfile ? `${userProfile}\\.bun\\bin` : undefined,
+  ];
+  return candidates.filter((v): v is string => !!v && v.trim().length > 0);
+}
+
+/**
+ * Append each fallback path to `currentPath` if it isn't already present.
+ * Windows PATH matching is case-insensitive, so dedupe on the lowercased
+ * form but preserve the original casing in the output. Returns `undefined`
+ * when the resulting PATH would be empty (neither argument had content), so
+ * callers can skip assigning an empty string.
+ */
+export function appendWindowsPathFallbacks(
+  currentPath: string | undefined,
+): string | undefined {
+  return mergePathEntries(currentPath, getWindowsPathFallbacks(), {
+    delimiter: process.platform === "win32" ? ";" : ":",
+    caseInsensitive: process.platform === "win32",
+  });
+}
+
+/**
+ * Pure PATH-merge helper: dedupe existing + extras, preserve insertion
+ * order and casing. Exported for unit tests so we can exercise the merge
+ * logic without stubbing `process.platform`.
+ */
+export function mergePathEntries(
+  currentPath: string | undefined,
+  extras: readonly string[],
+  opts: { delimiter: string; caseInsensitive: boolean },
+): string | undefined {
+  const normalize = (v: string) =>
+    opts.caseInsensitive ? v.toLowerCase() : v;
+  const existing = (currentPath ?? "")
+    .split(opts.delimiter)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  const seen = new Set(existing.map(normalize));
+  const merged: string[] = [...existing];
+  for (const extra of extras) {
+    const key = normalize(extra);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(extra);
+  }
+  return merged.length > 0 ? merged.join(opts.delimiter) : undefined;
 }
 
 export interface SpawnContext {

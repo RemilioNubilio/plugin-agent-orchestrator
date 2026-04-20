@@ -151,6 +151,10 @@ function defaultExecFile(
         encoding: options?.encoding ?? "utf8",
         env: options?.env,
         timeout: options?.timeout,
+        // On Windows, execFile uses libuv uv_spawn which does not apply PATHEXT
+        // extension resolution — so bare names like "claude" fail to find "claude.cmd".
+        // shell:true routes through cmd.exe which handles PATHEXT correctly.
+        shell: process.platform === "win32",
       },
       (error, stdout, stderr) => {
         if (error) {
@@ -546,6 +550,8 @@ export async function launchTaskAgentAuthFlow(
     cwd: process.cwd(),
     env,
     stdio: ["ignore", "pipe", "pipe"],
+    // On Windows, .cmd files require the shell to resolve PATHEXT extensions.
+    shell: process.platform === "win32",
   }) as unknown as ChildProcessWithoutNullStreams;
 
   let current: TaskAgentAuthLaunchResult = {

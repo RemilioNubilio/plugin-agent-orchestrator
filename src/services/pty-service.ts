@@ -154,6 +154,19 @@ interface ClaudeConfig {
 }
 
 /**
+ * In-process serializer for `~/.claude.json` writes. Multiple subagents
+ * spawning concurrently for different workdirs would otherwise each
+ * read-modify-write the same file: last writer wins, intermediate trust
+ * entries are lost. Chain writes per config path so each runs to
+ * completion before the next starts.
+ *
+ * This only protects writes inside one process. If a user has another
+ * claude CLI running that also writes the file, we still rely on the
+ * read-on-startup + idempotent re-seed on next spawn to self-heal.
+ */
+const claudeConfigWriteQueue = new Map<string, Promise<void>>();
+
+/**
  * Pre-accept Claude Code's one-time trust dialog for a workdir by writing
  * `hasTrustDialogAccepted: true` into `~/.claude.json`'s `projects` map.
  *
@@ -166,9 +179,35 @@ interface ClaudeConfig {
  * Idempotent and best-effort: returns without throwing if the config file
  * does not yet exist, is unreadable, or is not valid JSON. In those cases
  * claude will show the dialog the normal way, which is no worse than before.
+ *
+ * Concurrency: serialized per config path via `claudeConfigWriteQueue` so
+ * parallel swarm spawns don't clobber each other's trust entries.
  */
-async function seedClaudeTrustForWorkdir(workdir: string): Promise<void> {
-  const configPath = join(homedir(), ".claude.json");
+async function seedClaudeTrustForWorkdir(
+  workdir: string,
+  overrideConfigPath?: string,
+): Promise<void> {
+  const configPath = overrideConfigPath ?? join(homedir(), ".claude.json");
+  const prior = claudeConfigWriteQueue.get(configPath) ?? Promise.resolve();
+  const next = prior
+    .catch(() => undefined)
+    .then(() => seedClaudeTrustForWorkdirUnsafe(configPath, workdir));
+  claudeConfigWriteQueue.set(configPath, next);
+  try {
+    await next;
+  } finally {
+    if (claudeConfigWriteQueue.get(configPath) === next) {
+      claudeConfigWriteQueue.delete(configPath);
+    }
+  }
+}
+
+export const seedClaudeTrustForWorkdirForTesting = seedClaudeTrustForWorkdir;
+
+async function seedClaudeTrustForWorkdirUnsafe(
+  configPath: string,
+  workdir: string,
+): Promise<void> {
   let raw: string;
   try {
     raw = await readFile(configPath, "utf8");
@@ -180,8 +219,12 @@ async function seedClaudeTrustForWorkdir(workdir: string): Promise<void> {
       logger.warn(
         `[pty-service] seedClaudeTrustForWorkdir: failed to read ${configPath}: ${err}`,
       );
+      return;
     }
-    return;
+    // ENOENT: create a minimal config so the write below has somewhere
+    // to land. Claude Code is tolerant of extra projects entries and
+    // will merge its own keys on first run.
+    raw = "{}";
   }
   let parsed: ClaudeConfig;
   try {
