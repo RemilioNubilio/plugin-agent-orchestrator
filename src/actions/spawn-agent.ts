@@ -40,6 +40,11 @@ import { requireTaskAgentAccess } from "../services/task-policy.js";
 import type { CodingWorkspaceService } from "../services/workspace-service.js";
 import { mergeTaskThreadEvalMetadata } from "./eval-metadata.js";
 import { createScratchDir } from "./coding-task-helpers.js";
+import {
+  coerceShellAgentTypeForProse,
+  splitMultiIntentTask,
+  startCodingTaskAction,
+} from "./start-coding-task.js";
 
 /**
  * Once-per-process warn when CODING_AGENT_SANDBOX=off is in effect, so
@@ -53,7 +58,7 @@ function warnSandboxDisabledOnce(): void {
   if (sandboxDisabledWarned) return;
   sandboxDisabledWarned = true;
   logger.warn(
-    "[SPAWN_AGENT] CODING_AGENT_SANDBOX=off — app-level workdir allowlist disabled; relying on the OS user + systemd unit for isolation.",
+    "[SPAWN_AGENT] CODING_AGENT_SANDBOX=off: app-level workdir allowlist disabled; relying on the OS user + systemd unit for isolation.",
   );
 }
 
@@ -106,7 +111,7 @@ export const spawnAgentAction: Action = {
   // flag the bootstrap runtime fires a second action-planning pass as
   // soon as the spawn returns; the planner sees the user's prompt still
   // unanswered (ActionResult.text is intentionally empty to avoid the
-  // workspace-path leak — see the text:"" on success above) and invokes
+  // workspace-path leak: see the text:"" on success above) and invokes
   // SPAWN_AGENT again, producing a duplicate subagent per user prompt.
   // Matches CREATE_TASK, which already has this for the same reason.
   suppressPostActionContinuation: true,
@@ -201,9 +206,42 @@ export const spawnAgentAction: Action = {
     const params = options?.parameters;
     const content = message.content as Record<string, unknown>;
 
-    const explicitRawType =
-      (params?.agentType as string) ?? (content.agentType as string);
     const task = (params?.task as string) ?? (content.task as string);
+    const userText = (content.text as string)?.trim() || "";
+
+    // SPAWN_AGENT spawns a single PTY session and has no `agents` parameter,
+    // so a multi-intent prompt routed here would single-task and silently
+    // drop the other items. The swarm path (CREATE_TASK + `agents:` pipe)
+    // is the correct route. Probe the raw user text, not just `task`, since
+    // the action-selector LLM tends to rewrite multi-ask prompts into a
+    // single-item `task` before the handler sees them. Delegate directly
+    // to CREATE_TASK so the swarm coordinator manages the parallel run;
+    // returning a failure here would just leave the user with no reply
+    // because the bootstrap runtime fires one action per turn and does
+    // not auto-retry on action failure.
+    const splitProbe = splitMultiIntentTask(userText || task);
+    if (splitProbe.length > 1) {
+      logger.info(
+        `[SPAWN_AGENT] redirecting multi-intent prompt with ${splitProbe.length} distinct asks to CREATE_TASK swarm path`,
+      );
+      return startCodingTaskAction.handler!(
+        runtime,
+        message,
+        state,
+        options,
+        callback,
+      );
+    }
+
+    // Shared guard with CREATE_TASK: reject shell/pi/bash agentType hints when
+    // the task text is prose so the LLM-supplied shortcut doesn't crash the
+    // subagent. Helper lives next to looksLikeProseTask in start-coding-task.
+    const explicitRawType = coerceShellAgentTypeForProse(
+      (params?.agentType as string | undefined) ??
+        (content.agentType as string | undefined),
+      task,
+      "[SPAWN_AGENT]",
+    );
     const rawAgentType =
       explicitRawType ??
       (await ptyService.resolveAgentType({
@@ -235,7 +273,7 @@ export const spawnAgentAction: Action = {
     }
     if (!workdir) {
       // No explicit workdir, no prior PROVISION_WORKSPACE state, no existing
-      // service-tracked workspace — fall back to an ephemeral scratch dir
+      // service-tracked workspace: fall back to an ephemeral scratch dir
       // (same path START_CODING_TASK takes when the user omits a repo). The
       // previous behavior errored with an API-internal hint; a normie prompt
       // like "build a timer page" shouldn't be blocked by workspace plumbing.
@@ -267,12 +305,16 @@ export const spawnAgentAction: Action = {
       workdir = resolvedWorkdir;
     } else {
       const extraAllowed =
-        (runtime.getSetting("CODING_AGENT_ALLOWED_WORKDIRS") as string) ??
+        (runtime.getSetting("CODING_AGENT_ALLOWED_WORKDIRS") as
+          | string
+          | undefined) ??
         process.env.CODING_AGENT_ALLOWED_WORKDIRS ??
         "";
       const workspaceBaseDir = path.join(os.homedir(), ".milady", "workspaces");
       const parallaxCodingDir =
-        (runtime.getSetting("PARALLAX_CODING_DIRECTORY") as string) ??
+        (runtime.getSetting("PARALLAX_CODING_DIRECTORY") as
+          | string
+          | undefined) ??
         readConfigEnvKey("PARALLAX_CODING_DIRECTORY") ??
         process.env.PARALLAX_CODING_DIRECTORY;
       const expandHome = (p: string) =>
@@ -298,7 +340,7 @@ export const spawnAgentAction: Action = {
         if (callback) {
           await callback({
             text:
-              `can't write to \`${resolvedWorkdir}\` — not in my sandbox. ` +
+              `can't write to \`${resolvedWorkdir}\`: not in my sandbox. ` +
               `tell the operator to add it to CODING_AGENT_ALLOWED_WORKDIRS ` +
               `or set CODING_AGENT_SANDBOX=off for full VPS access.`,
           });
@@ -369,7 +411,7 @@ export const spawnAgentAction: Action = {
         }
       }
 
-      // Check if coordinator is active — route blocking prompts through it
+      // Check if coordinator is active, route blocking prompts through it
       const coordinator = getCoordinator(runtime);
       const evalMetadata = mergeTaskThreadEvalMetadata(message, {
         source: "spawn-agent-action",
@@ -412,7 +454,7 @@ export const spawnAgentAction: Action = {
           ptyService.defaultApprovalPreset,
         customCredentials,
         // Let adapter auto-response handle startup prompts (API key, trust, etc.)
-        // when using cloud/API key mode — the LLM coordinator misinterprets these.
+        // when using cloud/API key mode: the LLM coordinator misinterprets these.
         // In subscription mode, the coordinator handles all prompts.
         ...(coordinator && llmProvider === "subscription"
           ? { skipAdapterAutoResponse: true }
@@ -479,7 +521,7 @@ export const spawnAgentAction: Action = {
         };
       }
 
-      // Spawn-success is coordinator-internal — the synthesis callback
+      // Spawn-success is coordinator-internal: the synthesis callback
       // delivers the real outcome once the subagent finishes. Returning
       // non-empty `text` here triggers the bootstrap runtime to auto-post
       // it (see runtime.ts action-result routing), which is what leaked

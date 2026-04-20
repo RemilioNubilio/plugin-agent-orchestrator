@@ -67,6 +67,122 @@ function getMessageText(message: Memory): string {
   return typeof message.content?.text === "string" ? message.content.text : "";
 }
 
+/**
+ * Detect prompts that belong to LifeOps (LIFE action), not the coding
+ * orchestrator. Mirror of `looksLikeCodingTaskRequest` in app-lifeops, so
+ * CREATE_TASK can decline when LIFE should win.
+ *
+ * Why: LIFE and CREATE_TASK share a lot of verb surface ("add a task ...",
+ * "create a reminder ..."). The action-selector LLM can pick CREATE_TASK when
+ * a coding keyword appears anywhere in the prompt (e.g. "add a todo to fix
+ * that PR"), spawning a subagent for something LIFE should handle as a simple
+ * todo insert.
+ *
+ * Pattern: imperative LIFE verb at the start followed by a LIFE noun within
+ * the first few words. Keeps false positives rare: "build a todo app" has
+ * verb=build (not in list) so it still routes to CREATE_TASK as intended.
+ */
+function looksLikeLifeOpsRequest(text: string | undefined | null): boolean {
+  if (!text) return false;
+  const normalized = text.toLowerCase().replace(/\s+/g, " ").trim();
+  if (normalized.length === 0) return false;
+  return /^(?:@\S+\s+)?(?:add|set|schedule|remind|track|log)\b[^.!?]{0,40}\b(todo|habit|reminder|goal|routine|alarm|chore|tasks?\s+for\s+(?:today|tomorrow|this\s+week))\b/i.test(
+    normalized,
+  );
+}
+
+/**
+ * Detect natural-language prose vs. a bare shell command.
+ *
+ * Why: the action-planner LLM occasionally fills agentType with "shell"/"pi"
+ * for short prompts even though the task text is full natural language. Piping
+ * prose into /bin/bash produces "command not found" spam; the subagent then
+ * fails its first turn and the SwarmCoordinator assessor is left trying to
+ * unstick it. Shell agents are only sane when initialTask is already a bare
+ * command (e.g. `df -h`, `git status`).
+ *
+ * Heuristic:
+ *   - short strings with no whitespace that look like a single token → command
+ *   - anything containing a natural-language article ("a/an/the"), multiple
+ *     clause words, or > 5 whitespace-separated words → prose
+ *
+ * Tuned to be conservative: short commands like "df -h" or "git status -s"
+ * stay shell; "check disk usage on this vps" or "add a todo" route to a
+ * reasoning agent.
+ */
+function looksLikeProseTask(text: string | undefined | null): boolean {
+  if (!text) return false;
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return false;
+  const words = trimmed.split(/\s+/);
+  if (words.length > 5) return true;
+  if (/\b(a|an|the|this|that|please|my|your|our)\b/i.test(trimmed)) {
+    return true;
+  }
+  if (/[.!?]/.test(trimmed)) return true;
+  return false;
+}
+
+/**
+ * Split a multi-intent task description into one segment per distinct ask.
+ * Matches numbered lists (`1. ...`, `2) ...`) and bullets (`- ...`, `* ...`).
+ * Returns the original text as a single-element array when no multi-intent
+ * structure is detected, so the call site can always pipe-join unconditionally.
+ *
+ * Rationale: the action-selector LLM consistently puts multi-ask user prompts
+ * into the `task` field instead of `agents`. The result is a subagent that
+ * cherry-picks one item and silently drops the rest. Auto-splitting here
+ * guarantees every distinct ask gets its own subagent regardless of which
+ * field the LLM populated.
+ */
+export function splitMultiIntentTask(text: string): string[] {
+  if (!text) return [text];
+  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+
+  const numbered: string[] = [];
+  for (const line of lines) {
+    const match = line.match(/^(\d+)[.):]\s+(.+)$/);
+    if (match) {
+      numbered.push(match[2]);
+    } else if (numbered.length > 0 && !/^\d+[.):]/.test(line)) {
+      numbered[numbered.length - 1] = `${numbered[numbered.length - 1]} ${line}`;
+    }
+  }
+  if (numbered.length >= 2) return numbered;
+
+  const bulleted = lines
+    .filter((l) => /^[-*•]\s+/.test(l))
+    .map((l) => l.replace(/^[-*•]\s+/, ""));
+  if (bulleted.length >= 2) return bulleted;
+
+  return [text];
+}
+
+/**
+ * Reject a shell/pi/bash agentType hint when the task text is prose, so both
+ * CREATE_TASK and SPAWN_AGENT upgrade to a reasoning framework via
+ * `resolveAgentType`. Returns the sanitized hint (original value or `undefined`
+ * if it was rejected). `callerTag` is the [PREFIX] string used when warning
+ * so the log line points at the actual callsite.
+ */
+export function coerceShellAgentTypeForProse(
+  explicitRawType: string | undefined,
+  taskText: string | undefined | null,
+  callerTag: string,
+): string | undefined {
+  if (
+    explicitRawType &&
+    /^(shell|pi|bash)$/i.test(explicitRawType.trim()) &&
+    looksLikeProseTask(taskText)
+  ) {
+    logger.warn(
+      `${callerTag} ignoring agentType="${explicitRawType}": task text is prose, upgrading to default reasoning framework`,
+    );
+    return undefined;
+  }
+  return explicitRawType;
+}
+
 type BackgroundAction = Action & {
   suppressPostActionContinuation?: boolean;
 };
@@ -93,7 +209,7 @@ export const startCodingTaskAction: BackgroundAction = {
     "IMPORTANT: If the user references a repository from conversation history (e.g. 'in the same repo', " +
     "'on that project', 'add a feature to it'), you MUST include the repo URL in the `repo` parameter. " +
     "If the task involves code changes to a real project but you don't know the repo URL, ASK the user for it " +
-    "before calling this action — do not default to a scratch directory for real project work.",
+    "before calling this action. Do not default to a scratch directory for real project work.",
   descriptionCompressed:
     "Spawn async task agents for multi-step jobs: code, debug, research, write, analyze. Auto-provisions workspace from repo URL.",
 
@@ -130,6 +246,40 @@ export const startCodingTaskAction: BackgroundAction = {
         },
       },
     ],
+    [
+      {
+        name: "{{user1}}",
+        content: {
+          text: "Can you implement a quicksort algorithm? Can you also analyze this CSV and generate some charts? And can you draft a one-page doc summarizing both for me?",
+        },
+      },
+      {
+        name: "{{agentName}}",
+        content: {
+          text: "on it",
+          action: "CREATE_TASK",
+          agents:
+            "implement a quicksort algorithm in typescript with tests | analyze the user's CSV and generate charts (matplotlib or similar) | draft a one-page doc summarizing the quicksort implementation and the CSV findings",
+        },
+      },
+    ],
+    [
+      {
+        name: "{{user1}}",
+        content: {
+          text: "ok answers:\n1. quicksort: typescript with a unit test\n2. notes: pull from /tmp/notes.md, summarize back to me\n3. revenue chart: bar chart of the csv I sent earlier\n4. market research: focus on companies + funding\n\ndo all 4 in parallel",
+        },
+      },
+      {
+        name: "{{agentName}}",
+        content: {
+          text: "spawning 4",
+          action: "CREATE_TASK",
+          agents:
+            "implement quicksort in typescript with a small unit test | summarize the markdown file at /tmp/notes.md and report the summary | take the previously provided csv and generate a bar chart of revenue by day | research the market: list companies and their funding/revenue",
+        },
+      },
+    ],
   ],
 
   validate: async (
@@ -150,6 +300,12 @@ export const startCodingTaskAction: BackgroundAction = {
     const text = getMessageText(message).trim();
     if (text.length === 0) {
       return true;
+    }
+
+    // LifeOps prompts ("add a todo to fix that PR I made yesterday") share
+    // verb surface with CREATE_TASK similes. Decline so LIFE wins.
+    if (looksLikeLifeOpsRequest(text)) {
+      return false;
     }
 
     return looksLikeTaskAgentRequest(text);
@@ -192,8 +348,18 @@ export const startCodingTaskAction: BackgroundAction = {
     const params = options?.parameters;
     const content = message.content as Record<string, unknown>;
 
-    const explicitRawType =
-      (params?.agentType as string) ?? (content.agentType as string);
+    // Shell/pi/bash agents pipe initialTask straight to /bin/bash. When the
+    // LLM picks them for a prose prompt the subagent dies on turn 1 with
+    // "command not found" spam. Reject the hint and let resolveAgentType
+    // pick a reasoning framework instead. (Shared with SPAWN_AGENT.)
+    const explicitRawType = coerceShellAgentTypeForProse(
+      (params?.agentType as string | undefined) ??
+        (content.agentType as string | undefined),
+      (params?.task as string) ??
+        (content.task as string) ??
+        (content.text as string),
+      "[CREATE_TASK]",
+    );
     const memoryContent =
       (params?.memoryContent as string) ?? (content.memoryContent as string);
     const approvalPreset =
@@ -321,22 +487,38 @@ export const startCodingTaskAction: BackgroundAction = {
       explicitLabel,
     };
 
-    // --- Dispatch: build a pipe-delimited agents string for handleMultiAgent ---
+    // Dispatch: build a pipe-delimited agents string for handleMultiAgent.
+    // Always run the multi-intent splitter against the raw user text, then
+    // use the LARGER of (LLM-supplied `agents`, user-text split). The
+    // action-selector LLM both (a) rewrites multi-ask prompts into a
+    // single-item `task` and (b) populates `agents` with fewer segments
+    // than the user enumerated, dropping items it judged less actionable.
+    // Trusting either field as-is silently loses the dropped asks; the
+    // user text is the source of truth for how many distinct items there
+    // are.
+    const task = (params?.task as string) ?? (content.task as string);
+    const userText = (content.text as string)?.trim() || "";
     const agentsParam =
       (params?.agents as string) ?? (content.agents as string);
 
+    const llmSegments = agentsParam
+      ? agentsParam
+          .split("|")
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
+    const userSegments = splitMultiIntentTask(userText);
+
+    if (userSegments.length > llmSegments.length && userSegments.length > 1) {
+      logger.info(
+        `[CREATE_TASK] auto-split multi-intent user prompt into ${userSegments.length} parallel agents (LLM proposed ${llmSegments.length})`,
+      );
+      return handleMultiAgent(ctx, userSegments.join(" | "));
+    }
     if (agentsParam) {
       return handleMultiAgent(ctx, agentsParam);
     }
-
-    // Single-agent mode: build a single-element agents string so we can
-    // reuse handleMultiAgent (which handles length-1 specs fine).
-    // Fall back to the user's message text when params extraction fails —
-    // the user's request IS the task (e.g. "build me a todo app").
-    const task = (params?.task as string) ?? (content.task as string);
-    const userText = (content.text as string)?.trim() || "";
-    const singleAgentSpec = task || userText;
-    return handleMultiAgent(ctx, singleAgentSpec);
+    return handleMultiAgent(ctx, task || userText);
   },
 
   parameters: [
@@ -353,15 +535,23 @@ export const startCodingTaskAction: BackgroundAction = {
     {
       name: "agentType",
       description:
-        "Specific task-agent framework to use. Options: claude, codex, gemini, aider, pi, shell. " +
-        "If omitted, the orchestrator picks the current preferred framework automatically.",
+        "Specific reasoning task-agent framework to use. Options: claude, codex, gemini, aider. " +
+        "If omitted, the orchestrator picks the current preferred framework automatically. " +
+        "Do NOT select 'shell' or 'pi' here: those are non-reasoning raw bash sessions " +
+        "that cannot interpret natural-language tasks; leave this unset and the orchestrator " +
+        "routes to the preferred reasoning framework.",
       required: false,
       schema: { type: "string" as const },
     },
     {
       name: "task",
       description:
-        "The open-ended task or prompt to send once the task agent is ready. Used for single-agent mode.",
+        "The open-ended task or prompt to send once the task agent is ready. Used for single-agent " +
+        "mode ONLY. If the user message contains more than one distinct ask (numbered list, bulleted " +
+        "list, 'and also', 'in parallel', or any phrasing that enumerates several things to do), do " +
+        "NOT use `task` — use `agents` with one pipe-separated segment per distinct ask. Putting " +
+        "multi-intent content in `task` causes the subagent to cherry-pick one item and silently " +
+        "drop the rest.",
       required: false,
       schema: { type: "string" as const },
     },
@@ -370,7 +560,11 @@ export const startCodingTaskAction: BackgroundAction = {
       description:
         "Pipe-delimited list of task-agent assignments for multi-agent mode. Each segment is a task description. " +
         "Optionally prefix with an agent type: 'claude:Fix auth | gemini:Write tests | codex:Update docs'. " +
-        "Each task agent gets its own workspace clone. If provided, the 'task' parameter is ignored.",
+        "Each task agent gets its own workspace clone. If provided, the 'task' parameter is ignored. " +
+        "USE THIS when the user message contains multiple distinct asks in one prompt — bullets, " +
+        "numbered list, or 'can you... can you also...' phrasing. Map every distinct ask to one " +
+        "pipe-separated segment so each request gets its own subagent. Never silently drop any of " +
+        "the asks in favor of just one.",
       required: false,
       schema: { type: "string" as const },
     },
@@ -403,3 +597,4 @@ export const startCodingTaskAction: BackgroundAction = {
 };
 
 export const createTaskAction = startCodingTaskAction;
+

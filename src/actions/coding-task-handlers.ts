@@ -18,6 +18,7 @@ import {
   type Memory,
   ModelType,
   type State,
+  type UUID,
 } from "@elizaos/core";
 import type { AgentCredentials, ApprovalPreset } from "coding-agent-adapters";
 import type { AgentSelectionStrategy } from "../services/agent-selection.js";
@@ -267,17 +268,51 @@ function buildSwarmMemoryInstructions(
  * The LLM produces shared guidance (style, conventions, constraints) from
  * the user's request and subtask list. Task-type agnostic — works for coding,
  * research, writing, or any multi-agent workflow.
+ *
+ * `roomId` (optional) injects the last few room messages so the planner can
+ * resolve pronouns and references back to earlier turns. Without it, a prompt
+ * like "make a shrine for her" gets the planner guessing the antecedent and
+ * defaulting to the bot's brand identity instead of the actual referent from
+ * the prior turn.
  */
 async function generateSwarmContext(
   runtime: IAgentRuntime,
   subtasks: string[],
   userRequest: string,
+  roomId?: UUID,
 ): Promise<string> {
   const taskList = subtasks.map((t, i) => `  ${i + 1}. ${t}`).join("\n");
 
+  let recentConversation = "";
+  if (roomId) {
+    try {
+      const memories = await runtime.getMemories({
+        roomId,
+        limit: 10,
+        tableName: "messages",
+      });
+      const ordered = [...memories].reverse();
+      const lines = ordered
+        .map((m) => {
+          const text = (m.content as { text?: string }).text;
+          if (!text) return "";
+          const speaker = m.entityId === runtime.agentId ? "agent" : "user";
+          const trimmed = text.length > 400 ? `${text.slice(0, 400)}...` : text;
+          return `${speaker}: ${trimmed}`;
+        })
+        .filter(Boolean);
+      if (lines.length > 0) {
+        recentConversation = `\n\nRecent conversation in this room (oldest first), use it to resolve pronouns and references in the user's request:\n${lines.join("\n")}\n`;
+      }
+    } catch (err) {
+      logger.warn(`Swarm context: recent-messages fetch failed: ${err}`);
+    }
+  }
+
   const prompt =
     `You are an AI orchestrator about to launch ${subtasks.length} parallel agents. ` +
-    `Before they start, produce a brief shared context document so all agents stay aligned.\n\n` +
+    `Before they start, produce a brief shared context document so all agents stay aligned.` +
+    `${recentConversation}\n\n` +
     `User's request: "${userRequest}"\n\n` +
     `Subtasks being assigned:\n${taskList}\n\n` +
     `Generate a concise shared context brief (3-10 bullet points) covering:\n` +
@@ -420,7 +455,12 @@ export async function handleMultiAgent(
     (message.content as { text?: string })?.text ?? agentsParam;
   const swarmContext =
     agentSpecs.length > 1
-      ? await generateSwarmContext(runtime, cleanSubtasks, userRequest)
+      ? await generateSwarmContext(
+          runtime,
+          cleanSubtasks,
+          userRequest,
+          message.roomId,
+        )
       : "";
 
   // Store swarm context on coordinator for use in decision prompts

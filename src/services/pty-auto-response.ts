@@ -1,5 +1,5 @@
 /**
- * Auto-response rule management for PTY sessions.
+ * Auto-response rule management for PTY sessions (bypass-fix).
  *
  * Contains logic for pushing default auto-response rules per agent type
  * and handling Gemini authentication flow.
@@ -64,7 +64,7 @@ export async function pushDefaultRules(
     });
   }
 
-  // Claude — API key confirmation prompt (appears when ANTHROPIC_API_KEY is set
+  // Claude: API key confirmation prompt (appears when ANTHROPIC_API_KEY is set
   // alongside a subscription login, or in CLAUDE_CODE_SIMPLE mode)
   if (agentType === "claude") {
     const llmProvider =
@@ -82,11 +82,34 @@ export async function pushDefaultRules(
         once: true,
       });
     }
+
+    // Bypass Permissions warning: fresh workdirs trigger a one-time
+    // "Yes, I accept / No, exit" confirmation. pty-manager's TUI-aware
+    // default for permission rules without explicit keys presses Enter,
+    // which resolves to option 1 "No, exit" and kills claude with exit
+    // code 1 before any work runs. Encode the response as explicit keys
+    // so the worker types "2" + Enter. No `once`: TUI may redraw the
+    // dialog before the selection is committed.
+    //
+    // Covers failure mode: seedClaudeTrustForWorkdir couldn't write
+    // ~/.claude.json (file locked / read-only / concurrent write) AND the
+    // session is non-coordinator (adapter auto-response still on).
+    rules.push({
+      pattern:
+        /WARNING.{0,200}Bypass Permissions mode|Bypass Permissions mode.{0,200}accept all responsibility/is,
+      type: "permission",
+      response: "",
+      responseType: "keys" as const,
+      keys: ["2", "enter"],
+      description:
+        "Accept Claude Bypass Permissions dialog (option 2: 'Yes, I accept')",
+      safe: true,
+    });
   }
 
-  // Gemini — auth flow (update notices are informational, don't need a response)
+  // Gemini: auth flow (update notices are informational, don't need a response)
   if (agentType === "gemini") {
-    // Auth menu detection — select API key or Google login based on available credentials
+    // Auth menu detection: select API key or Google login based on available credentials
     const geminiApiKey = ctx.runtime.getSetting("GENERATIVE_AI_API_KEY") as
       | string
       | undefined;
@@ -102,7 +125,7 @@ export async function pushDefaultRules(
         safe: true,
       });
 
-      // Step 2: API key input prompt — send the actual key value.
+      // Step 2: API key input prompt. Send the actual key value.
       // Tight regex: only matches the Gemini CLI's exact prompt format
       // to prevent exfiltration via crafted terminal output.
       // once: fire at most once per session to prevent repeated credential injection.
@@ -162,7 +185,7 @@ export async function pushDefaultRules(
 
 /**
  * Handle Gemini authentication when login_required fires.
- * Sends /auth to start the auth flow — auto-response rules
+ * Sends /auth to start the auth flow; auto-response rules
  * then handle menu selection and API key input.
  */
 export async function handleGeminiAuth(

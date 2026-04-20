@@ -1,6 +1,7 @@
 /** @module services/pty-service */
 
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { type IAgentRuntime, logger, type Service } from "@elizaos/core";
 import {
@@ -98,15 +99,10 @@ import {
 
 /**
  * Grace period after `task_complete` before auto-stopping a PTY session.
- * Short enough that stale subagents don't linger (and trigger spurious
- * stall classifications that fire phantom heartbeats in downstream
- * streamers), long enough that any backgrounded processes spawned by
- * the agent can detach from the PTY parent before it exits.
- *
- * Previously 5000 ms in our nubs/full-working-state fork branch
- * (commit 66a9a74); upstream alpha removed the auto-stop entirely in a
- * later refactor which caused subagents to sit around for minutes after
- * finishing their turn.
+ * Short enough that stale subagents don't linger (spurious stall
+ * classifications fire phantom heartbeats in downstream streamers), long
+ * enough that backgrounded processes spawned by the agent can detach from
+ * the PTY parent before it exits.
  */
 const TASK_COMPLETE_STOP_DELAY_MS = 5_000;
 
@@ -141,6 +137,73 @@ export type {
 } from "./pty-types.js";
 // Re-export for backward compatibility
 export { normalizeAgentType } from "./pty-types.js";
+
+/**
+ * Narrow shape of `~/.claude.json` that we read/write here. Claude Code owns
+ * the full schema; we touch only the `projects` map and its per-workdir
+ * `hasTrustDialogAccepted` flag. Unknown keys are preserved via the
+ * index signature so we never clobber fields we don't model.
+ */
+interface ClaudeProjectEntry {
+  hasTrustDialogAccepted?: boolean;
+  [key: string]: unknown;
+}
+interface ClaudeConfig {
+  projects?: Record<string, ClaudeProjectEntry>;
+  [key: string]: unknown;
+}
+
+/**
+ * Pre-accept Claude Code's one-time trust dialog for a workdir by writing
+ * `hasTrustDialogAccepted: true` into `~/.claude.json`'s `projects` map.
+ *
+ * Why: Claude Code shows a Bypass Permissions / Trust dialog the first time
+ * it runs in any unrecognised directory. On a fresh scratch workdir that
+ * dialog is blocking: the auto-response path ends up pressing Enter, which
+ * defaults to "No, exit" and kills the subagent with exit code 1 before any
+ * work happens. Seeding the trust entry upfront skips the dialog entirely.
+ *
+ * Idempotent and best-effort: returns without throwing if the config file
+ * does not yet exist, is unreadable, or is not valid JSON. In those cases
+ * claude will show the dialog the normal way, which is no worse than before.
+ */
+async function seedClaudeTrustForWorkdir(workdir: string): Promise<void> {
+  const configPath = join(homedir(), ".claude.json");
+  let raw: string;
+  try {
+    raw = await readFile(configPath, "utf8");
+  } catch (err) {
+    // ENOENT on first-run is expected (claude has never run here); any
+    // other read error (EACCES, EIO, etc.) is unexpected: log so we
+    // don't silently skip trust-seeding on a genuinely broken config.
+    if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") {
+      logger.warn(
+        `[pty-service] seedClaudeTrustForWorkdir: failed to read ${configPath}: ${err}`,
+      );
+    }
+    return;
+  }
+  let parsed: ClaudeConfig;
+  try {
+    parsed = JSON.parse(raw) as ClaudeConfig;
+  } catch (err) {
+    // Malformed JSON: possible after an aborted claude write or manual
+    // edit. Skip seeding (claude will show the dialog normally) but warn
+    // so we can spot a corrupted config instead of silently bypassing.
+    logger.warn(
+      `[pty-service] seedClaudeTrustForWorkdir: ${configPath} is not valid JSON: ${err}`,
+    );
+    return;
+  }
+  const projects = parsed.projects ?? {};
+  const existing = projects[workdir];
+  if (existing && existing.hasTrustDialogAccepted === true) {
+    return;
+  }
+  projects[workdir] = { ...(existing ?? {}), hasTrustDialogAccepted: true };
+  parsed.projects = projects;
+  await writeFile(configPath, JSON.stringify(parsed, null, 2), "utf8");
+}
 
 /**
  * Retrieve the SwarmCoordinator from the PTYService registered on the runtime.
@@ -225,10 +288,10 @@ export class PTYService {
     const service = new PTYService(runtime, config ?? {});
     await service.initialize();
 
-    // Wire the SwarmCoordinator — done here instead of plugin init()
+    // Wire the SwarmCoordinator here instead of plugin init()
     // because ElizaOS calls Service.start() reliably but may not call
     // plugin.init() depending on the registration path.
-    // Guard: the framework may call start() more than once — skip if
+    // Guard: the framework may call start() more than once, skip if
     // a coordinator is already registered on this runtime.
     const servicesMap = runtime.services as Map<string, Service[]> | undefined;
     const existing = servicesMap?.get?.("SWARM_COORDINATOR");
@@ -287,7 +350,7 @@ export class PTYService {
         const coordinator = this.coordinator;
         if (!coordinator) return false;
         const taskCtx = coordinator.getTaskContext(sessionId);
-        // tool_running counts as active for PTY purposes — the task is
+        // tool_running counts as active for PTY purposes: the task is
         // still alive, just executing a tool. matches the same expansion
         // applied to handleTurnComplete and drainPendingTurnComplete so
         // tool-heavy scratch tasks aren't treated as inactive mid-run.
@@ -440,6 +503,19 @@ export class PTYService {
 
     // Store workdir for later retrieval
     this.sessionWorkdirs.set(sessionId, workdir);
+
+    // Pre-seed trust-dialog acceptance for claude workdirs. Claude Code shows
+    // a one-time "Bypass Permissions" confirmation in every workdir whose
+    // trust dialog hasn't been accepted. The dialog defaults "No, exit" on
+    // Enter and kills the subagent before any work runs. Writing
+    // `hasTrustDialogAccepted: true` into ~/.claude.json's `projects` map
+    // skips both that dialog and the per-workdir trust prompt. No-op for
+    // other agent types.
+    if (resolvedAgentType === "claude") {
+      await seedClaudeTrustForWorkdir(workdir).catch((err) =>
+        this.log(`Failed to pre-seed claude trust for ${workdir}: ${err}`),
+      );
+    }
 
     // Write memory content before spawning so the agent reads it on startup.
     // Always prepend the workspace lock so the spawned agent stays inside its
@@ -751,7 +827,7 @@ export class PTYService {
     }
   }
 
-  /** Default approval preset — runtime env var takes precedence over config. */
+  /** Default approval preset. Runtime env var takes precedence over config. */
   get defaultApprovalPreset(): ApprovalPreset {
     const fromEnv = this.runtime.getSetting(
       "PARALLAX_DEFAULT_APPROVAL_PRESET",
@@ -765,7 +841,7 @@ export class PTYService {
     return this.serviceConfig.defaultApprovalPreset ?? "autonomous";
   }
 
-  /** Agent selection strategy — env var takes precedence. */
+  /** Agent selection strategy. Env var takes precedence. */
   get agentSelectionStrategy(): AgentSelectionStrategy {
     const fromEnv = this.runtime.getSetting(
       "PARALLAX_AGENT_SELECTION_STRATEGY",
@@ -1067,13 +1143,13 @@ export class PTYService {
         break;
       case "permission_approved":
         // Permission was auto-approved via PermissionRequest hook.
-        // No PTY event needed — the hook response already allowed it.
+        // No PTY event needed. The hook response already allowed it.
         break;
       case "notification":
         this.emitEvent(sessionId, "message", { ...data, source: "hook" });
         break;
       case "session_end":
-        // CLI session is ending — treat as a stopped event so the coordinator
+        // CLI session is ending. Treat as a stopped event so the coordinator
         // and frontend see the session transition to terminal state.
         this.emitEvent(sessionId, "stopped", {
           ...data,
@@ -1354,7 +1430,7 @@ export class PTYService {
     // For coordinator-managed sessions in autonomous mode: use combined
     // classify+decide in a single LLM call. The suggestedResponse is kept
     // intact so pty-manager auto-responds, and the coordinator receives
-    // autoResponded: true — skipping the second LLM call in handleBlocked().
+    // autoResponded: true, skipping the second LLM call in handleBlocked().
     if (
       meta?.coordinatorManaged &&
       this.coordinator?.getSupervisionLevel() === "autonomous"
@@ -1362,14 +1438,14 @@ export class PTYService {
       const taskCtx = this.coordinator.getTaskContext(sessionId);
       if (taskCtx) {
         // Suppress stall classification during the post-send cooldown.
-        // The agent is processing coordinator input — the output buffer
+        // The agent is processing coordinator input. The output buffer
         // still contains the previous response, so classifying now would
         // produce a stale "task_complete" that triggers cascading follow-ups.
         if (taskCtx.lastInputSentAt) {
           const elapsed = Date.now() - taskCtx.lastInputSentAt;
           if (elapsed < POST_SEND_COOLDOWN_MS) {
             this.log(
-              `Suppressing stall classification for ${sessionId} — ` +
+              `Suppressing stall classification for ${sessionId}: ` +
                 `${Math.round(elapsed / 1000)}s since coordinator sent input`,
             );
             return null;
@@ -1498,7 +1574,7 @@ export class PTYService {
   /**
    * Ensure that orchestrator-injected files (CLAUDE.md, .claude/, GEMINI.md, etc.)
    * are listed in the workspace .gitignore so agents don't commit them.
-   * Appends to an existing .gitignore or creates one. Idempotent — skips if
+   * Appends to an existing .gitignore or creates one. Idempotent: skips if
    * the marker comment is already present. Serialized per-path to prevent
    * duplicate entries from concurrent spawns.
    */
@@ -1529,7 +1605,7 @@ export class PTYService {
     try {
       existing = await readFile(gitignorePath, "utf-8");
     } catch {
-      // No .gitignore yet — we'll create one
+      // No .gitignore yet, we'll create one
     }
 
     // Idempotent: skip if we already added our entries
@@ -1548,7 +1624,7 @@ export class PTYService {
 
     try {
       if (existing.length === 0) {
-        // No .gitignore yet — create with just our entries
+        // No .gitignore yet, create with just our entries
         await writeFile(gitignorePath, `${entries.join("\n")}\n`, "utf-8");
       } else {
         // Append-only to avoid clobbering concurrent edits
