@@ -119,7 +119,16 @@ function looksLikeProseTask(text: string | undefined | null): boolean {
   if (/\b(a|an|the|this|that|please|my|your|our)\b/i.test(trimmed)) {
     return true;
   }
-  if (/[.!?]/.test(trimmed)) return true;
+  // Sentence-terminating punctuation counts as prose, but only when it
+  // actually ends a clause — not when it's embedded in a file name
+  // (`README.md`, `*.ts`), a relative path (`find .`, `cat ./foo`), or a
+  // glob (`ls *.md`). `?` and `!` in bare shell are rare (almost always
+  // quoted), so we catch those anywhere. `.` only counts when it follows
+  // a word char AND ends a clause (trailing on a token + whitespace, or
+  // end-of-string). That lets `find . -name foo` and `cat README.md`
+  // through as commands while still catching `add a todo.`.
+  if (/[?!]/.test(trimmed)) return true;
+  if (/\w\.(?:\s|$)/.test(trimmed)) return true;
   return false;
 }
 

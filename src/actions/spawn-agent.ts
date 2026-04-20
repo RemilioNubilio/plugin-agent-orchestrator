@@ -221,16 +221,21 @@ export const spawnAgentAction: Action = {
     // not auto-retry on action failure.
     const splitProbe = splitMultiIntentTask(userText || task);
     if (splitProbe.length > 1) {
-      logger.info(
-        `[SPAWN_AGENT] redirecting multi-intent prompt with ${splitProbe.length} distinct asks to CREATE_TASK swarm path`,
-      );
-      return startCodingTaskAction.handler!(
-        runtime,
-        message,
-        state,
-        options,
-        callback,
-      );
+      const createTaskHandler = startCodingTaskAction.handler;
+      if (!createTaskHandler) {
+        // Should never happen — startCodingTaskAction is a static export in
+        // the same module graph. If we ever see this, surface a loud error
+        // instead of a cryptic "Cannot read properties of undefined" so the
+        // misconfiguration is traceable.
+        logger.error(
+          "[SPAWN_AGENT] startCodingTaskAction has no handler — cannot redirect multi-intent prompt. Falling through to single-agent spawn.",
+        );
+      } else {
+        logger.info(
+          `[SPAWN_AGENT] redirecting multi-intent prompt with ${splitProbe.length} distinct asks to CREATE_TASK swarm path`,
+        );
+        return createTaskHandler(runtime, message, state, options, callback);
+      }
     }
 
     // Shared guard with CREATE_TASK: reject shell/pi/bash agentType hints when
