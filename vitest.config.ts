@@ -9,6 +9,7 @@ export default defineConfig({
       "src/__tests__/skill-manifest.test.ts",
       "src/__tests__/skill-recommender.test.ts",
       "src/__tests__/skill-callback.test.ts",
+      "src/__tests__/split-multi-intent.test.ts",
     ],
   },
 });
