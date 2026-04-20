@@ -11,6 +11,7 @@ export default defineConfig({
       "src/__tests__/skill-callback.test.ts",
       "src/__tests__/pr39-followups.test.ts",
       "src/__tests__/task-agent-auth.test.ts",
+      "src/__tests__/pty-spawn-path-fallback.test.ts",
     ],
   },
 });
