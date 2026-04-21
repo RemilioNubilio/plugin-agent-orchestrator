@@ -701,7 +701,8 @@ export async function handleAgentRoutes(
         const label = (metadata as Record<string, unknown>)?.label as
           | string
           | undefined;
-        const defaultLabelPrefix = normalizedType === "shell" ? "shell" : "agent";
+        const defaultLabelPrefix =
+          normalizedType === "shell" ? "shell" : "agent";
         await coordinator.registerTask(session.id, {
           threadId: taskThread?.id ?? requestedThreadId ?? session.id,
           agentType:

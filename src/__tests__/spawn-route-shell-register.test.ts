@@ -57,12 +57,14 @@ describe("handleAgentRoutes POST /spawn — shell session registers with coordin
     coordinator,
     listSessions: vi.fn(async () => []),
     resolveAgentType: vi.fn(async () => "claude"),
-    spawnSession: vi.fn(async (opts: { agentType: string; workdir: string }) => ({
-      id: "pty-test-0001",
-      agentType: opts.agentType,
-      workdir: opts.workdir,
-      status: "starting",
-    })),
+    spawnSession: vi.fn(
+      async (opts: { agentType: string; workdir: string }) => ({
+        id: "pty-test-0001",
+        agentType: opts.agentType,
+        workdir: opts.workdir,
+        status: "starting",
+      }),
+    ),
   };
   const runtime = {
     getSetting: vi.fn((key: string) => {
@@ -113,7 +115,9 @@ describe("handleAgentRoutes POST /spawn — shell session registers with coordin
         `spawn route returned ${res.getStatus()}: ${res.getBody()}`,
       );
     }
-    expect(res.getJson<{ sessionId: string }>().sessionId).toBe("pty-test-0001");
+    expect(res.getJson<{ sessionId: string }>().sessionId).toBe(
+      "pty-test-0001",
+    );
 
     // The bug was that this assertion failed — registerTask was never called
     // because the route had `if (coordinator && task)`.
