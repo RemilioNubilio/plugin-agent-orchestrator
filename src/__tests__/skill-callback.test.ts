@@ -6,19 +6,15 @@
  * result back to the same session via ptyService.sendToSession.
  */
 
-import { describe, expect, it, vi } from "vitest";
 import type { Action, IAgentRuntime } from "@elizaos/core";
+import { describe, expect, it, vi } from "vitest";
 import {
   createSkillSessionAllowList,
   installSkillCallbackBridge,
   parseUseSkillDirective,
 } from "../services/skill-callback-bridge.js";
 
-type EventCallback = (
-  sessionId: string,
-  event: string,
-  data: unknown,
-) => void;
+type EventCallback = (sessionId: string, event: string, data: unknown) => void;
 
 interface FakePtyService {
   emit: (sessionId: string, event: string, data: unknown) => void;
@@ -107,7 +103,9 @@ describe("parseUseSkillDirective", () => {
   });
 
   it("falls back to the raw string when args are not valid JSON", () => {
-    const parsed = parseUseSkillDirective("USE_SKILL weather {something not json}");
+    const parsed = parseUseSkillDirective(
+      "USE_SKILL weather {something not json}",
+    );
     expect(parsed?.slug).toBe("weather");
     // Bridge keeps the raw payload so the action can decide how to coerce it.
     expect(typeof parsed?.args).toBe("string");
@@ -115,14 +113,16 @@ describe("parseUseSkillDirective", () => {
 
   it("matches the directive when surrounded by other agent output", () => {
     const text =
-      "Thinking about the task...\nUSE_SKILL github-issues {\"action\": \"list\"}\nDone.";
+      'Thinking about the task...\nUSE_SKILL github-issues {"action": "list"}\nDone.';
     const parsed = parseUseSkillDirective(text);
     expect(parsed?.slug).toBe("github-issues");
     expect(parsed?.args).toEqual({ action: "list" });
   });
 
   it("returns null when no directive is present", () => {
-    expect(parseUseSkillDirective("Just some prose with no directive.")).toBeNull();
+    expect(
+      parseUseSkillDirective("Just some prose with no directive."),
+    ).toBeNull();
     expect(parseUseSkillDirective("")).toBeNull();
   });
 
@@ -286,7 +286,11 @@ describe("installSkillCallbackBridge", () => {
     const pty = createFakePty();
     const handler = vi.fn(async (_r, _m, _s, _options, callback) => {
       if (callback) await callback({ text: "ok" });
-      return { success: true, text: "ok", data: { slug: "weather", mode: "guidance" as const } };
+      return {
+        success: true,
+        text: "ok",
+        data: { slug: "weather", mode: "guidance" as const },
+      };
     });
     const runtime = createRuntime({ useSkillHandler: handler });
     // Allow-list exists but no entry for this session.

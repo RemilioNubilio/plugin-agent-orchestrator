@@ -8,7 +8,7 @@
  *   Bug 3: unguarded `startCodingTaskAction.handler!` bang assertion.
  */
 
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -54,14 +54,16 @@ describe("coerceShellAgentTypeForProse — shell-command false-positives", () =>
   });
 
   it("leaves non-shell hints alone regardless of text", () => {
-    expect(coerceShellAgentTypeForProse("claude", "build a timer app", "[t]"))
-      .toBe("claude");
+    expect(
+      coerceShellAgentTypeForProse("claude", "build a timer app", "[t]"),
+    ).toBe("claude");
     expect(coerceShellAgentTypeForProse("codex", "df -h", "[t]")).toBe("codex");
   });
 
   it("returns undefined when no hint is provided", () => {
-    expect(coerceShellAgentTypeForProse(undefined, "anything", "[t]"))
-      .toBeUndefined();
+    expect(
+      coerceShellAgentTypeForProse(undefined, "anything", "[t]"),
+    ).toBeUndefined();
   });
 });
 
@@ -142,10 +144,12 @@ describe("seedClaudeTrustForWorkdir — concurrent writes preserve all entries",
       >;
       topLevelUnmodeled?: string;
     };
-    expect(parsed.projects?.["/tmp/already-trusted"]?.hasTrustDialogAccepted)
-      .toBe(true);
-    expect(parsed.projects?.["/tmp/already-trusted"]?.someUnmodeledField)
-      .toBe("preserve-me");
+    expect(
+      parsed.projects?.["/tmp/already-trusted"]?.hasTrustDialogAccepted,
+    ).toBe(true);
+    expect(parsed.projects?.["/tmp/already-trusted"]?.someUnmodeledField).toBe(
+      "preserve-me",
+    );
     expect(parsed.topLevelUnmodeled).toBe("also-preserve-me");
   });
 

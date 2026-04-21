@@ -15,11 +15,7 @@
  * @module services/skill-recommender
  */
 
-import {
-  type IAgentRuntime,
-  type Logger,
-  ModelType,
-} from "@elizaos/core";
+import { type IAgentRuntime, type Logger, ModelType } from "@elizaos/core";
 import { withTrajectoryContext } from "./trajectory-context.js";
 
 const LOG_PREFIX = "[SkillRecommender]";
@@ -148,8 +144,7 @@ function tokenize(text: string): string[] {
     .replace(/[^a-z0-9\s-]/g, " ")
     .split(/\s+/)
     .filter(
-      (token) =>
-        token.length >= MIN_TOKEN_LENGTH && !STOP_WORDS.has(token),
+      (token) => token.length >= MIN_TOKEN_LENGTH && !STOP_WORDS.has(token),
     );
 }
 
@@ -311,9 +306,9 @@ export async function recommendSkillsForTask(
   const max = opts.max ?? DEFAULT_MAX;
   if (max <= 0) return [];
 
-  const service = runtime.getService(
-    "AGENT_SKILLS_SERVICE",
-  ) as unknown as SkillsServiceShape | undefined;
+  const service = runtime.getService("AGENT_SKILLS_SERVICE") as unknown as
+    | SkillsServiceShape
+    | undefined;
   if (!service) {
     log.debug?.(
       `${LOG_PREFIX} AGENT_SKILLS_SERVICE not registered; no recommendations`,
@@ -340,7 +335,8 @@ export async function recommendSkillsForTask(
   const taskTokens = new Set(tokenize(opts.taskText));
   const contextParts: string[] = [];
   if (opts.repoContext?.language) contextParts.push(opts.repoContext.language);
-  if (opts.repoContext?.framework) contextParts.push(opts.repoContext.framework);
+  if (opts.repoContext?.framework)
+    contextParts.push(opts.repoContext.framework);
   const contextTokens = new Set(tokenize(contextParts.join(" ")));
 
   // Pass 1: keyword fast path.
@@ -355,9 +351,7 @@ export async function recommendSkillsForTask(
     .slice(0, KEYWORD_CANDIDATE_LIMIT);
 
   if (scoredCandidates.length === 0) {
-    log.debug?.(
-      `${LOG_PREFIX} no keyword overlap for task; skipping LLM pass`,
-    );
+    log.debug?.(`${LOG_PREFIX} no keyword overlap for task; skipping LLM pass`);
     return [];
   }
 

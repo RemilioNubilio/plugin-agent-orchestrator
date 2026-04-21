@@ -15,12 +15,12 @@ import type {
   SpawnConfig,
   WorkerSessionHandle,
 } from "pty-manager";
+import { cleanForChat } from "./ansi-utils.js";
 import type {
   PTYServiceConfig,
   SessionInfo,
   SpawnSessionOptions,
 } from "./pty-types.js";
-import { cleanForChat } from "./ansi-utils.js";
 
 /**
  * System environment variables safe to pass to spawned agents.
@@ -135,8 +135,7 @@ export function mergePathEntries(
   extras: readonly string[],
   opts: { delimiter: string; caseInsensitive: boolean },
 ): string | undefined {
-  const normalize = (v: string) =>
-    opts.caseInsensitive ? v.toLowerCase() : v;
+  const normalize = (v: string) => (opts.caseInsensitive ? v.toLowerCase() : v);
   const existing = (currentPath ?? "")
     .split(opts.delimiter)
     .map((entry) => entry.trim())

@@ -119,9 +119,9 @@ export async function buildSkillsManifest(
   opts: BuildSkillsManifestOptions = {},
 ): Promise<SkillsManifestResult> {
   const log = getLogger(runtime);
-  const service = runtime.getService(
-    "AGENT_SKILLS_SERVICE",
-  ) as unknown as SkillsServiceShape | undefined;
+  const service = runtime.getService("AGENT_SKILLS_SERVICE") as unknown as
+    | SkillsServiceShape
+    | undefined;
 
   if (!service) {
     log.debug?.(
@@ -141,9 +141,7 @@ export async function buildSkillsManifest(
   // onlyEligible defaults to true — for the spawned agent surface we only
   // want skills it can actually invoke.
   const onlyEligible = opts.onlyEligible ?? true;
-  const availableSet = onlyEligible
-    ? enabledEligible
-    : eligible;
+  const availableSet = onlyEligible ? enabledEligible : eligible;
 
   const availableEntries: ManifestSkillEntry[] = availableSet.map((skill) => ({
     slug: skill.slug,

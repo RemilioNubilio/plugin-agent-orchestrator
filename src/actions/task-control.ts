@@ -1,11 +1,11 @@
-import {
-  type Action,
-  type ActionResult,
-  type HandlerCallback,
-  type HandlerOptions,
-  type IAgentRuntime,
-  type Memory,
-  type State,
+import type {
+  Action,
+  ActionResult,
+  HandlerCallback,
+  HandlerOptions,
+  IAgentRuntime,
+  Memory,
+  State,
 } from "@elizaos/core";
 import { getCoordinator } from "../services/pty-service.js";
 import { requireTaskAgentAccess } from "../services/task-policy.js";

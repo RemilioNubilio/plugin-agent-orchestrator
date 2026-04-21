@@ -7,8 +7,8 @@
  * eligibility filter.
  */
 
-import { describe, expect, it } from "vitest";
 import type { IAgentRuntime } from "@elizaos/core";
+import { describe, expect, it } from "vitest";
 import { buildSkillsManifest } from "../services/skill-manifest.js";
 
 interface FakeSkill {
@@ -68,9 +68,7 @@ describe("buildSkillsManifest", () => {
     const result = await buildSkillsManifest(runtime, { onlyEligible: true });
 
     expect(result.markdown).toContain("# Available skills");
-    expect(result.markdown).toContain(
-      "USE_SKILL <slug> <json_args>",
-    );
+    expect(result.markdown).toContain("USE_SKILL <slug> <json_args>");
     expect(result.markdown).toContain("## All enabled skills");
     expect(result.markdown).toContain(
       "**GitHub Issues** (`github-issues`) — Read, create, and comment on GitHub issues.",
@@ -79,11 +77,7 @@ describe("buildSkillsManifest", () => {
     expect(result.markdown).toContain("**Weather** (`weather`)");
     // No recommendations supplied → no recommended section header.
     expect(result.markdown).not.toContain("## Recommended for this task");
-    expect(result.slugs).toEqual([
-      "github-issues",
-      "pdf-tools",
-      "weather",
-    ]);
+    expect(result.slugs).toEqual(["github-issues", "pdf-tools", "weather"]);
   });
 
   it("highlights recommended slugs in a dedicated section while keeping the full list", async () => {

@@ -6,8 +6,8 @@
  * network, no PTY, no SQL.
  */
 
-import { describe, expect, it, vi } from "vitest";
 import type { IAgentRuntime } from "@elizaos/core";
+import { describe, expect, it, vi } from "vitest";
 import { recommendSkillsForTask } from "../services/skill-recommender.js";
 
 interface FakeSkill {
@@ -140,7 +140,9 @@ describe("recommendSkillsForTask — keyword fast path", () => {
       disableLlmPass: true,
     });
 
-    expect(recommendations.find((r) => r.slug === "github-issues")).toBeUndefined();
+    expect(
+      recommendations.find((r) => r.slug === "github-issues"),
+    ).toBeUndefined();
   });
 
   it("returns nothing when AGENT_SKILLS_SERVICE is missing", async () => {

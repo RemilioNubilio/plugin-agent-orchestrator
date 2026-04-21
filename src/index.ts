@@ -13,9 +13,6 @@
 import type { Plugin } from "@elizaos/core";
 import { finalizeWorkspaceAction } from "./actions/finalize-workspace.js";
 import { listAgentsAction } from "./actions/list-agents.js";
-import { taskControlAction } from "./actions/task-control.js";
-import { taskHistoryAction } from "./actions/task-history.js";
-import { taskShareAction } from "./actions/task-share.js";
 // Actions - Issue management
 import { manageIssuesAction } from "./actions/manage-issues.js";
 // Actions - Workspace management
@@ -26,6 +23,9 @@ import { spawnAgentAction } from "./actions/spawn-agent.js";
 // Actions - Unified task launcher
 import { startCodingTaskAction } from "./actions/start-coding-task.js";
 import { stopAgentAction } from "./actions/stop-agent.js";
+import { taskControlAction } from "./actions/task-control.js";
+import { taskHistoryAction } from "./actions/task-history.js";
+import { taskShareAction } from "./actions/task-share.js";
 // Providers
 import { codingAgentExamplesProvider } from "./providers/action-examples.js";
 import { activeWorkspaceContextProvider } from "./providers/active-workspace-context.js";
@@ -95,27 +95,33 @@ export type {
   WriteMemoryOptions,
 } from "coding-agent-adapters";
 export { finalizeWorkspaceAction } from "./actions/finalize-workspace.js";
-export { listAgentsAction } from "./actions/list-agents.js";
+export {
+  listAgentsAction,
+  listTaskAgentsAction,
+} from "./actions/list-agents.js";
 export { manageIssuesAction } from "./actions/manage-issues.js";
 export { provisionWorkspaceAction } from "./actions/provision-workspace.js";
-export { sendToAgentAction } from "./actions/send-to-agent.js";
-export { spawnAgentAction } from "./actions/spawn-agent.js";
+export {
+  sendToAgentAction,
+  sendToTaskAgentAction,
+} from "./actions/send-to-agent.js";
+export {
+  spawnAgentAction,
+  spawnTaskAgentAction,
+} from "./actions/spawn-agent.js";
+// Re-export actions
+export { startCodingTaskAction } from "./actions/start-coding-task.js";
+export { stopAgentAction, stopTaskAgentAction } from "./actions/stop-agent.js";
 export { taskControlAction } from "./actions/task-control.js";
 export { taskHistoryAction } from "./actions/task-history.js";
 export { taskShareAction } from "./actions/task-share.js";
-export { listTaskAgentsAction } from "./actions/list-agents.js";
-export { sendToTaskAgentAction } from "./actions/send-to-agent.js";
-export { spawnTaskAgentAction } from "./actions/spawn-agent.js";
-// Re-export actions
-export { startCodingTaskAction } from "./actions/start-coding-task.js";
-export { stopAgentAction } from "./actions/stop-agent.js";
-export { stopTaskAgentAction } from "./actions/stop-agent.js";
 // Re-export API routes for server integration
 export {
   createCodingAgentRouteHandler,
   createTaskAgentRouteHandler,
   handleCodingAgentRoutes,
 } from "./api/routes.js";
+export { cleanForChat } from "./services/ansi-utils.js";
 // Re-export service types
 export type {
   CodingAgentType,
@@ -156,4 +162,3 @@ export type {
   WorkspaceResult,
 } from "./services/workspace-service.js";
 export { CodingWorkspaceService } from "./services/workspace-service.js";
-export { cleanForChat } from "./services/ansi-utils.js";

@@ -20,6 +20,12 @@ import {
   type State,
 } from "@elizaos/core";
 import type { AgentCredentials, ApprovalPreset } from "coding-agent-adapters";
+import {
+  buildAgentCredentials,
+  isAnthropicOAuthToken,
+  sanitizeCustomCredentials,
+} from "../services/agent-credentials.js";
+import { readConfigEnvKey } from "../services/config-env.js";
 import type { PTYService } from "../services/pty-service.js";
 import { getCoordinator } from "../services/pty-service.js";
 import {
@@ -29,17 +35,11 @@ import {
   type SessionInfo,
   toPiCommand,
 } from "../services/pty-types.js";
-import { readConfigEnvKey } from "../services/config-env.js";
-import {
-  buildAgentCredentials,
-  isAnthropicOAuthToken,
-  sanitizeCustomCredentials,
-} from "../services/agent-credentials.js";
 import { looksLikeTaskAgentRequest } from "../services/task-agent-frameworks.js";
 import { requireTaskAgentAccess } from "../services/task-policy.js";
 import type { CodingWorkspaceService } from "../services/workspace-service.js";
-import { mergeTaskThreadEvalMetadata } from "./eval-metadata.js";
 import { createScratchDir } from "./coding-task-helpers.js";
+import { mergeTaskThreadEvalMetadata } from "./eval-metadata.js";
 import {
   coerceShellAgentTypeForProse,
   splitMultiIntentTask,

@@ -1600,7 +1600,10 @@ export async function handleTurnComplete(
     // Skip the fast-path when the output contains the gh-cli error.
     const PR_ALREADY_EXISTS_RE =
       /a pull request (?:for branch)?.*already exists|pull request already exists/i;
-    if (PR_CREATED_RE.test(turnOutput) && !PR_ALREADY_EXISTS_RE.test(turnOutput)) {
+    if (
+      PR_CREATED_RE.test(turnOutput) &&
+      !PR_ALREADY_EXISTS_RE.test(turnOutput)
+    ) {
       // Set `keyDecision` so recordKeyDecision pushes this into
       // ctx.sharedDecisions. That ledger is what
       // checkAllTasksComplete uses to decide whether to fall through
