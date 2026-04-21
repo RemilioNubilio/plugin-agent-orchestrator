@@ -697,16 +697,17 @@ export async function handleAgentRoutes(
           },
         },
       });
-      if (coordinator && task) {
+      if (coordinator) {
         const label = (metadata as Record<string, unknown>)?.label as
           | string
           | undefined;
+        const defaultLabelPrefix = normalizedType === "shell" ? "shell" : "agent";
         await coordinator.registerTask(session.id, {
           threadId: taskThread?.id ?? requestedThreadId ?? session.id,
           agentType:
             agentStr as import("../services/pty-service.js").CodingAgentType,
-          label: label || `agent-${session.id.slice(-8)}`,
-          originalTask: task as string,
+          label: label || `${defaultLabelPrefix}-${session.id.slice(-8)}`,
+          originalTask: (task as string | undefined) ?? "",
           workdir: session.workdir,
         });
       }
