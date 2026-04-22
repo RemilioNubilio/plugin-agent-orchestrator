@@ -39,11 +39,7 @@ export interface PTYServiceConfig {
 /** Available task-agent types */
 export type CodingAgentType = "shell" | "pi" | AdapterType;
 
-const PI_AGENT_ALIASES = new Set([
-  "pi",
-  "pi-coding-agent",
-  "picodingagent",
-]);
+const PI_AGENT_ALIASES = new Set(["pi", "pi-coding-agent", "picodingagent"]);
 
 /** True when the user requested the Pi coding agent. */
 export const isPiAgentType = (input: string | undefined | null): boolean => {

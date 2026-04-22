@@ -18,7 +18,6 @@ import type {
   State,
 } from "@elizaos/core";
 import { getCoordinator, type PTYService } from "../services/pty-service.js";
-import { requireTaskAgentAccess } from "../services/task-policy.js";
 import type { SessionInfo } from "../services/pty-types.js";
 import {
   formatTaskAgentStatus,
@@ -26,6 +25,7 @@ import {
   TASK_AGENT_FRAMEWORK_LABELS,
   truncateTaskAgentText,
 } from "../services/task-agent-frameworks.js";
+import { requireTaskAgentAccess } from "../services/task-policy.js";
 
 interface TaskLike {
   sessionId: string;

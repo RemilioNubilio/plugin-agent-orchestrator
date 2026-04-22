@@ -25,7 +25,6 @@ import type { AgentSelectionStrategy } from "../services/agent-selection.js";
 import { readConfigEnvKey } from "../services/config-env.js";
 import type { PTYService } from "../services/pty-service.js";
 import { getCoordinator } from "../services/pty-service.js";
-import { diagnoseWorkspaceBootstrapFailure } from "../services/repo-input.js";
 import {
   type CodingAgentType,
   isPiAgentType,
@@ -33,6 +32,7 @@ import {
   type SessionInfo,
   toPiCommand,
 } from "../services/pty-types.js";
+import { diagnoseWorkspaceBootstrapFailure } from "../services/repo-input.js";
 import {
   createSkillSessionAllowList,
   ensureSkillCallbackBridge,
@@ -43,8 +43,8 @@ import {
   type SkillsManifestResult,
 } from "../services/skill-manifest.js";
 import {
-  recommendSkillsForTask,
   type RecommendedSkill,
+  recommendSkillsForTask,
 } from "../services/skill-recommender.js";
 import { withTrajectoryContext } from "../services/trajectory-context.js";
 import {
@@ -91,7 +91,8 @@ const SKILLS_MANIFEST_FILENAME = "SKILLS.md";
  * Entries must be cleared explicitly on session teardown to avoid leaks;
  * `registerSessionEvents` owns that responsibility.
  */
-const sessionSkillAllowList: SkillSessionAllowList = createSkillSessionAllowList();
+const sessionSkillAllowList: SkillSessionAllowList =
+  createSkillSessionAllowList();
 
 export function getSkillSessionAllowList(): SkillSessionAllowList {
   return sessionSkillAllowList;

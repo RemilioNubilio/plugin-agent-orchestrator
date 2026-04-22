@@ -53,8 +53,7 @@ function isCallbackEnabled(runtime: IAgentRuntime): boolean {
   const raw =
     (runtime.getSetting("MILADY_ENABLE_CHILD_SKILL_CALLBACK") as
       | string
-      | undefined) ??
-    process.env.MILADY_ENABLE_CHILD_SKILL_CALLBACK;
+      | undefined) ?? process.env.MILADY_ENABLE_CHILD_SKILL_CALLBACK;
   if (raw === undefined || raw === null || raw === "") return true;
   const normalized = String(raw).trim().toLowerCase();
   return normalized !== "0" && normalized !== "false" && normalized !== "no";
@@ -74,7 +73,7 @@ export function parseUseSkillDirective(
   const argsRaw = match[2];
   if (!slug) return null;
 
-  let args: unknown = undefined;
+  let args: unknown;
   if (argsRaw && argsRaw.trim()) {
     try {
       args = JSON.parse(argsRaw);
@@ -91,9 +90,10 @@ function formatResultForChild(
   slug: string,
   result: SkillCallbackResult,
 ): string {
-  const trimmed = result.text.length > RESULT_PREVIEW_MAX
-    ? `${result.text.slice(0, RESULT_PREVIEW_MAX)}\n…[truncated]`
-    : result.text;
+  const trimmed =
+    result.text.length > RESULT_PREVIEW_MAX
+      ? `${result.text.slice(0, RESULT_PREVIEW_MAX)}\n…[truncated]`
+      : result.text;
   const status = result.success ? "ok" : "error";
   return [
     `--- USE_SKILL response (${slug}, ${status}) ---`,
@@ -111,10 +111,7 @@ function resolveUseSkillAction(runtime: IAgentRuntime): SkillUseAction | null {
   if (!Array.isArray(actions)) return null;
   for (const action of actions) {
     if (!action || typeof action.name !== "string") continue;
-    if (
-      action.name === "USE_SKILL" ||
-      action.similes?.includes("USE_SKILL")
-    ) {
+    if (action.name === "USE_SKILL" || action.similes?.includes("USE_SKILL")) {
       return action as SkillUseAction;
     }
   }
@@ -242,7 +239,9 @@ export function installSkillCallbackBridge(deps: BridgeDeps): () => void {
     );
 
     const captured: string[] = [];
-    const captureCallback = async (response: { text?: string }): Promise<unknown[]> => {
+    const captureCallback = async (response: {
+      text?: string;
+    }): Promise<unknown[]> => {
       if (typeof response?.text === "string") {
         captured.push(response.text);
       }
@@ -270,7 +269,7 @@ export function installSkillCallbackBridge(deps: BridgeDeps): () => void {
     const handlerText =
       handlerResult && typeof handlerResult === "object"
         ? typeof (handlerResult as { text?: unknown }).text === "string"
-          ? ((handlerResult as { text: string }).text)
+          ? (handlerResult as { text: string }).text
           : ""
         : "";
     const text = handlerText || captured.join("\n").trim() || "(no output)";
@@ -283,9 +282,9 @@ export function installSkillCallbackBridge(deps: BridgeDeps): () => void {
     if (event !== "task_complete" && event !== "message") return;
     const responseText =
       typeof (data as { response?: unknown })?.response === "string"
-        ? ((data as { response: string }).response)
+        ? (data as { response: string }).response
         : typeof (data as { text?: unknown })?.text === "string"
-          ? ((data as { text: string }).text)
+          ? (data as { text: string }).text
           : "";
     const invocation = parseUseSkillDirective(responseText);
     if (!invocation) return;
@@ -301,9 +300,7 @@ export function installSkillCallbackBridge(deps: BridgeDeps): () => void {
     });
   });
 
-  log.info?.(
-    `${LOG_PREFIX} child→parent USE_SKILL bridge installed`,
-  );
+  log.info?.(`${LOG_PREFIX} child→parent USE_SKILL bridge installed`);
 
   return () => {
     if (typeof unsubscribe === "function") {

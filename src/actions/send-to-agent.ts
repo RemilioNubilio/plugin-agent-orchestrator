@@ -17,8 +17,8 @@ import type {
   State,
 } from "@elizaos/core";
 import { getCoordinator, type PTYService } from "../services/pty-service.js";
-import { requireTaskAgentAccess } from "../services/task-policy.js";
 import { normalizeAgentType } from "../services/pty-types.js";
+import { requireTaskAgentAccess } from "../services/task-policy.js";
 import { mergeTaskThreadEvalMetadata } from "./eval-metadata.js";
 
 export const sendToAgentAction: Action = {

@@ -1,17 +1,17 @@
-import {
-  type Action,
-  type ActionResult,
-  type HandlerCallback,
-  type HandlerOptions,
-  type IAgentRuntime,
-  type Memory,
+import type {
+  Action,
+  ActionResult,
+  HandlerCallback,
+  HandlerOptions,
+  IAgentRuntime,
+  Memory,
 } from "@elizaos/core";
 import { getCoordinator } from "../services/pty-service.js";
-import {
-  type ListTaskThreadsOptions,
-  type TaskThreadStatus,
-} from "../services/task-registry.js";
 import { requireTaskAgentAccess } from "../services/task-policy.js";
+import type {
+  ListTaskThreadsOptions,
+  TaskThreadStatus,
+} from "../services/task-registry.js";
 
 type HistoryMetric = "list" | "count" | "detail";
 type HistoryWindow =

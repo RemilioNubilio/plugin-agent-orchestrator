@@ -33,13 +33,13 @@ import type { PTYService } from "../services/pty-service.js";
 import { getCoordinator } from "../services/pty-service.js";
 import { normalizeAgentType } from "../services/pty-types.js";
 import { normalizeRepositoryInput } from "../services/repo-input.js";
+import { looksLikeTaskAgentRequest } from "../services/task-agent-frameworks.js";
 import { requireTaskAgentAccess } from "../services/task-policy.js";
 import type { CodingWorkspaceService } from "../services/workspace-service.js";
 import {
   type CodingTaskContext,
   handleMultiAgent,
 } from "./coding-task-handlers.js";
-import { looksLikeTaskAgentRequest } from "../services/task-agent-frameworks.js";
 
 function hasExplicitTaskPayload(message: Memory): boolean {
   const content =
@@ -138,7 +138,10 @@ function looksLikeProseTask(text: string | undefined | null): boolean {
  */
 export function splitMultiIntentTask(text: string): string[] {
   if (!text) return [text];
-  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  const lines = text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
 
   const numbered: string[] = [];
   for (const line of lines) {
@@ -146,7 +149,8 @@ export function splitMultiIntentTask(text: string): string[] {
     if (match) {
       numbered.push(match[2]);
     } else if (numbered.length > 0 && !/^\d+[.):]/.test(line)) {
-      numbered[numbered.length - 1] = `${numbered[numbered.length - 1]} ${line}`;
+      numbered[numbered.length - 1] =
+        `${numbered[numbered.length - 1]} ${line}`;
     }
   }
   if (numbered.length >= 2) return numbered;
@@ -598,4 +602,3 @@ export const startCodingTaskAction: BackgroundAction = {
 };
 
 export const createTaskAction = startCodingTaskAction;
-

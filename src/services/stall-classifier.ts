@@ -17,8 +17,8 @@ import {
 import type { AgentMetricsTracker } from "./agent-metrics.js";
 import { stripAnsi } from "./ansi-utils.js";
 import type {
-  TaskContextSummary,
   DecisionHistoryEntry,
+  TaskContextSummary,
 } from "./swarm-coordinator-prompts.js";
 import { withTrajectoryContext } from "./trajectory-context.js";
 

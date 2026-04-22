@@ -10,9 +10,9 @@
  * @module services/workspace-service
  */
 
+import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import * as fs from "node:fs/promises";
 import type { IAgentRuntime } from "@elizaos/core";
 import {
   type CreateIssueOptions,
@@ -44,19 +44,18 @@ import {
 
 export type { AuthPromptCallback } from "./workspace-github.js";
 
+import { readConfigEnvKey } from "./config-env.js";
+import { normalizeRepositoryInput } from "./repo-input.js";
 import {
   commit as gitCommit,
   createPR as gitCreatePR,
   getStatus as gitGetStatus,
   push as gitPush,
 } from "./workspace-git-ops.js";
-
 import {
   gcOrphanedWorkspaces,
   removeScratchDir,
 } from "./workspace-lifecycle.js";
-import { readConfigEnvKey } from "./config-env.js";
-import { normalizeRepositoryInput } from "./repo-input.js";
 
 export type {
   CodingWorkspaceConfig,

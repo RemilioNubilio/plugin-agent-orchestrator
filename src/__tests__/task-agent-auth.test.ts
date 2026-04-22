@@ -5,9 +5,9 @@
 
 import { describe, expect, it, vi } from "vitest";
 import {
-  probeTaskAgentAuth,
-  normalizeTaskAgentAdapterId,
   getTaskAgentLoginHint,
+  normalizeTaskAgentAdapterId,
+  probeTaskAgentAuth,
 } from "../services/task-agent-auth.js";
 
 // ---------------------------------------------------------------------------

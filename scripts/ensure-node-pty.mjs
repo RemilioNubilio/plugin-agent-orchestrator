@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { execSync } from "node:child_process";
 /**
  * Ensures node-pty's native addon is available and spawn-helper is executable.
  *
@@ -11,9 +12,8 @@
  *  2. Falls back to checking for a node-gyp compiled binary (older versions).
  *  3. Ensures `spawn-helper` has execute permissions on Unix platforms.
  */
-import { existsSync, chmodSync, readdirSync } from "node:fs";
-import { execSync } from "node:child_process";
-import { dirname, resolve, join } from "node:path";
+import { chmodSync, existsSync, readdirSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));

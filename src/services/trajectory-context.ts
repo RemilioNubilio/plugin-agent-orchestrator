@@ -18,7 +18,7 @@
  * avoids index-signature incompatibilities with ElizaOS types.
  */
 // eslint-disable-next-line @typescript-eslint/no-empty-interface
-interface RuntimeLike {}
+type RuntimeLike = {};
 
 /**
  * Orchestrator decision types that map to specific LLM call sites.

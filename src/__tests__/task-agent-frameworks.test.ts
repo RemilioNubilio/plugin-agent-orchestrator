@@ -12,8 +12,8 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { IAgentRuntime } from "@elizaos/core";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readConfigCodexSubscriptionRestrictedToCodexFramework } from "../services/config-env.js";
 import {
   clearTaskAgentFrameworkStateCache,
@@ -208,9 +208,7 @@ describe("codexSubscriptionRestrictedToCodexFramework flag", () => {
       },
     });
     const restricted = await getTaskAgentFrameworkState(createRuntime());
-    const aiderRestricted = restricted.frameworks.find(
-      (f) => f.id === "aider",
-    );
+    const aiderRestricted = restricted.frameworks.find((f) => f.id === "aider");
     const claudeRestricted = restricted.frameworks.find(
       (f) => f.id === "claude",
     );

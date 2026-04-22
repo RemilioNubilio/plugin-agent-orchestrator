@@ -13,7 +13,7 @@
  * @module services/trajectory-feedback
  */
 
-import { type IAgentRuntime, logger as elizaLogger } from "@elizaos/core";
+import { logger as elizaLogger, type IAgentRuntime } from "@elizaos/core";
 
 /** Timeout for trajectory DB calls to prevent blocking agent spawn. */
 const QUERY_TIMEOUT_MS = 5000;
