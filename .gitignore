@@ -6,3 +6,4 @@ dist/
 .parallax/
 .playwright-mcp/
 .tmp-live/
+.turbo/
