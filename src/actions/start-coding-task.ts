@@ -1,5 +1,5 @@
 /**
- * CREATE_TASK action - Unified action to set up and launch task agents.
+ * CREATE_TASK action to set up and launch task agents.
  *
  * Combines workspace provisioning and agent spawning into a single atomic action.
  * - If a repo URL is provided, clones it into a fresh workspace

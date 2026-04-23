@@ -20,7 +20,7 @@ import { provisionWorkspaceAction } from "./actions/provision-workspace.js";
 import { sendToAgentAction } from "./actions/send-to-agent.js";
 // Actions - PTY management
 import { spawnAgentAction } from "./actions/spawn-agent.js";
-// Actions - Unified task launcher
+// Actions - Task launcher
 import { startCodingTaskAction } from "./actions/start-coding-task.js";
 import { stopAgentAction } from "./actions/stop-agent.js";
 import { taskControlAction } from "./actions/task-control.js";
@@ -49,7 +49,7 @@ export const taskAgentPlugin: Plugin = {
 
   // Actions expose capabilities to the agent
   actions: [
-    // Unified task launcher (provision + spawn in one step)
+    // Task launcher (provision + spawn in one step)
     startCodingTaskAction,
     // PTY session management (for direct control)
     spawnAgentAction,
