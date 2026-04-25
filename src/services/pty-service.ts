@@ -308,6 +308,31 @@ export class PTYService {
   private metricsTracker = new AgentMetricsTracker();
   /** Active provider auth helper processes keyed by agent type. */
   private activeAuthFlows: Map<string, TaskAgentAuthFlowHandle> = new Map();
+  // Coalesces concurrent listSessions() calls against the Bun worker.
+  // pty-manager keys its pending-response map by the command name ("list"),
+  // so when two list() promises are in flight the second overwrites the
+  // first's resolver. The worker only ever resolves the most recent one;
+  // the earlier promise is orphaned and rejects with "Operation list timed
+  // out" 30s later. Sharing a single in-flight call across concurrent
+  // callers avoids the race entirely.
+  private pendingBunList: ReturnType<BunCompatiblePTYManager["list"]> | null =
+    null;
+
+  private coalescedBunList(): ReturnType<BunCompatiblePTYManager["list"]> {
+    if (!this.pendingBunList) {
+      const bunManager = this.manager as BunCompatiblePTYManager;
+      const fresh = bunManager.list();
+      // Reset slot once the call settles. Rejection is handled by callers
+      // awaiting `fresh` directly; the reset chain must not surface it as
+      // an unhandled rejection of its own.
+      const clear = () => {
+        if (this.pendingBunList === fresh) this.pendingBunList = null;
+      };
+      fresh.then(clear, clear);
+      this.pendingBunList = fresh;
+    }
+    return this.pendingBunList;
+  }
   /** Background auth-recovery watchers keyed by blocked session id. */
   private authRecoveryTimers: Map<string, ReturnType<typeof setInterval>> =
     new Map();
@@ -982,7 +1007,7 @@ export class PTYService {
   async listSessions(filter?: SessionFilter): Promise<SessionInfo[]> {
     if (!this.manager) return [];
     const sessions = this.usingBunWorker
-      ? await (this.manager as BunCompatiblePTYManager).list()
+      ? await this.coalescedBunList()
       : (this.manager as PTYManager).list(filter);
     const liveSessions = sessions.map((session) => {
       const cached = this.manager?.get(session.id);
