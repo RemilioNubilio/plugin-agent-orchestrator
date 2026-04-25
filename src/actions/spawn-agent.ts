@@ -62,6 +62,23 @@ function warnSandboxDisabledOnce(): void {
   );
 }
 
+// Reduce raw driver/SQL error text to a short user-facing line. Anything
+// that looks like a `Failed query: ...` payload from drizzle/pg dumps the
+// full INSERT (and its params) into the message, which spams Discord and
+// leaks schema. Strip those down to the underlying `cause` if available,
+// or to a generic phrase otherwise.
+function summarizeSpawnError(message: string): string {
+  if (!message) return "internal error (see logs)";
+  if (message.startsWith("Failed query:")) {
+    return "database error while creating the task thread (see logs)";
+  }
+  // Long, multi-line errors are usually drivers attaching SQL or stack
+  // traces. Keep the first non-empty line and cap length.
+  const firstLine = message.split("\n").map((l) => l.trim()).find((l) => l.length > 0);
+  const candidate = firstLine ?? message;
+  return candidate.length > 200 ? `${candidate.slice(0, 197)}...` : candidate;
+}
+
 function hasExplicitSpawnPayload(message: Memory): boolean {
   const content =
     message.content && typeof message.content === "object"
@@ -428,18 +445,12 @@ export const spawnAgentAction: Action = {
           ? await coordinator.createTaskThread({
               title: `agent-${Date.now()}`,
               originalRequest: task,
-              roomId:
-                typeof (message as unknown as Record<string, unknown>)
-                  .roomId === "string"
-                  ? ((message as unknown as Record<string, unknown>)
-                      .roomId as string)
-                  : null,
+              roomId: message.roomId,
+              worldId: message.worldId,
               ownerUserId:
-                typeof (message as unknown as Record<string, unknown>)
-                  .userId === "string"
-                  ? ((message as unknown as Record<string, unknown>)
-                      .userId as string)
-                  : null,
+                ((message as unknown as Record<string, unknown>).userId as
+                  | string
+                  | undefined) ?? message.entityId,
               scenarioId: evalMetadata.scenarioId,
               batchId: evalMetadata.batchId,
               metadata: evalMetadata.metadata,
@@ -546,9 +557,13 @@ export const spawnAgentAction: Action = {
         error instanceof Error ? error.message : String(error);
       logger.error("[SPAWN_AGENT] Failed to spawn agent:", errorMessage);
 
+      // Don't surface raw SQL or driver errors to the chat callback —
+      // a `Failed query: INSERT INTO ...` payload is unreadable in
+      // Discord and leaks schema. Use a short, summarized line for the
+      // user; the full error is in the logs above.
       if (callback) {
         await callback({
-          text: `Failed to spawn task agent: ${errorMessage}`,
+          text: `couldn't spawn the task agent — ${summarizeSpawnError(errorMessage)}`,
         });
       }
 

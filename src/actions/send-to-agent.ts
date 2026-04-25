@@ -200,18 +200,12 @@ export const sendToAgentAction: Action = {
                       ? session.metadata.label
                       : `agent-${sessionId.slice(-8)}`),
                   originalRequest: trackedTask,
-                  roomId:
-                    typeof (message as unknown as Record<string, unknown>)
-                      .roomId === "string"
-                      ? ((message as unknown as Record<string, unknown>)
-                          .roomId as string)
-                      : null,
+                  roomId: message.roomId,
+                  worldId: message.worldId,
                   ownerUserId:
-                    typeof (message as unknown as Record<string, unknown>)
-                      .userId === "string"
-                      ? ((message as unknown as Record<string, unknown>)
-                          .userId as string)
-                      : null,
+                    ((message as unknown as Record<string, unknown>).userId as
+                      | string
+                      | undefined) ?? message.entityId,
                   scenarioId: evalMetadata.scenarioId,
                   batchId: evalMetadata.batchId,
                   metadata: evalMetadata.metadata,
