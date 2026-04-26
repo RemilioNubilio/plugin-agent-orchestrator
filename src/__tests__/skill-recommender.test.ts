@@ -8,6 +8,11 @@
 
 import type { IAgentRuntime } from "@elizaos/core";
 import { describe, expect, it, vi } from "vitest";
+import {
+  LIFEOPS_CONTEXT_BROKER_SLUG,
+  shouldRecommendLifeOpsContextBroker,
+  withLifeOpsContextBrokerRecommendation,
+} from "../services/skill-lifeops-context-broker.js";
 import { recommendSkillsForTask } from "../services/skill-recommender.js";
 
 interface FakeSkill {
@@ -222,5 +227,40 @@ describe("recommendSkillsForTask — LLM scoring pass", () => {
     });
 
     expect(recommendations.length).toBeLessThanOrEqual(2);
+  });
+});
+
+describe("LifeOps context broker recommendation overlay", () => {
+  it("adds the broker for task-agent prompts that need owner LifeOps context", () => {
+    const recommendations = withLifeOpsContextBrokerRecommendation(
+      "Ask the parent for my calendar and inbox context before drafting the plan.",
+      [
+        {
+          slug: "github-issues",
+          name: "GitHub Issues",
+          score: 0.5,
+          reason: "matched github",
+        },
+      ],
+    );
+
+    expect(recommendations[0]?.slug).toBe(LIFEOPS_CONTEXT_BROKER_SLUG);
+    expect(recommendations.map((rec) => rec.slug)).toContain("github-issues");
+  });
+
+  it("does not force the broker into unrelated coding tasks", () => {
+    expect(
+      shouldRecommendLifeOpsContextBroker(
+        "Refactor the app-lifeops route tests and fix the TypeScript errors.",
+      ),
+    ).toBe(false);
+  });
+
+  it("honors explicit requests for the broker", () => {
+    expect(
+      shouldRecommendLifeOpsContextBroker(
+        "Use lifeops-context if you need parent-owned email details.",
+      ),
+    ).toBe(true);
   });
 });

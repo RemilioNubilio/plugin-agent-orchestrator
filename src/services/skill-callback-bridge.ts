@@ -17,6 +17,10 @@
  */
 
 import type { Action, IAgentRuntime, Logger } from "@elizaos/core";
+import {
+  LIFEOPS_CONTEXT_BROKER_SLUG,
+  runLifeOpsContextBroker,
+} from "./skill-lifeops-context-broker.js";
 import type { PTYService } from "./pty-service.js";
 
 const LOG_PREFIX = "[SkillCallback]";
@@ -234,9 +238,48 @@ export function installSkillCallbackBridge(deps: BridgeDeps): () => void {
       await ptyService.sendToSession(sessionId, reply);
       return;
     }
+    if (
+      invocation.slug === LIFEOPS_CONTEXT_BROKER_SLUG &&
+      !allowedSlugs?.includes(LIFEOPS_CONTEXT_BROKER_SLUG)
+    ) {
+      const text =
+        "Skill `lifeops-context` is sensitive and is only available when the parent explicitly recommends it for this spawned task.";
+      log.warn?.(
+        {
+          src: LOG_PREFIX,
+          event: "lifeops_context_denied",
+          sessionId,
+        },
+        `${LOG_PREFIX} session ${sessionId} requested lifeops-context without an allow-list grant`,
+      );
+      const reply = formatResultForChild(invocation.slug, {
+        success: false,
+        text,
+      });
+      await ptyService.sendToSession(sessionId, reply);
+      return;
+    }
     log.info?.(
       `${LOG_PREFIX} child session ${sessionId} requested skill ${invocation.slug}`,
     );
+
+    if (invocation.slug === LIFEOPS_CONTEXT_BROKER_SLUG) {
+      const result = await runLifeOpsContextBroker({
+        runtime,
+        sessionId,
+        session: ptyService.getSession(sessionId),
+        args: invocation.args,
+      });
+      const reply = formatResultForChild(invocation.slug, {
+        success: result.success !== false,
+        text:
+          typeof result.text === "string" && result.text.trim()
+            ? result.text
+            : "(no output)",
+      });
+      await ptyService.sendToSession(sessionId, reply);
+      return;
+    }
 
     const captured: string[] = [];
     const captureCallback = async (response: {

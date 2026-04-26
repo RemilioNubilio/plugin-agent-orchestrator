@@ -39,6 +39,11 @@ import {
   type SkillSessionAllowList,
 } from "../services/skill-callback-bridge.js";
 import {
+  LIFEOPS_CONTEXT_BROKER_MANIFEST_ENTRY,
+  LIFEOPS_CONTEXT_BROKER_SLUG,
+  withLifeOpsContextBrokerRecommendation,
+} from "../services/skill-lifeops-context-broker.js";
+import {
   buildSkillsManifest,
   type SkillsManifestResult,
 } from "../services/skill-manifest.js";
@@ -109,8 +114,8 @@ interface PreparedSkillAwareness {
  * and return the absolute manifest path so the spawned agent can find it via
  * MILADY_SKILLS_MANIFEST.
  *
- * Returns null only when no skills service is registered or no skills are
- * eligible — both legitimate states that should not block task spawn.
+ * Returns null only when no installed or task-scoped skills are available —
+ * a legitimate state that should not block task spawn.
  */
 async function prepareSkillAwareness(
   runtime: IAgentRuntime,
@@ -125,19 +130,29 @@ async function prepareSkillAwareness(
     repoContext: repo ? { framework: repo } : undefined,
     max: 5,
   });
-  const recommendedSlugs = recommendations.map((rec) => rec.slug);
+  const taskRecommendations = withLifeOpsContextBrokerRecommendation(
+    taskText,
+    recommendations,
+  );
+  const recommendedSlugs = taskRecommendations.map((rec) => rec.slug);
+  const includeLifeOpsBroker = recommendedSlugs.includes(
+    LIFEOPS_CONTEXT_BROKER_SLUG,
+  );
   const manifest = await buildSkillsManifest(runtime, {
     onlyEligible: true,
     recommendedSlugs,
+    virtualSkills: includeLifeOpsBroker
+      ? [LIFEOPS_CONTEXT_BROKER_MANIFEST_ENTRY]
+      : undefined,
   });
 
-  if (manifest.slugs.length === 0 && recommendations.length === 0) {
+  if (manifest.slugs.length === 0 && taskRecommendations.length === 0) {
     return null;
   }
 
   const manifestPath = path.join(workdir, SKILLS_MANIFEST_FILENAME);
   await fs.writeFile(manifestPath, manifest.markdown, "utf8");
-  return { manifestPath, recommendations, manifest };
+  return { manifestPath, recommendations: taskRecommendations, manifest };
 }
 
 /**
@@ -165,6 +180,15 @@ function decorateTaskWithSkillHint(
   if (manifestPath) {
     lines.push(
       `See ${SKILLS_MANIFEST_FILENAME} in the workspace root (also at \`${manifestPath}\`) for the full list and invocation protocol.`,
+    );
+  }
+  if (
+    awareness.recommendations.some(
+      (rec) => rec.slug === LIFEOPS_CONTEXT_BROKER_SLUG,
+    )
+  ) {
+    lines.push(
+      `For LifeOps context, ask the parent with \`USE_SKILL lifeops-context {"category":"email|calendar|inbox|priority|contacts|scratchpad|search|context","query":"...","limit":5}\`.`,
     );
   }
   lines.push("--- End skills ---");

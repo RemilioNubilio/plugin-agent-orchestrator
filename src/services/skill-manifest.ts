@@ -17,10 +17,12 @@ import type { IAgentRuntime, Logger } from "@elizaos/core";
 const LOG_PREFIX = "[SkillManifest]";
 const MAX_DESCRIPTION_CHARS = 200;
 
-interface ManifestSkillEntry {
+export interface ManifestSkillEntry {
   slug: string;
   name: string;
   description: string;
+  /** Task-scoped invocation guidance for virtual broker skills. */
+  guidance?: string;
 }
 
 /**
@@ -44,6 +46,8 @@ export interface BuildSkillsManifestOptions {
    * recommender does not guarantee installed status.
    */
   recommendedSlugs?: string[];
+  /** Additional task-scoped skills handled by the orchestrator bridge. */
+  virtualSkills?: ManifestSkillEntry[];
 }
 
 export interface SkillsManifestResult {
@@ -72,7 +76,10 @@ function renderEntries(entries: ManifestSkillEntry[]): string {
     .map((entry) => {
       const description = truncateDescription(entry.description);
       const tail = description ? ` — ${description}` : "";
-      return `- **${entry.name}** (\`${entry.slug}\`)${tail}`;
+      const guidance = entry.guidance
+        ? `\n  - Protocol: ${entry.guidance}`
+        : "";
+      return `- **${entry.name}** (\`${entry.slug}\`)${tail}${guidance}`;
     })
     .join("\n");
 }
@@ -80,12 +87,13 @@ function renderEntries(entries: ManifestSkillEntry[]): string {
 function renderManifest(
   recommended: ManifestSkillEntry[],
   available: ManifestSkillEntry[],
+  virtualSkills: ManifestSkillEntry[],
 ): string {
   const lines: string[] = [];
   lines.push("# Available skills");
   lines.push("");
   lines.push(
-    "These skills are installed and ready in the parent agent. To use one, send a USE_SKILL request back via the parent (slug + optional args).",
+    "These skills are installed or task-scoped in the parent agent. To use one, send a USE_SKILL request back via the parent (slug + optional args).",
   );
   lines.push("");
   lines.push(
@@ -104,6 +112,17 @@ function renderManifest(
   lines.push("");
   lines.push(renderEntries(available));
   lines.push("");
+
+  if (virtualSkills.length > 0) {
+    lines.push("## Task-scoped broker skills");
+    lines.push("");
+    lines.push(
+      "These slugs are requestable only for this spawned task because the parent orchestrator allow-listed them.",
+    );
+    lines.push("");
+    lines.push(renderEntries(virtualSkills));
+    lines.push("");
+  }
   return lines.join("\n");
 }
 
@@ -127,9 +146,16 @@ export async function buildSkillsManifest(
     log.debug?.(
       `${LOG_PREFIX} AGENT_SKILLS_SERVICE not registered; emitting empty manifest`,
     );
+    const virtualEntries = opts.virtualSkills ?? [];
+    const virtualBySlug = new Map(
+      virtualEntries.map((entry) => [entry.slug, entry]),
+    );
+    const recommendedVirtualEntries = (opts.recommendedSlugs ?? [])
+      .map((slug) => virtualBySlug.get(slug))
+      .filter((entry): entry is ManifestSkillEntry => Boolean(entry));
     return {
-      markdown: renderManifest([], []),
-      slugs: [],
+      markdown: renderManifest(recommendedVirtualEntries, [], virtualEntries),
+      slugs: virtualEntries.map((entry) => entry.slug),
     };
   }
 
@@ -149,15 +175,16 @@ export async function buildSkillsManifest(
     description: skill.description,
   }));
 
-  const availableBySlug = new Map<string, ManifestSkillEntry>();
-  for (const entry of availableEntries) {
-    availableBySlug.set(entry.slug, entry);
+  const virtualEntries = opts.virtualSkills ?? [];
+  const requestableBySlug = new Map<string, ManifestSkillEntry>();
+  for (const entry of [...availableEntries, ...virtualEntries]) {
+    requestableBySlug.set(entry.slug, entry);
   }
 
   const recommendedSlugs = opts.recommendedSlugs ?? [];
   const recommendedEntries: ManifestSkillEntry[] = [];
   for (const slug of recommendedSlugs) {
-    const entry = availableBySlug.get(slug);
+    const entry = requestableBySlug.get(slug);
     if (entry) {
       recommendedEntries.push(entry);
     }
@@ -167,11 +194,16 @@ export async function buildSkillsManifest(
     new Set([
       ...recommendedEntries.map((entry) => entry.slug),
       ...availableEntries.map((entry) => entry.slug),
+      ...virtualEntries.map((entry) => entry.slug),
     ]),
   );
 
   return {
-    markdown: renderManifest(recommendedEntries, availableEntries),
+    markdown: renderManifest(
+      recommendedEntries,
+      availableEntries,
+      virtualEntries,
+    ),
     slugs: dedupedSlugs,
   };
 }

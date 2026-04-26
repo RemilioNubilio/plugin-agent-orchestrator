@@ -13,6 +13,7 @@ import {
   installSkillCallbackBridge,
   parseUseSkillDirective,
 } from "../services/skill-callback-bridge.js";
+import { LIFEOPS_CONTEXT_BROKER_SLUG } from "../services/skill-lifeops-context-broker.js";
 
 type EventCallback = (sessionId: string, event: string, data: unknown) => void;
 
@@ -20,6 +21,7 @@ interface FakePtyService {
   emit: (sessionId: string, event: string, data: unknown) => void;
   onSessionEvent: (cb: EventCallback) => () => void;
   sendToSession: ReturnType<typeof vi.fn>;
+  getSession: ReturnType<typeof vi.fn>;
 }
 
 function createFakePty(): FakePtyService {
@@ -36,6 +38,7 @@ function createFakePty(): FakePtyService {
       };
     },
     sendToSession: vi.fn(async () => undefined),
+    getSession: vi.fn(() => undefined),
   };
 }
 
@@ -308,6 +311,132 @@ describe("installSkillCallbackBridge", () => {
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("routes allow-listed lifeops-context requests through the broker with args and result", async () => {
+    const pty = createFakePty();
+    pty.getSession.mockReturnValue({
+      id: "session-lifeops",
+      name: "lifeops",
+      agentType: "codex",
+      workdir: "/tmp",
+      status: "running",
+      createdAt: new Date("2026-04-26T00:00:00Z"),
+      lastActivityAt: new Date("2026-04-26T00:00:00Z"),
+      metadata: {
+        userId: "owner-user",
+        roomId: "owner-room",
+      },
+    });
+    const useSkillHandler = vi.fn();
+    const ownerInboxHandler = vi.fn(async (_r, _m, _s, options) => ({
+      success: true,
+      text: `owner inbox query: ${
+        ((options as { parameters?: Record<string, unknown> }).parameters
+          ?.query as string | undefined) ?? ""
+      }`,
+      data: { ok: true },
+    }));
+    const runtime = {
+      ...createRuntime({ useSkillHandler: useSkillHandler as never }),
+      actions: [
+        {
+          name: "USE_SKILL",
+          similes: ["INVOKE_SKILL"],
+          description: "test stub",
+          examples: [],
+          validate: async () => true,
+          handler: useSkillHandler,
+        },
+        {
+          name: "OWNER_INBOX",
+          description: "owner inbox",
+          examples: [],
+          validate: async () => true,
+          handler: ownerInboxHandler,
+        },
+      ],
+    } as unknown as IAgentRuntime;
+    const allowList = createSkillSessionAllowList();
+    allowList.register("session-lifeops", [LIFEOPS_CONTEXT_BROKER_SLUG]);
+
+    installSkillCallbackBridge({
+      runtime,
+      ptyService: pty as never,
+      sessionAllowList: allowList,
+    });
+
+    pty.emit("session-lifeops", "task_complete", {
+      response:
+        'USE_SKILL lifeops-context {"category":"email","query":"launch invoice","limit":5}',
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(useSkillHandler).not.toHaveBeenCalled();
+    expect(ownerInboxHandler).toHaveBeenCalledTimes(1);
+    expect(
+      (ownerInboxHandler.mock.calls[0]?.[3] as {
+        parameters?: Record<string, unknown>;
+      }).parameters,
+    ).toMatchObject({
+      subaction: "search",
+      channel: "gmail",
+      query: "launch invoice",
+    });
+    const [sessionId, replyText] = pty.sendToSession.mock.calls[0];
+    expect(sessionId).toBe("session-lifeops");
+    expect(replyText).toContain(
+      "--- USE_SKILL response (lifeops-context, ok) ---",
+    );
+    expect(replyText).toContain("owner inbox query: launch invoice");
+  });
+
+  it("rejects lifeops-context when no session allow-list grant exists", async () => {
+    const pty = createFakePty();
+    const useSkillHandler = vi.fn();
+    const runtime = createRuntime({ useSkillHandler: useSkillHandler as never });
+    const allowList = createSkillSessionAllowList();
+
+    installSkillCallbackBridge({
+      runtime,
+      ptyService: pty as never,
+      sessionAllowList: allowList,
+    });
+
+    pty.emit("session-none", "task_complete", {
+      response: 'USE_SKILL lifeops-context {"category":"email"}',
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(useSkillHandler).not.toHaveBeenCalled();
+    expect(pty.sendToSession).toHaveBeenCalledTimes(1);
+    const [, replyText] = pty.sendToSession.mock.calls[0];
+    expect(replyText).toContain("--- USE_SKILL response (lifeops-context, error) ---");
+    expect(replyText).toContain("only available when the parent explicitly recommends it");
+  });
+
+  it("reports the scratchpad app-level broker gap when no scratchpad action is available", async () => {
+    const pty = createFakePty();
+    const runtime = createRuntime();
+    const allowList = createSkillSessionAllowList();
+    allowList.register("session-lifeops", [LIFEOPS_CONTEXT_BROKER_SLUG]);
+
+    installSkillCallbackBridge({
+      runtime,
+      ptyService: pty as never,
+      sessionAllowList: allowList,
+    });
+
+    pty.emit("session-lifeops", "task_complete", {
+      response:
+        'USE_SKILL lifeops-context {"category":"scratchpad","query":"project notes"}',
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(pty.sendToSession).toHaveBeenCalledTimes(1);
+    const [, replyText] = pty.sendToSession.mock.calls[0];
+    expect(replyText).toContain("/api/knowledge/scratchpad/search");
+    expect(replyText).toContain("SCRATCHPAD_SEARCH");
   });
 
   it("stays inert when the runtime does not register a USE_SKILL action", async () => {

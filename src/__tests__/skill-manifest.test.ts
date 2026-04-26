@@ -9,6 +9,7 @@
 
 import type { IAgentRuntime } from "@elizaos/core";
 import { describe, expect, it } from "vitest";
+import { LIFEOPS_CONTEXT_BROKER_MANIFEST_ENTRY } from "../services/skill-lifeops-context-broker.js";
 import { buildSkillsManifest } from "../services/skill-manifest.js";
 
 interface FakeSkill {
@@ -133,6 +134,25 @@ describe("buildSkillsManifest", () => {
     expect(result.slugs).not.toContain("phantom-skill");
     expect(result.slugs).toContain("github-issues");
     expect(result.slugs).toContain("pdf-tools");
+  });
+
+  it("renders task-scoped virtual broker skills when recommended", async () => {
+    const runtime = createRuntimeWithSkills({
+      eligible: SKILLS,
+      enabledSet: new Set(SKILLS.map((s) => s.slug)),
+    });
+
+    const result = await buildSkillsManifest(runtime, {
+      onlyEligible: true,
+      recommendedSlugs: ["lifeops-context"],
+      virtualSkills: [LIFEOPS_CONTEXT_BROKER_MANIFEST_ENTRY],
+    });
+
+    expect(result.slugs).toContain("lifeops-context");
+    expect(result.markdown).toContain("## Recommended for this task");
+    expect(result.markdown).toContain("## Task-scoped broker skills");
+    expect(result.markdown).toContain("USE_SKILL lifeops-context");
+    expect(result.markdown).toContain("email, calendar, inbox, priority");
   });
 
   it("returns an empty manifest skeleton when AGENT_SKILLS_SERVICE is unavailable", async () => {
