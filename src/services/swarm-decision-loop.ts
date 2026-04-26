@@ -11,6 +11,12 @@
 import * as path from "node:path";
 import { ModelType } from "@elizaos/core";
 import { cleanForChat, extractCompletionSummary } from "./ansi-utils.js";
+import {
+  type CustomValidatorResult,
+  type CustomValidatorSpec,
+  getMaxRetries,
+  runCustomValidator,
+} from "./custom-validator-runner.js";
 import type {
   PendingDecision,
   SwarmCoordinatorContext,
@@ -30,6 +36,87 @@ import { classifyEventTier, type TriageContext } from "./swarm-event-triage.js";
 import { validateTaskCompletion } from "./task-validation.js";
 import { runReadyTaskVerifiers } from "./task-verifier-runner.js";
 import { withTrajectoryContext } from "./trajectory-context.js";
+
+/**
+ * Per-session metadata key holding the running retry counter for the custom
+ * validator path. Stored on `orchestrator_task_sessions.metadata_json` so
+ * it survives restarts. Sibling key: `validator`, `maxRetries`,
+ * `onVerificationFail`, and the `structuredProof` claim recorded by the
+ * structured-proof bridge.
+ */
+const VERIFICATION_RETRY_COUNT_KEY = "verificationRetryCount";
+
+interface VerificationMetadata {
+  validator: CustomValidatorSpec | null;
+  maxRetries: number | undefined;
+  onVerificationFail: "retry" | "escalate";
+  retryCount: number;
+  structuredProof: unknown;
+}
+
+function readVerificationMetadata(
+  metadata: Record<string, unknown> | null | undefined,
+): VerificationMetadata {
+  const validatorRaw = metadata?.validator;
+  let validator: CustomValidatorSpec | null = null;
+  if (
+    validatorRaw &&
+    typeof validatorRaw === "object" &&
+    !Array.isArray(validatorRaw)
+  ) {
+    const v = validatorRaw as Record<string, unknown>;
+    if (
+      typeof v.service === "string" &&
+      v.service.trim().length > 0 &&
+      typeof v.method === "string" &&
+      v.method.trim().length > 0
+    ) {
+      validator = {
+        service: v.service,
+        method: v.method,
+        params:
+          v.params && typeof v.params === "object" && !Array.isArray(v.params)
+            ? (v.params as Record<string, unknown>)
+            : {},
+      };
+    }
+  }
+  const maxRetries =
+    typeof metadata?.maxRetries === "number" &&
+    metadata.maxRetries >= 0 &&
+    Number.isFinite(metadata.maxRetries)
+      ? Math.floor(metadata.maxRetries)
+      : undefined;
+  const onVerificationFail =
+    metadata?.onVerificationFail === "escalate" ? "escalate" : "retry";
+  const retryCount =
+    typeof metadata?.[VERIFICATION_RETRY_COUNT_KEY] === "number" &&
+    Number.isFinite(metadata[VERIFICATION_RETRY_COUNT_KEY] as number)
+      ? Math.max(
+          0,
+          Math.floor(metadata[VERIFICATION_RETRY_COUNT_KEY] as number),
+        )
+      : 0;
+  const structuredProof = metadata?.structuredProof;
+  return {
+    validator,
+    maxRetries,
+    onVerificationFail,
+    retryCount,
+    structuredProof,
+  };
+}
+
+function summarizeValidatorFailure(result: CustomValidatorResult): string {
+  const detailsObj =
+    result.details && typeof result.details === "object" && result.details
+      ? (result.details as Record<string, unknown>)
+      : null;
+  const summary = detailsObj && typeof detailsObj.summary === "string"
+    ? detailsObj.summary
+    : null;
+  return summary ?? result.retryablePromptForChild;
+}
 
 // ─── Constants ───
 
@@ -778,6 +865,171 @@ export async function makeCoordinationDecision(
 }
 
 /**
+ * Run the custom validator branch for a `complete` decision. Returns `true`
+ * when the branch fully handled the completion (pass, retry-with-feedback,
+ * or escalate after retry exhaustion) so the caller skips the generic
+ * `validateTaskCompletion` flow. Returns `false` only when the validator
+ * succeeded so completion can proceed through the original code path —
+ * but in practice we handle pass internally too, so this helper never
+ * returns `false` once it's invoked.
+ *
+ * Backward compatibility: this helper is only invoked when the task's
+ * session metadata carries a `validator` spec. Pre-existing callers (and
+ * any CREATE_TASK invocation that does not pass `validator`) bypass this
+ * branch entirely and continue through `validateTaskCompletion`.
+ */
+async function runCustomValidatorBranch(
+  ctx: SwarmCoordinatorContext,
+  sessionId: string,
+  input: {
+    taskCtx: TaskContext;
+    decision: CoordinationLLMResponse;
+    completionSummary: string;
+    verificationMeta: VerificationMetadata;
+    structuredProof: unknown;
+  },
+): Promise<boolean> {
+  const { taskCtx, decision, verificationMeta, structuredProof } = input;
+  const validator = verificationMeta.validator;
+  if (!validator || !ctx.ptyService) return false;
+
+  const result = await runCustomValidator(
+    ctx.runtime,
+    validator,
+    structuredProof,
+  );
+
+  if (result.verdict === "pass") {
+    taskCtx.status = "completed";
+    await Promise.all([
+      ctx.syncTaskContext(taskCtx),
+      ctx.taskRegistry.updateThreadSummary(
+        taskCtx.threadId,
+        taskCtx.completionSummary ?? "",
+      ),
+      ctx.taskRegistry.appendEvent({
+        threadId: taskCtx.threadId,
+        sessionId,
+        eventType: "task_status_changed",
+        summary: `Task "${taskCtx.label}" completed (custom validator pass)`,
+        data: {
+          status: "completed",
+          completionSummary: taskCtx.completionSummary,
+          validator: { service: validator.service, method: validator.method },
+        },
+      }),
+    ]);
+    ctx.broadcast({
+      type: "task_complete",
+      sessionId,
+      timestamp: Date.now(),
+      data: {
+        reasoning: decision.reasoning,
+        verification: { source: "custom-validator", verdict: "pass" },
+      },
+    });
+    ctx.ptyService.stopSession(sessionId, /* force */ true).catch((err) => {
+      ctx.log(
+        `Failed to stop session after custom-validator pass: ${err}`,
+      );
+    });
+    checkAllTasksComplete(ctx);
+    return true;
+  }
+
+  // verdict === "fail"
+  const cap = getMaxRetries(verificationMeta.maxRetries);
+  const nextCount = verificationMeta.retryCount + 1;
+  const onFail = verificationMeta.onVerificationFail;
+  const shouldRetry = onFail === "retry" && nextCount <= cap;
+  const summary = summarizeValidatorFailure(result);
+
+  await ctx.taskRegistry.appendEvent({
+    threadId: taskCtx.threadId,
+    sessionId,
+    eventType: "validation_failed",
+    summary: `Custom validator (${validator.service}.${validator.method}) verdict=fail`,
+    data: {
+      verdict: "fail",
+      summary,
+      retryCount: verificationMeta.retryCount,
+      attempt: nextCount,
+      maxRetries: cap,
+      details: result.details ?? null,
+    },
+  });
+
+  if (shouldRetry) {
+    // Replay the validator's retry prompt back to the live PTY session and
+    // bump the persisted retry counter. The session stays running; the
+    // child agent will receive the prompt as its next turn input.
+    taskCtx.status = "active";
+    await ctx.ptyService.sendToSession(
+      sessionId,
+      result.retryablePromptForChild,
+    );
+    taskCtx.lastInputSentAt = Date.now();
+    await ctx.syncTaskContext(taskCtx);
+    await ctx.taskRegistry.updateSession(sessionId, {
+      lastInputSentAt: taskCtx.lastInputSentAt,
+      metadata: { [VERIFICATION_RETRY_COUNT_KEY]: nextCount },
+    });
+    ctx.log(
+      `[CustomValidator] retry ${nextCount}/${cap} sent to session ${sessionId}`,
+    );
+    return true;
+  }
+
+  // Retry budget exhausted (or onVerificationFail=escalate).
+  taskCtx.status = "error";
+  await Promise.all([
+    ctx.syncTaskContext(taskCtx),
+    ctx.taskRegistry.updateSession(sessionId, {
+      status: "error",
+      metadata: { [VERIFICATION_RETRY_COUNT_KEY]: verificationMeta.retryCount },
+    }),
+    ctx.taskRegistry.appendEvent({
+      threadId: taskCtx.threadId,
+      sessionId,
+      eventType: "task_status_changed",
+      summary:
+        onFail === "escalate"
+          ? `Task "${taskCtx.label}" escalated (custom validator failed; onVerificationFail=escalate)`
+          : `Task "${taskCtx.label}" escalated after ${verificationMeta.retryCount} verification retries`,
+      data: {
+        status: "error",
+        verdict: "fail",
+        retryCount: verificationMeta.retryCount,
+        maxRetries: cap,
+        summary,
+      },
+    }),
+  ]);
+  ctx.broadcast({
+    type: "escalation",
+    sessionId,
+    timestamp: Date.now(),
+    data: {
+      reason: "verification_failed",
+      summary:
+        onFail === "escalate"
+          ? `Verification failed: ${summary}`
+          : `Verification failed after ${verificationMeta.retryCount} retries: ${summary}`,
+      verifier: {
+        service: validator.service,
+        method: validator.method,
+      },
+      details: result.details ?? null,
+    },
+  });
+  ctx.ptyService.stopSession(sessionId, /* force */ true).catch((err) => {
+    ctx.log(`Failed to stop session after verification escalation: ${err}`);
+  });
+  checkAllTasksComplete(ctx);
+  return true;
+}
+
+/**
  * Execute a coordination decision: send response, complete session, escalate, or ignore.
  */
 export async function executeDecision(
@@ -869,6 +1121,31 @@ export async function executeDecision(
           description: "validation",
         },
       });
+
+      // ─── Custom validator branch ───
+      //
+      // When the task was registered with a `validator` spec on its
+      // session metadata (APP.create / PLUGIN.create / etc. pass one
+      // through CREATE_TASK), defer to that disk-aware verifier instead
+      // of the generic LLM `validateTaskCompletion` flow below. This is a
+      // sibling code path: when no validator is set, behavior is
+      // unchanged and the existing escalation path runs.
+      const sessionRecord = await ctx.taskRegistry
+        .getSession(sessionId)
+        .catch(() => null);
+      const verificationMeta = readVerificationMetadata(
+        sessionRecord?.metadata ?? null,
+      );
+      if (verificationMeta.validator) {
+        const handled = await runCustomValidatorBranch(ctx, sessionId, {
+          taskCtx,
+          decision,
+          completionSummary: taskCtx.completionSummary ?? "",
+          verificationMeta,
+          structuredProof: verificationMeta.structuredProof,
+        });
+        if (handled) break;
+      }
 
       // Only spin up the acceptance verifier when the task is actually a
       // code/build task against a real repo. The verifier is an LLM pass
