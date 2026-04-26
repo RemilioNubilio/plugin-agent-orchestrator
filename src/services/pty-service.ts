@@ -76,6 +76,7 @@ import {
   classifyAndDecideForCoordinator,
   classifyStallOutput,
 } from "./stall-classifier.js";
+import { ensureStructuredProofBridge } from "./structured-proof-bridge.js";
 import { SwarmCoordinator } from "./swarm-coordinator.js";
 import { POST_SEND_COOLDOWN_MS } from "./swarm-decision-loop.js";
 import {
@@ -392,6 +393,14 @@ export class PTYService {
         logger.error(`[PTYService] Failed to wire SwarmCoordinator: ${err}`);
       }
     }
+
+    // Install the structured-proof bridge once per runtime. It listens for
+    // APP_CREATE_DONE / PLUGIN_CREATE_DONE sentinels in child PTY output and
+    // persists the structured claim to the owning task's session metadata so
+    // a custom validator can cross-check the claim against actual disk state.
+    // Mirrors how `ensureSkillCallbackBridge` is registered per spawn — the
+    // ensure-helper is internally idempotent.
+    ensureStructuredProofBridge(runtime, service);
 
     return service;
   }
