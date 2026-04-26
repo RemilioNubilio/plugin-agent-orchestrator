@@ -374,6 +374,17 @@ export interface CodingTaskContext {
   memoryContent: string | undefined;
   approvalPreset: string | undefined;
   explicitLabel: string | undefined;
+  /**
+   * Optional caller-supplied custom validator spec. Forwarded verbatim into
+   * the task's session metadata so the swarm decision loop can resolve and
+   * invoke it after the child claims `done`. Shape matches
+   * `CustomValidatorSpec` in `services/custom-validator-runner.ts`.
+   */
+  validator?: { service: string; method: string; params: Record<string, unknown> };
+  /** Optional override for MILADY_APP_VERIFICATION_MAX_RETRIES. */
+  maxRetries?: number;
+  /** Optional verdict-fail behavior. Defaults to "retry". */
+  onVerificationFail?: "retry" | "escalate";
 }
 
 /**
@@ -747,6 +758,31 @@ export async function handleMultiAgent(
       );
       if (coordinator && specTask) {
         failureStage = "register";
+        const baseMetadata =
+          session.metadata &&
+          typeof session.metadata === "object" &&
+          !Array.isArray(session.metadata)
+            ? (session.metadata as Record<string, unknown>)
+            : {};
+        // Merge caller-supplied verification policy onto the task's session
+        // metadata so the swarm decision loop can read it after the child
+        // claims `done`. Backward-compatible: when none are set we pass the
+        // original metadata object through unchanged (or `undefined`) and
+        // the existing LLM `validateTaskCompletion` flow runs as before.
+        const verificationMeta: Record<string, unknown> = {};
+        if (ctx.validator) verificationMeta.validator = ctx.validator;
+        if (typeof ctx.maxRetries === "number") {
+          verificationMeta.maxRetries = ctx.maxRetries;
+        }
+        if (ctx.onVerificationFail) {
+          verificationMeta.onVerificationFail = ctx.onVerificationFail;
+        }
+        const mergedMetadata =
+          Object.keys(verificationMeta).length > 0
+            ? { ...baseMetadata, ...verificationMeta }
+            : Object.keys(baseMetadata).length > 0
+              ? baseMetadata
+              : undefined;
         await coordinator.registerTask(session.id, {
           threadId: taskThread?.id ?? session.id,
           taskNodeId,
@@ -755,12 +791,7 @@ export async function handleMultiAgent(
           originalTask: specTask,
           workdir,
           repo,
-          metadata:
-            session.metadata &&
-            typeof session.metadata === "object" &&
-            !Array.isArray(session.metadata)
-              ? (session.metadata as Record<string, unknown>)
-              : undefined,
+          metadata: mergedMetadata,
         });
       }
 

@@ -29,6 +29,7 @@ import {
   isAnthropicOAuthToken,
   sanitizeCustomCredentials,
 } from "../services/agent-credentials.js";
+import type { CustomValidatorSpec } from "../services/custom-validator-runner.js";
 import type { PTYService } from "../services/pty-service.js";
 import { getCoordinator } from "../services/pty-service.js";
 import { normalizeAgentType } from "../services/pty-types.js";
@@ -40,6 +41,43 @@ import {
   type CodingTaskContext,
   handleMultiAgent,
 } from "./coding-task-handlers.js";
+
+/**
+ * Caller-supplied retry policy for the custom validator path. Stored on
+ * the task's session metadata under `validator` / `maxRetries` /
+ * `onVerificationFail` so the decision loop can read it after completion.
+ */
+export type OnVerificationFail = "retry" | "escalate";
+
+function normalizeValidatorSpec(value: unknown): CustomValidatorSpec | null {
+  if (!value || typeof value !== "object") return null;
+  const v = value as Record<string, unknown>;
+  if (typeof v.service !== "string" || v.service.trim().length === 0) {
+    return null;
+  }
+  if (typeof v.method !== "string" || v.method.trim().length === 0) {
+    return null;
+  }
+  const params =
+    v.params && typeof v.params === "object" && !Array.isArray(v.params)
+      ? (v.params as Record<string, unknown>)
+      : {};
+  return {
+    service: v.service,
+    method: v.method,
+    params,
+  };
+}
+
+function normalizeOnVerificationFail(value: unknown): OnVerificationFail | null {
+  return value === "retry" || value === "escalate" ? value : null;
+}
+
+function normalizeMaxRetries(value: unknown): number | null {
+  if (typeof value !== "number") return null;
+  if (!Number.isFinite(value) || value < 0) return null;
+  return Math.floor(value);
+}
 
 function hasExplicitTaskPayload(message: Memory): boolean {
   const content =
@@ -480,6 +518,23 @@ export const startCodingTaskAction: BackgroundAction = {
     const explicitLabel =
       (params?.label as string) ?? (content.label as string);
 
+    // Optional caller-supplied verification policy. Specialized creators
+    // (APP.create, PLUGIN.create, etc.) pass a `validator` spec so the
+    // orchestrator defers to their disk-aware verifier instead of running
+    // the generic LLM `validateTaskCompletion` pass. `maxRetries` and
+    // `onVerificationFail` shape the retry-with-feedback loop. All three
+    // are forwarded verbatim into the task's session metadata so the
+    // swarm decision loop can read them after the child claims `done`.
+    const validator =
+      normalizeValidatorSpec(params?.validator) ??
+      normalizeValidatorSpec(content.validator);
+    const maxRetries =
+      normalizeMaxRetries(params?.maxRetries) ??
+      normalizeMaxRetries(content.maxRetries);
+    const onVerificationFail =
+      normalizeOnVerificationFail(params?.onVerificationFail) ??
+      normalizeOnVerificationFail(content.onVerificationFail);
+
     // Build shared context for handlers
     const ctx: CodingTaskContext = {
       runtime,
@@ -498,6 +553,9 @@ export const startCodingTaskAction: BackgroundAction = {
       memoryContent,
       approvalPreset,
       explicitLabel,
+      ...(validator ? { validator } : {}),
+      ...(maxRetries !== null ? { maxRetries } : {}),
+      ...(onVerificationFail ? { onVerificationFail } : {}),
     };
 
     // Dispatch: build a pipe-delimited agents string for handleMultiAgent.
@@ -604,6 +662,37 @@ export const startCodingTaskAction: BackgroundAction = {
       schema: {
         type: "string" as const,
         enum: ["readonly", "standard", "permissive", "autonomous"],
+      },
+    },
+    {
+      name: "validator",
+      description:
+        "Optional custom verification spec: { service, method, params }. " +
+        "When set, the orchestrator calls runtime.getService(service)[method](params) " +
+        "after the child claims `done` instead of running the generic LLM validator. " +
+        "The service must return { verdict: 'pass' | 'fail', retryablePromptForChild }.",
+      required: false,
+      schema: { type: "object" as const },
+    },
+    {
+      name: "maxRetries",
+      description:
+        "Optional override for MILADY_APP_VERIFICATION_MAX_RETRIES (default 3). " +
+        "Caps how many times the orchestrator will replay the failure prompt to the child " +
+        "before escalating to the user.",
+      required: false,
+      schema: { type: "integer" as const, minimum: 0 },
+    },
+    {
+      name: "onVerificationFail",
+      description:
+        "Optional behavior for a failed custom validator verdict: 'retry' (default) " +
+        "replays the validator's retryablePromptForChild up to maxRetries times, " +
+        "'escalate' surfaces the failure to the user immediately.",
+      required: false,
+      schema: {
+        type: "string" as const,
+        enum: ["retry", "escalate"],
       },
     },
   ],
