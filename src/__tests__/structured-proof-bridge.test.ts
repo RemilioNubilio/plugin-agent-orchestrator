@@ -72,10 +72,7 @@ describe("parseStructuredProofDirective", () => {
     if (out?.ok) {
       expect(out.parsed.kind).toBe("APP_CREATE_DONE");
       expect(out.parsed.claim.appName).toBe("foo");
-      expect(out.parsed.claim.files).toEqual([
-        "src/plugin.ts",
-        "package.json",
-      ]);
+      expect(out.parsed.claim.files).toEqual(["src/plugin.ts", "package.json"]);
       expect(out.parsed.claim.tests).toEqual({ passed: 5, failed: 0 });
       expect(out.parsed.claim.lint).toBe("ok");
       expect(out.parsed.claim.typecheck).toBe("ok");
@@ -248,8 +245,7 @@ describe("installStructuredProofBridge", () => {
     });
 
     pty.emit("session-bad", "task_complete", {
-      response:
-        'APP_CREATE_DONE {"appName":"foo"} ', // missing required fields
+      response: 'APP_CREATE_DONE {"appName":"foo"} ', // missing required fields
     });
 
     await new Promise((resolve) => setImmediate(resolve));

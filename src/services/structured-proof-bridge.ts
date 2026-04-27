@@ -94,11 +94,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function hasOwnField(
-  obj: Record<string, unknown>,
-  field: string,
-): boolean {
-  return Object.prototype.hasOwnProperty.call(obj, field);
+function hasOwnField(obj: Record<string, unknown>, field: string): boolean {
+  return Object.hasOwn(obj, field);
 }
 
 function isNonNegativeInteger(value: unknown): value is number {
@@ -255,13 +252,7 @@ export function parseStructuredProofDirective(
   }
   // Preserve any unknown JSON fields under `extra` so downstream validators
   // can read them without re-parsing the line.
-  const known = new Set([
-    nameField,
-    "files",
-    "tests",
-    "lint",
-    "typecheck",
-  ]);
+  const known = new Set([nameField, "files", "tests", "lint", "typecheck"]);
   const extra: Record<string, unknown> = {};
   let hasExtra = false;
   for (const [key, value] of Object.entries(obj)) {
@@ -309,9 +300,7 @@ export function _resetStructuredProofBridge(): void {
   persistedSessions.clear();
 }
 
-function resolveTaskRegistry(
-  deps: BridgeDeps,
-): TaskRegistry | null {
+function resolveTaskRegistry(deps: BridgeDeps): TaskRegistry | null {
   if (deps.taskRegistry) return deps.taskRegistry;
   const coordinator = deps.ptyService.coordinator;
   return coordinator?.taskRegistry ?? null;
