@@ -93,6 +93,8 @@ import {
   buildTaskAgentTaskProfile,
   clearTaskAgentFrameworkStateCache,
   getTaskAgentFrameworkState,
+  getTaskAgentModelPrefs,
+  readTaskAgentModelPrefs,
   type SupportedTaskAgentAdapter,
   type TaskAgentFrameworkState,
   type TaskAgentTaskProfileInput,
@@ -726,6 +728,21 @@ export class PTYService {
       await this.ensureOrchestratorGitignore(workdir);
     }
 
+    const modelPrefs = getTaskAgentModelPrefs(
+      this.runtime,
+      resolvedAgentType,
+      readTaskAgentModelPrefs(options.metadata?.modelPrefs),
+    );
+    const metadataWithoutModelPrefs = { ...(options.metadata ?? {}) };
+    delete metadataWithoutModelPrefs.modelPrefs;
+    const metadata = {
+      ...metadataWithoutModelPrefs,
+      requestedType: options.metadata?.requestedType ?? options.agentType,
+      agentType: resolvedAgentType,
+      coordinatorManaged: !!options.skipAdapterAutoResponse,
+      ...(modelPrefs ? { modelPrefs } : {}),
+    };
+
     const spawnConfig = buildSpawnConfig(
       sessionId,
       {
@@ -733,6 +750,7 @@ export class PTYService {
         agentType: resolvedAgentType,
         initialTask: resolvedInitialTask,
         approvalPreset: effectiveApprovalPreset,
+        metadata,
       },
       workdir,
     );
@@ -741,12 +759,7 @@ export class PTYService {
     this.sessionNames.set(session.id, options.name);
 
     // Store metadata separately (always include agentType for stall classification)
-    this.sessionMetadata.set(session.id, {
-      ...options.metadata,
-      requestedType: options.metadata?.requestedType ?? options.agentType,
-      agentType: resolvedAgentType,
-      coordinatorManaged: !!options.skipAdapterAutoResponse,
-    });
+    this.sessionMetadata.set(session.id, metadata);
 
     // Build spawn context for delegating to extracted spawn modules
     const ctx = {

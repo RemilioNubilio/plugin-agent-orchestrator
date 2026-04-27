@@ -21,6 +21,7 @@ import type {
   SessionInfo,
   SpawnSessionOptions,
 } from "./pty-types.js";
+import { readTaskAgentModelPrefs } from "./task-agent-frameworks.js";
 
 /**
  * System environment variables safe to pass to spawned agents.
@@ -393,9 +394,7 @@ export function buildSpawnConfig(
   workdir: string,
 ): SpawnConfig & { id: string } {
   // Map model preferences to adapter-specific env vars
-  const modelPrefs = options.metadata?.modelPrefs as
-    | { powerful?: string; fast?: string }
-    | undefined;
+  const modelPrefs = readTaskAgentModelPrefs(options.metadata?.modelPrefs);
   let modelEnv: Record<string, string> | undefined;
   if (modelPrefs?.powerful) {
     const envKeyMap: Record<string, string> = {

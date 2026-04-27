@@ -18,9 +18,12 @@ import { readConfigCodexSubscriptionRestrictedToCodexFramework } from "../servic
 import {
   clearTaskAgentFrameworkStateCache,
   getTaskAgentFrameworkState,
+  getTaskAgentModelPrefs,
 } from "../services/task-agent-frameworks.js";
 
-function createRuntime(): IAgentRuntime {
+function createRuntime(
+  settings: Record<string, string | undefined> = {},
+): IAgentRuntime {
   const runtime = {
     logger: {
       debug: () => undefined,
@@ -28,7 +31,7 @@ function createRuntime(): IAgentRuntime {
       warn: () => undefined,
       error: () => undefined,
     },
-    getSetting: () => undefined,
+    getSetting: (key: string) => settings[key],
     getService: () => null,
   };
   return runtime as unknown as IAgentRuntime;
@@ -50,6 +53,14 @@ interface FrameworkFixture {
     GOOGLE_GENERATIVE_AI_API_KEY: string | undefined;
     PARALLAX_LLM_PROVIDER: string | undefined;
     PARALLAX_DEFAULT_AGENT_TYPE: string | undefined;
+    PARALLAX_CLAUDE_MODEL_POWERFUL: string | undefined;
+    PARALLAX_CLAUDE_MODEL_FAST: string | undefined;
+    PARALLAX_CODEX_MODEL_POWERFUL: string | undefined;
+    PARALLAX_CODEX_MODEL_FAST: string | undefined;
+    PARALLAX_GEMINI_MODEL_POWERFUL: string | undefined;
+    PARALLAX_GEMINI_MODEL_FAST: string | undefined;
+    PARALLAX_AIDER_MODEL_POWERFUL: string | undefined;
+    PARALLAX_AIDER_MODEL_FAST: string | undefined;
   };
 }
 
@@ -74,6 +85,14 @@ function setupFixture(): FrameworkFixture {
     GOOGLE_GENERATIVE_AI_API_KEY: process.env.GOOGLE_GENERATIVE_AI_API_KEY,
     PARALLAX_LLM_PROVIDER: process.env.PARALLAX_LLM_PROVIDER,
     PARALLAX_DEFAULT_AGENT_TYPE: process.env.PARALLAX_DEFAULT_AGENT_TYPE,
+    PARALLAX_CLAUDE_MODEL_POWERFUL: process.env.PARALLAX_CLAUDE_MODEL_POWERFUL,
+    PARALLAX_CLAUDE_MODEL_FAST: process.env.PARALLAX_CLAUDE_MODEL_FAST,
+    PARALLAX_CODEX_MODEL_POWERFUL: process.env.PARALLAX_CODEX_MODEL_POWERFUL,
+    PARALLAX_CODEX_MODEL_FAST: process.env.PARALLAX_CODEX_MODEL_FAST,
+    PARALLAX_GEMINI_MODEL_POWERFUL: process.env.PARALLAX_GEMINI_MODEL_POWERFUL,
+    PARALLAX_GEMINI_MODEL_FAST: process.env.PARALLAX_GEMINI_MODEL_FAST,
+    PARALLAX_AIDER_MODEL_POWERFUL: process.env.PARALLAX_AIDER_MODEL_POWERFUL,
+    PARALLAX_AIDER_MODEL_FAST: process.env.PARALLAX_AIDER_MODEL_FAST,
   };
 
   process.env.MILADY_STATE_DIR = stateDir;
@@ -90,6 +109,14 @@ function setupFixture(): FrameworkFixture {
   delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
   delete process.env.PARALLAX_LLM_PROVIDER;
   delete process.env.PARALLAX_DEFAULT_AGENT_TYPE;
+  delete process.env.PARALLAX_CLAUDE_MODEL_POWERFUL;
+  delete process.env.PARALLAX_CLAUDE_MODEL_FAST;
+  delete process.env.PARALLAX_CODEX_MODEL_POWERFUL;
+  delete process.env.PARALLAX_CODEX_MODEL_FAST;
+  delete process.env.PARALLAX_GEMINI_MODEL_POWERFUL;
+  delete process.env.PARALLAX_GEMINI_MODEL_FAST;
+  delete process.env.PARALLAX_AIDER_MODEL_POWERFUL;
+  delete process.env.PARALLAX_AIDER_MODEL_FAST;
 
   // Plant a Codex subscription token so hasCodexSubscriptionAuth() returns true.
   writeFileSync(
@@ -125,6 +152,60 @@ function writeMiladyConfig(
   );
   clearTaskAgentFrameworkStateCache();
 }
+
+describe("task-agent model preferences", () => {
+  let fixture: FrameworkFixture;
+
+  beforeEach(() => {
+    fixture = setupFixture();
+  });
+
+  afterEach(() => {
+    teardownFixture(fixture);
+  });
+
+  it("uses central powerful defaults for Claude and Codex task agents", () => {
+    writeMiladyConfig(fixture, {});
+
+    expect(getTaskAgentModelPrefs(createRuntime(), "claude")).toEqual({
+      powerful: "claude-opus-4-7",
+    });
+    expect(getTaskAgentModelPrefs(createRuntime(), "codex")).toEqual({
+      powerful: "gpt-5.5",
+      fast: "gpt-5.5-mini",
+    });
+  });
+
+  it("keeps runtime settings ahead of spawn metadata and central defaults", () => {
+    const runtime = createRuntime({
+      PARALLAX_CODEX_MODEL_POWERFUL: "gpt-user-power",
+      PARALLAX_CODEX_MODEL_FAST: "gpt-user-fast",
+    });
+
+    expect(
+      getTaskAgentModelPrefs(runtime, "codex", {
+        powerful: "gpt-hardcoded-power",
+        fast: "gpt-hardcoded-fast",
+      }),
+    ).toEqual({
+      powerful: "gpt-user-power",
+      fast: "gpt-user-fast",
+    });
+  });
+
+  it("reads model overrides from the persisted config env section", () => {
+    writeMiladyConfig(fixture, {
+      env: {
+        PARALLAX_CODEX_MODEL_POWERFUL: "gpt-config-power",
+      },
+    });
+
+    expect(getTaskAgentModelPrefs(createRuntime(), "codex")).toEqual({
+      powerful: "gpt-config-power",
+      fast: "gpt-5.5-mini",
+    });
+  });
+});
 
 describe("codexSubscriptionRestrictedToCodexFramework flag", () => {
   let fixture: FrameworkFixture;

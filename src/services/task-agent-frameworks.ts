@@ -24,6 +24,11 @@ import {
 export type SupportedTaskAgentAdapter = "claude" | "codex" | "gemini" | "aider";
 export type TaskAgentFrameworkId = SupportedTaskAgentAdapter | "pi";
 
+export interface TaskAgentModelPrefs {
+  powerful?: string;
+  fast?: string;
+}
+
 export interface TaskAgentFrameworkAvailability {
   id: TaskAgentFrameworkId;
   label: string;
@@ -194,6 +199,38 @@ const STANDARD_FRAMEWORKS: SupportedTaskAgentAdapter[] = [
   "aider",
 ];
 
+const TASK_AGENT_MODEL_PREF_SETTING_KEYS: Record<
+  SupportedTaskAgentAdapter,
+  { powerful: string; fast: string }
+> = {
+  claude: {
+    powerful: "PARALLAX_CLAUDE_MODEL_POWERFUL",
+    fast: "PARALLAX_CLAUDE_MODEL_FAST",
+  },
+  codex: {
+    powerful: "PARALLAX_CODEX_MODEL_POWERFUL",
+    fast: "PARALLAX_CODEX_MODEL_FAST",
+  },
+  gemini: {
+    powerful: "PARALLAX_GEMINI_MODEL_POWERFUL",
+    fast: "PARALLAX_GEMINI_MODEL_FAST",
+  },
+  aider: {
+    powerful: "PARALLAX_AIDER_MODEL_POWERFUL",
+    fast: "PARALLAX_AIDER_MODEL_FAST",
+  },
+};
+
+export const TASK_AGENT_DEFAULT_MODEL_PREFS: Record<
+  SupportedTaskAgentAdapter,
+  TaskAgentModelPrefs
+> = {
+  claude: { powerful: "claude-opus-4-7" },
+  codex: { powerful: "gpt-5.5", fast: "gpt-5.5-mini" },
+  gemini: {},
+  aider: {},
+};
+
 const TASK_AGENT_COMPLEXITY_RE =
   /\b(repo|repository|code|coding|debug|fix|implement|investigate|research|analyze|analysis|summarize|summary|write|draft|document|plan|workflow|automation|parallel|delegate|subtask|agent|orchestrate|coordinate|compare|test|tests|pull request|pr\b|branch|commit)\b/i;
 
@@ -253,6 +290,94 @@ function safeGetSetting(
   } catch {
     return undefined;
   }
+}
+
+function trimModelPref(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+export function readTaskAgentModelPrefs(
+  value: unknown,
+): TaskAgentModelPrefs | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  return compactTaskAgentModelPrefs({
+    powerful: trimModelPref(record.powerful),
+    fast: trimModelPref(record.fast),
+  });
+}
+
+function compactTaskAgentModelPrefs(
+  prefs: TaskAgentModelPrefs | undefined,
+): TaskAgentModelPrefs | undefined {
+  const powerful = trimModelPref(prefs?.powerful);
+  const fast = trimModelPref(prefs?.fast);
+  if (!powerful && !fast) return undefined;
+  return {
+    ...(powerful ? { powerful } : {}),
+    ...(fast ? { fast } : {}),
+  };
+}
+
+export function mergeTaskAgentModelPrefs(
+  ...prefs: Array<TaskAgentModelPrefs | undefined>
+): TaskAgentModelPrefs | undefined {
+  let merged: TaskAgentModelPrefs | undefined;
+  for (const pref of prefs) {
+    const compact = compactTaskAgentModelPrefs(pref);
+    if (!compact) continue;
+    merged = { ...merged, ...compact };
+  }
+  return compactTaskAgentModelPrefs(merged);
+}
+
+function normalizeTaskAgentAdapterForModelPrefs(
+  agentType: string | undefined,
+): SupportedTaskAgentAdapter | undefined {
+  const normalized = agentType?.trim().toLowerCase();
+  switch (normalized) {
+    case "claude":
+    case "claude-code":
+    case "claude code":
+      return "claude";
+    case "codex":
+    case "openai":
+    case "openai-codex":
+    case "openai codex":
+      return "codex";
+    case "gemini":
+    case "google":
+    case "gemini-cli":
+    case "gemini cli":
+      return "gemini";
+    case "aider":
+      return "aider";
+    default:
+      return undefined;
+  }
+}
+
+export function getTaskAgentModelPrefs(
+  runtime: IAgentRuntime | undefined,
+  agentType: string | undefined,
+  spawnPrefs?: TaskAgentModelPrefs,
+): TaskAgentModelPrefs | undefined {
+  const adapter = normalizeTaskAgentAdapterForModelPrefs(agentType);
+  if (!adapter) return undefined;
+
+  const keys = TASK_AGENT_MODEL_PREF_SETTING_KEYS[adapter];
+  const runtimePrefs = compactTaskAgentModelPrefs({
+    powerful: safeGetSetting(runtime, keys.powerful),
+    fast: safeGetSetting(runtime, keys.fast),
+  });
+
+  return mergeTaskAgentModelPrefs(
+    TASK_AGENT_DEFAULT_MODEL_PREFS[adapter],
+    spawnPrefs,
+    runtimePrefs,
+  );
 }
 
 function getPreflightAuthStatus(

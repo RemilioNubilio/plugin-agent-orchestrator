@@ -9,6 +9,7 @@
 import { describe, expect, it } from "vitest";
 import {
   appendWindowsPathFallbacks,
+  buildSpawnConfig,
   getWindowsPathFallbacks,
   mergePathEntries,
 } from "../services/pty-spawn.js";
@@ -80,5 +81,21 @@ describe("appendWindowsPathFallbacks (non-Windows passthrough)", () => {
     if (process.platform === "win32") return;
     expect(appendWindowsPathFallbacks("/usr/bin:/bin")).toBe("/usr/bin:/bin");
     expect(appendWindowsPathFallbacks(undefined)).toBeUndefined();
+  });
+});
+
+describe("buildSpawnConfig model preferences", () => {
+  it("maps Codex powerful model preferences to OPENAI_MODEL", () => {
+    const config = buildSpawnConfig(
+      "pty-test",
+      {
+        name: "test",
+        agentType: "codex",
+        metadata: { modelPrefs: { powerful: "gpt-5.5" } },
+      },
+      "/tmp",
+    );
+
+    expect(config.env.OPENAI_MODEL).toBe("gpt-5.5");
   });
 });

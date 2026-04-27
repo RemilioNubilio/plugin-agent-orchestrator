@@ -598,7 +598,7 @@ export async function handleAgentRoutes(
       const rawAnthropicKey = ctx.runtime.getSetting("ANTHROPIC_API_KEY") as
         | string
         | undefined;
-      let credentials;
+      let credentials: ReturnType<typeof buildAgentCredentials>;
       try {
         credentials = buildAgentCredentials(ctx.runtime);
       } catch (error) {
@@ -610,25 +610,12 @@ export async function handleAgentRoutes(
         return true;
       }
 
-      // Read model preferences from runtime settings
+      // Resolve requested framework; PTYService applies model preferences centrally.
       const agentStr = agentType
         ? (agentType as string).toLowerCase()
         : await ctx.ptyService.resolveAgentType();
       const piRequested = isPiAgentType(agentStr);
       const normalizedType = normalizeAgentType(agentStr);
-      const prefixMap: Record<string, string> = {
-        claude: "PARALLAX_CLAUDE",
-        gemini: "PARALLAX_GEMINI",
-        codex: "PARALLAX_CODEX",
-        aider: "PARALLAX_AIDER",
-      };
-      const prefix = prefixMap[agentStr];
-      const modelPowerful = prefix
-        ? (ctx.runtime.getSetting(`${prefix}_MODEL_POWERFUL`) as string | null)
-        : null;
-      const modelFast = prefix
-        ? (ctx.runtime.getSetting(`${prefix}_MODEL_FAST`) as string | null)
-        : null;
       const aiderProvider =
         agentStr === "aider"
           ? (ctx.runtime.getSetting("PARALLAX_AIDER_PROVIDER") as string | null)
@@ -691,10 +678,6 @@ export async function handleAgentRoutes(
           requestedType: agentStr,
           ...(metadata as Record<string, unknown>),
           ...(aiderProvider ? { provider: aiderProvider } : {}),
-          modelPrefs: {
-            ...(modelPowerful ? { powerful: modelPowerful } : {}),
-            ...(modelFast ? { fast: modelFast } : {}),
-          },
         },
       });
       if (coordinator) {
