@@ -10,6 +10,7 @@
  * @module services/workspace-service
  */
 
+import { execFile } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -90,6 +91,36 @@ export interface ScratchWorkspaceRecord {
   terminalAt: number;
   terminalEvent: ScratchTerminalEvent;
   expiresAt?: number;
+}
+
+/**
+ * Resolve the default branch of a remote repository via `git ls-remote
+ * --symref`. Returns "main" if the lookup fails or the response can't be
+ * parsed — callers that hardcoded "main" before keep working unchanged.
+ *
+ * Used as a fallback when the workspace caller doesn't pin a base branch.
+ * Without this, repos whose default is "alpha" / "master" / "develop"
+ * (e.g. elizaos-plugins/plugin-discord uses "alpha") fail at clone with
+ * "fatal: Remote branch main not found in upstream origin".
+ */
+export function resolveDefaultBranch(repoUrl: string): Promise<string> {
+  return new Promise((resolve) => {
+    execFile(
+      "git",
+      ["ls-remote", "--symref", repoUrl, "HEAD"],
+      { timeout: 10_000, encoding: "utf-8" },
+      (err, stdout) => {
+        if (err) {
+          // Network failure, private repo without creds, etc. Fall through
+          // to "main" — the historical default.
+          resolve("main");
+          return;
+        }
+        const match = stdout.match(/^ref:\s+refs\/heads\/(\S+)\s+HEAD/m);
+        resolve(match?.[1] ?? "main");
+      },
+    );
+  });
 }
 
 export class CodingWorkspaceService {
@@ -226,6 +257,8 @@ export class CodingWorkspaceService {
     const repo = normalizeRepositoryInput(options.repo);
     const executionId = options.execution?.id ?? `exec-${Date.now()}`;
     const taskId = options.task?.id ?? `task-${Date.now()}`;
+    const baseBranch =
+      options.baseBranch ?? (await resolveDefaultBranch(repo));
 
     const workspaceConfig: WorkspaceConfig = {
       repo,
@@ -233,7 +266,7 @@ export class CodingWorkspaceService {
       parentWorkspace: options.parentWorkspaceId,
       branchStrategy: "feature_branch",
       branchName: options.branchName,
-      baseBranch: options.baseBranch ?? "main",
+      baseBranch,
       execution: {
         id: executionId,
         patternName: options.execution?.patternName ?? "milady-coding",
