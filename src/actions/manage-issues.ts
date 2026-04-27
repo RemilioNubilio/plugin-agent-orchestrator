@@ -16,8 +16,21 @@ import type {
   Memory,
   State,
 } from "@elizaos/core";
+import { logger } from "@elizaos/core";
+import { getCoordinator } from "../services/pty-service.js";
 import { requireTaskAgentAccess } from "../services/task-policy.js";
+import type { AuthPromptCallback } from "../services/workspace-github.js";
 import type { CodingWorkspaceService } from "../services/workspace-service.js";
+
+function formatGitHubAuthPrompt(prompt: Parameters<AuthPromptCallback>[0]): string {
+  return (
+    `I need GitHub access to manage issues. Please authorize me:\n\n` +
+    `Go to: ${prompt.verificationUri}\n` +
+    `Enter code: **${prompt.userCode}**\n\n` +
+    `This code expires in ${Math.floor(prompt.expiresIn / 60)} minutes. ` +
+    `I'll wait for you to complete authorization...`
+  );
+}
 
 export const manageIssuesAction: Action = {
   name: "MANAGE_ISSUES",
@@ -117,18 +130,21 @@ export const manageIssuesAction: Action = {
       return { success: false, error: "SERVICE_UNAVAILABLE" };
     }
 
-    // Wire auth prompt so OAuth device flow surfaces through chat
+    // Wire auth prompt through the coordinator chat bridge. The action
+    // callback is buffered until the handler returns, which is too late for a
+    // device-flow prompt that blocks while polling.
     workspaceService.setAuthPromptCallback((prompt) => {
-      if (callback) {
-        callback({
-          text:
-            `I need GitHub access to manage issues. Please authorize me:\n\n` +
-            `Go to: ${prompt.verificationUri}\n` +
-            `Enter code: **${prompt.userCode}**\n\n` +
-            `This code expires in ${Math.floor(prompt.expiresIn / 60)} minutes. ` +
-            `I'll wait for you to complete authorization...`,
-        });
+      const delivered =
+        getCoordinator(runtime)?.sendChatMessage(
+          formatGitHubAuthPrompt(prompt),
+          "github-auth",
+        ) === true;
+      if (!delivered) {
+        logger.warn(
+          "[MANAGE_ISSUES] GitHub OAuth prompt requires immediate delivery, but the coordinator chat bridge is not wired",
+        );
       }
+      return delivered;
     });
 
     const params = options?.parameters;

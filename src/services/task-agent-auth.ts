@@ -80,6 +80,8 @@ const DEFAULT_TRUSTED_AUTH_HOSTS = new Set([
 const DEFAULT_INITIAL_AUTH_WAIT_MS = 2_000;
 const DEFAULT_COMMAND_TIMEOUT_MS = 5_000;
 const DEFAULT_BROWSER_ASSIST_TIMEOUT_MS = 750;
+const CLAUDE_NON_INTERACTIVE_AUTH_FAILURE_RE =
+  /\b401\b|\binvalid authentication credentials\b|\bauthentication_error\b|\bfailed to authenticate\b/i;
 
 const DEFAULT_BROWSER_CLICK_SELECTORS: Record<
   SupportedTaskAgentAdapter,
@@ -304,7 +306,7 @@ export function getTaskAgentLoginHint(
 ): string | undefined {
   switch (agentType) {
     case "claude":
-      return "claude auth login";
+      return "Run `claude setup-token` to refresh Claude Code non-interactive subscription auth, or `claude auth login --claudeai` if the CLI is logged out.";
     case "codex":
       return "codex login";
     case "gemini":
@@ -312,6 +314,20 @@ export function getTaskAgentLoginHint(
     case "aider":
       return "Configure an API key for Aider (for example OPENAI_API_KEY or ANTHROPIC_API_KEY).";
   }
+}
+
+export function isTaskAgentNonInteractiveAuthFailure(
+  agentType: SupportedTaskAgentAdapter,
+  ...details: Array<string | undefined>
+): boolean {
+  if (agentType !== "claude") {
+    return false;
+  }
+  return details.some(
+    (detail) =>
+      typeof detail === "string" &&
+      CLAUDE_NON_INTERACTIVE_AUTH_FAILURE_RE.test(detail),
+  );
 }
 
 function mergeAuthOutput(

@@ -83,6 +83,7 @@ import {
   assistTaskAgentBrowserLogin,
   augmentTaskAgentPreflightResults,
   getTaskAgentLoginHint,
+  isTaskAgentNonInteractiveAuthFailure,
   launchTaskAgentAuthFlow,
   probeTaskAgentAuth,
   type TaskAgentAuthFlowHandle,
@@ -1340,7 +1341,19 @@ export class PTYService {
     }
   > {
     clearTaskAgentFrameworkStateCache();
-    const status = await this.getAgentAuthStatus(agentType);
+    const staleNonInteractiveClaudeAuth = isTaskAgentNonInteractiveAuthFailure(
+      agentType,
+      login.instructions,
+      login.promptSnippet,
+      login.method,
+    );
+    const status = staleNonInteractiveClaudeAuth
+      ? ({
+          status: "unauthenticated",
+          detail: "Claude Code non-interactive auth returned 401.",
+          loginHint: getTaskAgentLoginHint(agentType),
+        } satisfies TaskAgentAuthStatus)
+      : await this.getAgentAuthStatus(agentType);
     if (status.status === "authenticated") {
       const resumed = await this.resumeSessionAfterRecoveredAuth(
         sessionId,
@@ -1383,7 +1396,9 @@ export class PTYService {
     let launch: TaskAgentAuthLaunchResult = {
       launched: false,
       instructions:
-        login.instructions?.trim() ||
+        (staleNonInteractiveClaudeAuth
+          ? `Claude Code non-interactive auth failed with 401 invalid credentials. ${getTaskAgentLoginHint(agentType)}`
+          : login.instructions?.trim()) ||
         getTaskAgentLoginHint(agentType) ||
         `Authentication is required for ${agentType}.`,
       ...(login.url ? { url: login.url } : {}),

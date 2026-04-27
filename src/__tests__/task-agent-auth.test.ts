@@ -6,6 +6,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   getTaskAgentLoginHint,
+  isTaskAgentNonInteractiveAuthFailure,
   normalizeTaskAgentAdapterId,
   probeTaskAgentAuth,
 } from "../services/task-agent-auth.js";
@@ -54,12 +55,33 @@ describe("normalizeTaskAgentAdapterId", () => {
 describe("getTaskAgentLoginHint", () => {
   it("returns a login hint for claude", () => {
     const hint = getTaskAgentLoginHint("claude");
-    expect(hint).toMatch(/claude auth login/);
+    expect(hint).toContain("claude setup-token");
+    expect(hint).toContain("claude auth login --claudeai");
   });
 
   it("returns a login hint for codex", () => {
     const hint = getTaskAgentLoginHint("codex");
     expect(hint).toMatch(/codex login/);
+  });
+});
+
+describe("isTaskAgentNonInteractiveAuthFailure", () => {
+  it("detects Claude Code 401 output from non-interactive runs", () => {
+    expect(
+      isTaskAgentNonInteractiveAuthFailure(
+        "claude",
+        'Failed to authenticate. API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"Invalid authentication credentials"}}',
+      ),
+    ).toBe(true);
+  });
+
+  it("does not classify unrelated adapters as Claude auth failures", () => {
+    expect(
+      isTaskAgentNonInteractiveAuthFailure(
+        "codex",
+        "401 invalid authentication credentials",
+      ),
+    ).toBe(false);
   });
 });
 

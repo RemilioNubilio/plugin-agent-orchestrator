@@ -19,13 +19,15 @@ import {
 
 /**
  * Callback for surfacing auth prompts to the user.
- * Returns the auth prompt text so Milady can relay it through chat.
+ * Returns true only when the prompt was delivered through an immediate
+ * user-visible channel. Buffered action callbacks are unsafe here because the
+ * device flow blocks until the user sees and completes the prompt.
  */
 export type AuthPromptCallback = (prompt: {
   verificationUri: string;
   userCode: string;
   expiresIn: number;
-}) => void;
+}) => boolean | Promise<boolean>;
 
 /**
  * Context object passed by CodingWorkspaceService into every GitHub function.
@@ -124,16 +126,18 @@ export async function performOAuthFlow(
   const deviceCode = await oauth.requestDeviceCode();
 
   // Step 2: Surface the auth prompt to the user
-  if (ctx.authPromptCallback) {
-    ctx.authPromptCallback({
+  const delivered = ctx.authPromptCallback
+    ? await ctx.authPromptCallback({
       verificationUri: deviceCode.verificationUri,
       userCode: deviceCode.userCode,
       expiresIn: deviceCode.expiresIn,
-    });
-  } else {
-    // Fallback: log to console
-    console.log(
-      `\n[GitHub Auth] Go to ${deviceCode.verificationUri} and enter code: ${deviceCode.userCode}\n`,
+    })
+    : false;
+
+  if (!delivered) {
+    throw new Error(
+      "GitHub OAuth device flow requires an immediate chat delivery path before polling. " +
+        "Wire the SwarmCoordinator chat callback or set GITHUB_TOKEN.",
     );
   }
 

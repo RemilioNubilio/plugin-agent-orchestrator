@@ -225,7 +225,7 @@ export interface SwarmCoordinatorContext {
   swarmCompleteNotified: boolean;
 
   broadcast(event: SwarmEvent): void;
-  sendChatMessage(text: string, source?: string): void;
+  sendChatMessage(text: string, source?: string): boolean;
   log(message: string): void;
   getSupervisionLevel(): SupervisionLevel;
   getAgentDecisionCallback(): AgentDecisionCallback | null;
@@ -493,11 +493,12 @@ export class SwarmCoordinator implements SwarmCoordinatorContext {
    *                   not duplicate them, because synthesis will deliver
    *                   the final outcome once a terminal state is reached.
    */
-  sendChatMessage(text: string, source?: string): void {
-    if (!this.chatCallback) return;
+  sendChatMessage(text: string, source?: string): boolean {
+    if (!this.chatCallback) return false;
     this.chatCallback(text, source).catch((err) => {
       this.log(`Failed to send chat message: ${err}`);
     });
+    return true;
   }
 
   // ─── Lifecycle ───
