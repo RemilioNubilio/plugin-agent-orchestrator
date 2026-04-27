@@ -233,7 +233,9 @@ async function getRecentConversationForFailure(
   }
 
   const messageText =
-    typeof message.content?.text === "string" ? message.content.text.trim() : "";
+    typeof message.content?.text === "string"
+      ? message.content.text.trim()
+      : "";
   return messageText
     ? `user: ${truncateForPrompt(messageText, LAUNCH_FAILURE_CONTEXT_CHARS)}`
     : "No recent conversation available.";
@@ -295,6 +297,7 @@ async function generateLaunchFailureUserMessage(
     "Instructions:",
     "- Use the character's voice and the conversation context.",
     "- Explain what happened in plain language without dumping a stack trace.",
+    '- Do not repeat the internal "Failed to launch N/N agent" wording.',
     "- Keep the concrete blocker, such as a missing CLI, intact.",
     "- Keep it lightweight: 1-3 short sentences.",
     "- Do not claim the coding task ran, succeeded, or was completed.",
@@ -320,11 +323,7 @@ async function generateLaunchFailureUserMessage(
     );
   }
 
-  return buildDeterministicLaunchFailureMessage(
-    runtime,
-    failures,
-    totalAgents,
-  );
+  return buildDeterministicLaunchFailureMessage(runtime, failures, totalAgents);
 }
 
 /**
@@ -622,7 +621,11 @@ export interface CodingTaskContext {
    * invoke it after the child claims `done`. Shape matches
    * `CustomValidatorSpec` in `services/custom-validator-runner.ts`.
    */
-  validator?: { service: string; method: string; params: Record<string, unknown> };
+  validator?: {
+    service: string;
+    method: string;
+    params: Record<string, unknown>;
+  };
   /** Optional override for MILADY_APP_VERIFICATION_MAX_RETRIES. */
   maxRetries?: number;
   /** Optional verdict-fail behavior. Defaults to "retry". */
@@ -1079,7 +1082,6 @@ export async function handleMultiAgent(
     state.codingSessions = results.filter((r) => r.sessionId);
   }
 
-  const succeeded = results.filter((r) => r.sessionId);
   const failed = results.filter((r) => !r.sessionId);
 
   // Only surface spawn outcomes in chat on failure — the synthesis

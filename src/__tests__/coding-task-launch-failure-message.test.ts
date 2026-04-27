@@ -51,10 +51,12 @@ describe("handleMultiAgent launch failures", () => {
           content: { text: "review that latest agent failure" },
         },
       ]),
-      useModel: vi.fn(async (_modelType: string, params: { prompt: string }) => {
-        prompts.push(params.prompt);
-        return "Milady here. I could not start the review agent because Claude Code is not installed yet.";
-      }),
+      useModel: vi.fn(
+        async (_modelType: string, params: { prompt: string }) => {
+          prompts.push(params.prompt);
+          return "Milady here. I could not start the review agent because Claude Code is not installed yet.";
+        },
+      ),
     };
 
     const result = await handleMultiAgent(
