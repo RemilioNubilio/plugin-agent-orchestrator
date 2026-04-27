@@ -17,6 +17,7 @@ export default defineConfig({
       "src/__tests__/task-agent-auth.test.ts",
       "src/__tests__/pty-spawn-path-fallback.test.ts",
       "src/__tests__/spawn-route-shell-register.test.ts",
+      "src/__tests__/env-allowlist.test.ts",
     ],
   },
 });

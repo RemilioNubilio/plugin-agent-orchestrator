@@ -97,6 +97,13 @@ const ENV_ALLOWLIST = [
   // falls back to its default sonnet even when the parent runtime is on opus.
   "ANTHROPIC_MODEL",
   "ANTHROPIC_SMALL_FAST_MODEL",
+  // Forward the user's GitHub PAT to spawned agents so `git`, `gh`, and
+  // `curl` against the GitHub API all work without each adapter having to
+  // know about the on-disk credential file. The token is opt-in: it only
+  // appears in process.env when the user has saved it through the host's
+  // GitHub connection card (or set it explicitly via shell), so passthrough
+  // here matches an explicit user grant rather than blanket leakage.
+  "GITHUB_TOKEN",
 ];
 
 /**
