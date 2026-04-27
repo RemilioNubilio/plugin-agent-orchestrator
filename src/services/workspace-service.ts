@@ -102,8 +102,15 @@ export interface ScratchWorkspaceRecord {
  * Without this, repos whose default is "alpha" / "master" / "develop"
  * (e.g. elizaos-plugins/plugin-discord uses "alpha") fail at clone with
  * "fatal: Remote branch main not found in upstream origin".
+ *
+ * Process-lifetime cache keyed by repoUrl: concurrent and repeated lookups
+ * against the same repo share one Promise so a swarm of N agents on the
+ * same repo costs one ls-remote, not N. Cleared on process restart, which
+ * is fine — default branches change rarely and a fresh boot rediscovers.
  */
-export function resolveDefaultBranch(repoUrl: string): Promise<string> {
+const defaultBranchCache = new Map<string, Promise<string>>();
+
+function lookupDefaultBranch(repoUrl: string): Promise<string | null> {
   return new Promise((resolve) => {
     execFile(
       "git",
@@ -111,16 +118,36 @@ export function resolveDefaultBranch(repoUrl: string): Promise<string> {
       { timeout: 10_000, encoding: "utf-8" },
       (err, stdout) => {
         if (err) {
-          // Network failure, private repo without creds, etc. Fall through
-          // to "main" — the historical default.
-          resolve("main");
+          // Network failure, private repo without creds, etc.
+          resolve(null);
           return;
         }
         const match = stdout.match(/^ref:\s+refs\/heads\/(\S+)\s+HEAD/m);
-        resolve(match?.[1] ?? "main");
+        resolve(match?.[1] ?? null);
       },
     );
   });
+}
+
+export function resolveDefaultBranch(repoUrl: string): Promise<string> {
+  const cached = defaultBranchCache.get(repoUrl);
+  if (cached) return cached;
+  const pending = lookupDefaultBranch(repoUrl).then((branch) => {
+    if (branch === null) {
+      // Don't cache failures — a transient network blip shouldn't poison
+      // subsequent calls. Drop the cache slot so a retry hits the network.
+      defaultBranchCache.delete(repoUrl);
+      return "main";
+    }
+    return branch;
+  });
+  defaultBranchCache.set(repoUrl, pending);
+  return pending;
+}
+
+/** Test hook: drop the per-repo cache so each test starts clean. */
+export function _clearDefaultBranchCache(): void {
+  defaultBranchCache.clear();
 }
 
 export class CodingWorkspaceService {
