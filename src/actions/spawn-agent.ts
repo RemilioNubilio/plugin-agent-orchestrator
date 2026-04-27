@@ -26,6 +26,10 @@ import {
   sanitizeCustomCredentials,
 } from "../services/agent-credentials.js";
 import { readConfigEnvKey } from "../services/config-env.js";
+import {
+  detectAuthFailureKind,
+  getOrchestratorAccountPoolShim,
+} from "../services/pty-spawn.js";
 import type { PTYService } from "../services/pty-service.js";
 import { getCoordinator } from "../services/pty-service.js";
 import {
@@ -446,6 +450,33 @@ export const spawnAgentAction: Action = {
             })
           : null;
 
+      // Multi-account: ask the AccountPool for a Claude Code OAuth token
+      // when this is a Claude Code spawn in subscription mode. Each spawn
+      // gets a stable session key so retries within one task agent stick
+      // to the same account; failovers come from the post-spawn output
+      // watcher below.
+      const spawnSessionKey = `spawn-agent:${message.id}:${Date.now()}`;
+      let claudeAccountId: string | undefined;
+      const spawnEnv: Record<string, string> = {};
+      if (agentType === "claude" && llmProvider === "subscription") {
+        const shim = getOrchestratorAccountPoolShim();
+        if (shim) {
+          const picked = await shim.pickAnthropicTokenForSpawn({
+            sessionKey: spawnSessionKey,
+          });
+          if (picked) {
+            claudeAccountId = picked.accountId;
+            spawnEnv.CLAUDE_CODE_OAUTH_TOKEN = picked.accessToken;
+            // Older Claude Code builds read ANTHROPIC_AUTH_TOKEN; setting
+            // both is a no-op on newer builds and avoids a version split.
+            spawnEnv.ANTHROPIC_AUTH_TOKEN = picked.accessToken;
+            logger.info(
+              `[SPAWN_AGENT] multi-account: spawning Claude Code under account "${claudeAccountId}"`,
+            );
+          }
+        }
+      }
+
       // Spawn the PTY session
       const session: SessionInfo = await ptyService.spawnSession({
         name: `task-${Date.now()}`,
@@ -458,6 +489,7 @@ export const spawnAgentAction: Action = {
           (approvalPreset as ApprovalPreset | undefined) ??
           ptyService.defaultApprovalPreset,
         customCredentials,
+        ...(Object.keys(spawnEnv).length > 0 ? { env: spawnEnv } : {}),
         // Let adapter auto-response handle startup prompts (API key, trust, etc.)
         // when using cloud/API key mode: the LLM coordinator misinterprets these.
         // In subscription mode, the coordinator handles all prompts.
@@ -471,6 +503,39 @@ export const spawnAgentAction: Action = {
           userId: (message as unknown as Record<string, unknown>).userId,
         },
       });
+
+      // Watch session output for auth failures so the AccountPool can
+      // mark the underlying account as rate-limited / invalid /
+      // needs-reauth. Only active when we actually picked an account.
+      if (claudeAccountId) {
+        const accountId = claudeAccountId;
+        const shim = getOrchestratorAccountPoolShim();
+        let flagged = false;
+        const unsubscribe = ptyService.subscribeToOutput(
+          session.id,
+          (data: string) => {
+            if (flagged || !shim) return;
+            const kind = detectAuthFailureKind(data);
+            if (!kind) return;
+            flagged = true;
+            if (kind === "rate-limited") {
+              shim.markRateLimited(
+                accountId,
+                Date.now() + 60_000,
+                "subprocess stderr: rate limit",
+              );
+            } else if (kind === "needs-reauth") {
+              shim.markNeedsReauth(
+                accountId,
+                "subprocess stderr: invalid_grant",
+              );
+            } else {
+              shim.markInvalid(accountId, "subprocess stderr: 401/unauthorized");
+            }
+            unsubscribe();
+          },
+        );
+      }
 
       // Register event handler for this session
       ptyService.onSessionEvent((sessionId, event, data) => {
