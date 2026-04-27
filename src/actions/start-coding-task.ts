@@ -265,7 +265,6 @@ export const startCodingTaskAction: BackgroundAction = {
     "Spawn async task agents for multi-step jobs: code, debug, research, write, analyze. Auto-provisions workspace from repo URL.",
 
   suppressPostActionContinuation: true,
-  suppressActionResultClipboard: true,
 
   examples: [
     [

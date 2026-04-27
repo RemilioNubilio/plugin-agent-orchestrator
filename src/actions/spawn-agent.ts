@@ -119,7 +119,6 @@ export const spawnAgentAction: Action = {
   // SPAWN_AGENT again, producing a duplicate subagent per user prompt.
   // Matches CREATE_TASK, which already has this for the same reason.
   suppressPostActionContinuation: true,
-  suppressActionResultClipboard: true,
 
   examples: [
     [
@@ -624,6 +623,7 @@ export const spawnAgentAction: Action = {
           agentType: piRequested ? "pi" : session.agentType,
           workdir: session.workdir,
           status: session.status,
+          suppressActionResultClipboard: true,
         },
       };
     } catch (error) {

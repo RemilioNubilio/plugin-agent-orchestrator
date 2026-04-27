@@ -1102,13 +1102,13 @@ export async function handleMultiAgent(
     return {
       success: false,
       text: failureMessage,
-      data: { agents: results },
+      data: { agents: results, suppressActionResultClipboard: true },
     };
   }
 
   return {
     success: true,
     text: "",
-    data: { agents: results },
+    data: { agents: results, suppressActionResultClipboard: true },
   };
 }
