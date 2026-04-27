@@ -10,6 +10,7 @@ export default defineConfig({
       "src/__tests__/skill-manifest.test.ts",
       "src/__tests__/skill-recommender.test.ts",
       "src/__tests__/skill-callback.test.ts",
+      "src/__tests__/manage-issues-oauth.test.ts",
       "src/__tests__/custom-validator-runner.test.ts",
       "src/__tests__/structured-proof-bridge.test.ts",
       "src/__tests__/pr39-followups.test.ts",
