@@ -66,33 +66,35 @@ function createFakeRegistry(): {
 describe("parseStructuredProofDirective", () => {
   it("parses a valid APP_CREATE_DONE line", () => {
     const out = parseStructuredProofDirective(
-      'APP_CREATE_DONE {"name":"foo","files":["src/plugin.ts","package.json"],"testsPassed":5,"lintClean":true,"description":"demo"}',
+      'APP_CREATE_DONE {"appName":"foo","files":["src/plugin.ts","package.json"],"tests":{"passed":5,"failed":0},"lint":"ok","typecheck":"ok","description":"demo"}',
     );
     expect(out?.ok).toBe(true);
     if (out?.ok) {
       expect(out.parsed.kind).toBe("APP_CREATE_DONE");
-      expect(out.parsed.claim.name).toBe("foo");
+      expect(out.parsed.claim.appName).toBe("foo");
       expect(out.parsed.claim.files).toEqual([
         "src/plugin.ts",
         "package.json",
       ]);
-      expect(out.parsed.claim.testsPassed).toBe(5);
-      expect(out.parsed.claim.lintClean).toBe(true);
-      expect(out.parsed.claim.description).toBe("demo");
+      expect(out.parsed.claim.tests).toEqual({ passed: 5, failed: 0 });
+      expect(out.parsed.claim.lint).toBe("ok");
+      expect(out.parsed.claim.typecheck).toBe("ok");
+      expect(out.parsed.claim.extra).toEqual({ description: "demo" });
     }
   });
 
   it("parses a valid PLUGIN_CREATE_DONE line embedded in surrounding output", () => {
     const text = [
       "Working on it...",
-      'PLUGIN_CREATE_DONE {"name":"plugin-bar","files":["src/index.ts"],"testsPassed":3,"lintClean":false}',
+      'PLUGIN_CREATE_DONE {"pluginName":"plugin-bar","files":["src/index.ts"],"tests":{"passed":3,"failed":0},"lint":"ok","typecheck":"ok"}',
       "Done.",
     ].join("\n");
     const out = parseStructuredProofDirective(text);
     expect(out?.ok).toBe(true);
     if (out?.ok) {
       expect(out.parsed.kind).toBe("PLUGIN_CREATE_DONE");
-      expect(out.parsed.claim.lintClean).toBe(false);
+      expect(out.parsed.claim.pluginName).toBe("plugin-bar");
+      expect(out.parsed.claim.tests.passed).toBe(3);
     }
   });
 
@@ -113,7 +115,7 @@ describe("parseStructuredProofDirective", () => {
 
   it("returns ok=false for valid JSON but missing required fields", () => {
     const out = parseStructuredProofDirective(
-      'APP_CREATE_DONE {"name":"foo"}',
+      'APP_CREATE_DONE {"appName":"foo"}',
     );
     expect(out?.ok).toBe(false);
     if (out && out.ok === false) {
@@ -123,14 +125,54 @@ describe("parseStructuredProofDirective", () => {
 
   it("returns ok=false when files is not a string array", () => {
     const out = parseStructuredProofDirective(
-      'APP_CREATE_DONE {"name":"foo","files":"index.ts","testsPassed":0,"lintClean":true}',
+      'APP_CREATE_DONE {"appName":"foo","files":"index.ts","tests":{"passed":0,"failed":0},"lint":"ok","typecheck":"ok"}',
     );
     expect(out?.ok).toBe(false);
   });
 
+  it("rejects the legacy name/testsPassed/lintClean proof shape", () => {
+    const out = parseStructuredProofDirective(
+      'APP_CREATE_DONE {"name":"foo","files":["a.ts"],"testsPassed":1,"lintClean":true}',
+    );
+    expect(out?.ok).toBe(false);
+    if (out && out.ok === false) {
+      expect(out.reason).toContain("legacy field 'name'");
+    }
+  });
+
+  it("rejects non-zero failed tests and non-ok lint/typecheck statuses", () => {
+    const failedTests = parseStructuredProofDirective(
+      'APP_CREATE_DONE {"appName":"foo","files":["a.ts"],"tests":{"passed":1,"failed":1},"lint":"ok","typecheck":"ok"}',
+    );
+    expect(failedTests?.ok).toBe(false);
+    if (failedTests && failedTests.ok === false) {
+      expect(failedTests.reason).toContain("'tests.failed' must be 0");
+    }
+
+    const dirtyLint = parseStructuredProofDirective(
+      'PLUGIN_CREATE_DONE {"pluginName":"plugin-bar","files":["a.ts"],"tests":{"passed":1,"failed":0},"lint":"fail","typecheck":"ok"}',
+    );
+    expect(dirtyLint?.ok).toBe(false);
+
+    const dirtyTypecheck = parseStructuredProofDirective(
+      'PLUGIN_CREATE_DONE {"pluginName":"plugin-bar","files":["a.ts"],"tests":{"passed":1,"failed":0},"lint":"ok","typecheck":"fail"}',
+    );
+    expect(dirtyTypecheck?.ok).toBe(false);
+  });
+
+  it("rejects the wrong canonical name field for the directive kind", () => {
+    const out = parseStructuredProofDirective(
+      'APP_CREATE_DONE {"pluginName":"plugin-bar","files":["a.ts"],"tests":{"passed":1,"failed":0},"lint":"ok","typecheck":"ok"}',
+    );
+    expect(out?.ok).toBe(false);
+    if (out && out.ok === false) {
+      expect(out.reason).toContain("'pluginName' is not valid");
+    }
+  });
+
   it("preserves unknown fields under `extra`", () => {
     const out = parseStructuredProofDirective(
-      'APP_CREATE_DONE {"name":"foo","files":["a.ts"],"testsPassed":1,"lintClean":true,"customField":42}',
+      'APP_CREATE_DONE {"appName":"foo","files":["a.ts"],"tests":{"passed":1,"failed":0},"lint":"ok","typecheck":"ok","customField":42}',
     );
     expect(out?.ok).toBe(true);
     if (out?.ok) {
@@ -157,7 +199,7 @@ describe("installStructuredProofBridge", () => {
 
     pty.emit("session-1", "task_complete", {
       response:
-        'Created files\nAPP_CREATE_DONE {"name":"demo-app","files":["src/plugin.ts","package.json"],"testsPassed":2,"lintClean":true}\n',
+        'Created files\nAPP_CREATE_DONE {"appName":"demo-app","files":["src/plugin.ts","package.json"],"tests":{"passed":2,"failed":0},"lint":"ok","typecheck":"ok"}\n',
     });
 
     await new Promise((resolve) => setImmediate(resolve));
@@ -169,12 +211,19 @@ describe("installStructuredProofBridge", () => {
       metadata: {
         structuredProof: {
           kind: "APP_CREATE_DONE",
-          name: "demo-app",
-          testsPassed: 2,
-          lintClean: true,
+          appName: "demo-app",
+          files: ["src/plugin.ts", "package.json"],
+          tests: { passed: 2, failed: 0 },
+          lint: "ok",
+          typecheck: "ok",
+          recordedAt: expect.any(Number),
         },
       },
     });
+    const proof = patch.metadata.structuredProof;
+    expect(proof).not.toHaveProperty("name");
+    expect(proof).not.toHaveProperty("testsPassed");
+    expect(proof).not.toHaveProperty("lintClean");
 
     expect(pty.sendToSession).toHaveBeenCalledTimes(1);
     const [ackSession, ackText] = pty.sendToSession.mock.calls[0];
@@ -200,7 +249,7 @@ describe("installStructuredProofBridge", () => {
 
     pty.emit("session-bad", "task_complete", {
       response:
-        'APP_CREATE_DONE {"name":"foo"} ', // missing required fields
+        'APP_CREATE_DONE {"appName":"foo"} ', // missing required fields
     });
 
     await new Promise((resolve) => setImmediate(resolve));
@@ -222,9 +271,9 @@ describe("installStructuredProofBridge", () => {
     });
 
     const firstClaim =
-      'APP_CREATE_DONE {"name":"first","files":["a.ts"],"testsPassed":1,"lintClean":true}';
+      'APP_CREATE_DONE {"appName":"first","files":["a.ts"],"tests":{"passed":1,"failed":0},"lint":"ok","typecheck":"ok"}';
     const secondClaim =
-      'APP_CREATE_DONE {"name":"second","files":["b.ts"],"testsPassed":2,"lintClean":true}';
+      'APP_CREATE_DONE {"appName":"second","files":["b.ts"],"tests":{"passed":2,"failed":0},"lint":"ok","typecheck":"ok"}';
 
     pty.emit("session-dup", "task_complete", { response: firstClaim });
     await new Promise((resolve) => setImmediate(resolve));
@@ -235,8 +284,10 @@ describe("installStructuredProofBridge", () => {
     // Only the first proof persists.
     expect(registry.updateSession).toHaveBeenCalledTimes(1);
     const [, firstPatch] = registry.updateSession.mock.calls[0];
-    expect((firstPatch as { metadata: { structuredProof: { name: string } } })
-      .metadata.structuredProof.name).toBe("first");
+    expect(
+      (firstPatch as { metadata: { structuredProof: { appName: string } } })
+        .metadata.structuredProof.appName,
+    ).toBe("first");
 
     // The duplicate still gets an explicit ack so the agent knows it
     // wasn't lost — just that the orchestrator is keeping the first.
@@ -261,7 +312,7 @@ describe("installStructuredProofBridge", () => {
     });
     pty.emit("session-noop", "blocked", {
       response:
-        'APP_CREATE_DONE {"name":"x","files":[],"testsPassed":0,"lintClean":true}', // wrong event type
+        'APP_CREATE_DONE {"appName":"x","files":[],"tests":{"passed":0,"failed":0},"lint":"ok","typecheck":"ok"}', // wrong event type
     });
     await new Promise((resolve) => setImmediate(resolve));
 

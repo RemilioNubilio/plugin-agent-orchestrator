@@ -11,8 +11,8 @@
  *
  * Sentinel grammar (one per session, on its own line):
  *
- *   APP_CREATE_DONE     {"name":"foo","files":[...],"testsPassed":N,"lintClean":B,"description":"..."}
- *   PLUGIN_CREATE_DONE  {"name":"plugin-bar","files":[...],"testsPassed":N,"lintClean":B}
+ *   APP_CREATE_DONE     {"appName":"foo","files":[...],"tests":{"passed":N,"failed":0},"lint":"ok","typecheck":"ok"}
+ *   PLUGIN_CREATE_DONE  {"pluginName":"plugin-bar","files":[...],"tests":{"passed":N,"failed":0},"lint":"ok","typecheck":"ok"}
  *
  * @module services/structured-proof-bridge
  */
@@ -22,39 +22,66 @@ import type { PTYService } from "./pty-service.js";
 import type { TaskRegistry } from "./task-registry.js";
 
 const LOG_PREFIX = "[StructuredProof]";
+const LEGACY_PROOF_FIELDS = ["name", "testsPassed", "lintClean"] as const;
 
 const STRUCTURED_PROOF_DIRECTIVE_RE =
   /^[\t ]*(APP_CREATE_DONE|PLUGIN_CREATE_DONE)[\t ]+(\{[\s\S]*?\})[\t ]*$/m;
 
 export type StructuredProofKind = "APP_CREATE_DONE" | "PLUGIN_CREATE_DONE";
+export type StructuredProofStatus = "ok";
 
-export interface StructuredProofClaim {
+export interface StructuredProofTests {
+  passed: number;
+  failed: number;
+}
+
+interface BaseStructuredProofClaim {
   /** Kind of completion sentinel emitted by the child. */
   kind: StructuredProofKind;
-  /** App or plugin name. Required. */
-  name: string;
   /** Relative paths the child claims to have created/modified. Required. */
   files: string[];
-  /** Number of tests the child claims passed. Required. */
-  testsPassed: number;
-  /** Whether the child claims a clean lint run. Required. */
-  lintClean: boolean;
-  /** Optional human-readable description. */
-  description?: string;
+  /** Test result summary from the child verification run. */
+  tests: StructuredProofTests;
+  /** Lint status. Completion proofs only accept "ok". */
+  lint: StructuredProofStatus;
+  /** Typecheck status. Completion proofs only accept "ok". */
+  typecheck: StructuredProofStatus;
   /** Wall-clock timestamp when this proof was recorded. */
   recordedAt: number;
   /** Any other JSON fields the child included. */
   extra?: Record<string, unknown>;
 }
 
-interface ParsedStructuredProof {
-  kind: StructuredProofKind;
-  claim: StructuredProofClaim;
+export interface AppStructuredProofClaim extends BaseStructuredProofClaim {
+  kind: "APP_CREATE_DONE";
+  appName: string;
 }
 
-function getLogger(runtime: IAgentRuntime): Logger | Console {
-  const candidate = (runtime as unknown as { logger?: Logger }).logger;
-  return candidate ?? console;
+export interface PluginStructuredProofClaim extends BaseStructuredProofClaim {
+  kind: "PLUGIN_CREATE_DONE";
+  pluginName: string;
+}
+
+export type StructuredProofClaim =
+  | AppStructuredProofClaim
+  | PluginStructuredProofClaim;
+
+type ParsedStructuredProof =
+  | { kind: "APP_CREATE_DONE"; claim: AppStructuredProofClaim }
+  | { kind: "PLUGIN_CREATE_DONE"; claim: PluginStructuredProofClaim };
+
+type StructuredProofLogger = Pick<Logger, "info" | "warn" | "error">;
+
+const NOOP_LOGGER: StructuredProofLogger = {
+  info: () => undefined,
+  warn: () => undefined,
+  error: () => undefined,
+};
+
+function getLogger(runtime: IAgentRuntime): StructuredProofLogger {
+  const candidate = (runtime as unknown as { logger?: StructuredProofLogger })
+    .logger;
+  return candidate ?? NOOP_LOGGER;
 }
 
 function isPlainStringArray(value: unknown): value is string[] {
@@ -63,12 +90,108 @@ function isPlainStringArray(value: unknown): value is string[] {
   );
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasOwnField(
+  obj: Record<string, unknown>,
+  field: string,
+): boolean {
+  return Object.prototype.hasOwnProperty.call(obj, field);
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isInteger(value) &&
+    Number.isFinite(value) &&
+    value >= 0
+  );
+}
+
+function parseStructuredProofTests(
+  value: unknown,
+): { ok: true; tests: StructuredProofTests } | { ok: false; reason: string } {
+  if (!isPlainObject(value)) {
+    return { ok: false, reason: "'tests' must be an object" };
+  }
+  const passed = value.passed;
+  const failed = value.failed;
+  if (!isNonNegativeInteger(passed)) {
+    return {
+      ok: false,
+      reason: "'tests.passed' must be a non-negative integer",
+    };
+  }
+  if (!isNonNegativeInteger(failed)) {
+    return {
+      ok: false,
+      reason: "'tests.failed' must be a non-negative integer",
+    };
+  }
+  if (failed !== 0) {
+    return { ok: false, reason: "'tests.failed' must be 0" };
+  }
+  return { ok: true, tests: { passed, failed } };
+}
+
+function getNameField(kind: StructuredProofKind): "appName" | "pluginName" {
+  return kind === "APP_CREATE_DONE" ? "appName" : "pluginName";
+}
+
+function getOppositeNameField(
+  kind: StructuredProofKind,
+): "appName" | "pluginName" {
+  return kind === "APP_CREATE_DONE" ? "pluginName" : "appName";
+}
+
+function getStructuredProofName(claim: StructuredProofClaim): string {
+  return claim.kind === "APP_CREATE_DONE" ? claim.appName : claim.pluginName;
+}
+
+function buildParsedStructuredProof(
+  kind: StructuredProofKind,
+  canonicalName: string,
+  files: string[],
+  tests: StructuredProofTests,
+  extra: Record<string, unknown> | undefined,
+): ParsedStructuredProof {
+  const base = {
+    files,
+    tests,
+    lint: "ok" as const,
+    typecheck: "ok" as const,
+    recordedAt: Date.now(),
+    ...(extra ? { extra } : {}),
+  };
+  if (kind === "APP_CREATE_DONE") {
+    return {
+      kind,
+      claim: {
+        kind,
+        appName: canonicalName,
+        ...base,
+      },
+    };
+  }
+  return {
+    kind,
+    claim: {
+      kind,
+      pluginName: canonicalName,
+      ...base,
+    },
+  };
+}
+
 /**
  * Parse the first APP_CREATE_DONE / PLUGIN_CREATE_DONE directive in a chunk
  * of agent output, if any. The directive must be on its own line (after
  * optional whitespace) and the JSON must include all required fields:
- * `name`, `files`, `testsPassed`, `lintClean`. Anything missing returns a
- * structured "invalid" result so the bridge can log without persisting.
+ * `appName`/`pluginName`, `files`, `tests`, `lint`, and `typecheck`.
+ * Anything missing returns a structured "invalid" result so the bridge can
+ * log without persisting.
  */
 export function parseStructuredProofDirective(
   text: string,
@@ -92,36 +215,52 @@ export function parseStructuredProofDirective(
       }`,
     };
   }
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+  if (!isPlainObject(payload)) {
     return { ok: false, reason: "payload must be a JSON object" };
   }
-  const obj = payload as Record<string, unknown>;
-  const name = obj.name;
+  const obj = payload;
+  for (const field of LEGACY_PROOF_FIELDS) {
+    if (hasOwnField(obj, field)) {
+      return {
+        ok: false,
+        reason: `legacy field '${field}' is not supported`,
+      };
+    }
+  }
+  const nameField = getNameField(kind);
+  const oppositeNameField = getOppositeNameField(kind);
+  if (hasOwnField(obj, oppositeNameField)) {
+    return {
+      ok: false,
+      reason: `'${oppositeNameField}' is not valid for ${kind}`,
+    };
+  }
+  const rawName = obj[nameField];
   const files = obj.files;
-  const testsPassed = obj.testsPassed;
-  const lintClean = obj.lintClean;
-  if (typeof name !== "string" || name.trim().length === 0) {
-    return { ok: false, reason: "missing or empty 'name'" };
+  if (typeof rawName !== "string" || rawName.trim().length === 0) {
+    return { ok: false, reason: `missing or empty '${nameField}'` };
   }
   if (!isPlainStringArray(files)) {
     return { ok: false, reason: "'files' must be string[]" };
   }
-  if (typeof testsPassed !== "number" || !Number.isFinite(testsPassed)) {
-    return { ok: false, reason: "'testsPassed' must be a finite number" };
+  const parsedTests = parseStructuredProofTests(obj.tests);
+  if (!parsedTests.ok) {
+    return parsedTests;
   }
-  if (typeof lintClean !== "boolean") {
-    return { ok: false, reason: "'lintClean' must be a boolean" };
+  if (obj.lint !== "ok") {
+    return { ok: false, reason: "'lint' must be \"ok\"" };
   }
-  const description =
-    typeof obj.description === "string" ? obj.description : undefined;
+  if (obj.typecheck !== "ok") {
+    return { ok: false, reason: "'typecheck' must be \"ok\"" };
+  }
   // Preserve any unknown JSON fields under `extra` so downstream validators
   // can read them without re-parsing the line.
   const known = new Set([
-    "name",
+    nameField,
     "files",
-    "testsPassed",
-    "lintClean",
-    "description",
+    "tests",
+    "lint",
+    "typecheck",
   ]);
   const extra: Record<string, unknown> = {};
   let hasExtra = false;
@@ -130,17 +269,14 @@ export function parseStructuredProofDirective(
     extra[key] = value;
     hasExtra = true;
   }
-  const claim: StructuredProofClaim = {
+  const parsed = buildParsedStructuredProof(
     kind,
-    name: name.trim(),
+    rawName.trim(),
     files,
-    testsPassed,
-    lintClean,
-    ...(description !== undefined ? { description } : {}),
-    recordedAt: Date.now(),
-    ...(hasExtra ? { extra } : {}),
-  };
-  return { ok: true, parsed: { kind, claim } };
+    parsedTests.tests,
+    hasExtra ? extra : undefined,
+  );
+  return { ok: true, parsed };
 }
 
 interface BridgeDeps {
@@ -208,15 +344,16 @@ export function installStructuredProofBridge(deps: BridgeDeps): () => void {
     sessionId: string,
     parsed: ParsedStructuredProof,
   ): Promise<void> => {
+    const proofName = getStructuredProofName(parsed.claim);
     if (persistedSessions.has(sessionId)) {
       log.info?.(
-        `${LOG_PREFIX} duplicate ${parsed.kind} for session ${sessionId} (name=${parsed.claim.name}); skipping`,
+        `${LOG_PREFIX} duplicate ${parsed.kind} for session ${sessionId} (name=${proofName}); skipping`,
       );
       // Echo back so the agent doesn't think the orchestrator missed it,
       // but make it explicit that this is a duplicate.
       await ptyService.sendToSession(
         sessionId,
-        `--- structured proof duplicate ignored (${parsed.kind}, ${parsed.claim.name}) ---`,
+        `--- structured proof duplicate ignored (${parsed.kind}, ${proofName}) ---`,
       );
       return;
     }
@@ -239,11 +376,15 @@ export function installStructuredProofBridge(deps: BridgeDeps): () => void {
       },
     });
     log.info?.(
-      `${LOG_PREFIX} recorded ${parsed.kind} for session ${sessionId} (name=${parsed.claim.name}, files=${parsed.claim.files.length}, testsPassed=${parsed.claim.testsPassed}, lintClean=${parsed.claim.lintClean})`,
+      `${LOG_PREFIX} recorded ${parsed.kind} for session ${sessionId} ` +
+        `(name=${proofName}, files=${parsed.claim.files.length}, ` +
+        `tests.passed=${parsed.claim.tests.passed}, ` +
+        `tests.failed=${parsed.claim.tests.failed}, ` +
+        `lint=${parsed.claim.lint}, typecheck=${parsed.claim.typecheck})`,
     );
     await ptyService.sendToSession(
       sessionId,
-      `--- structured proof recorded (${parsed.kind}, ${parsed.claim.name}) ---`,
+      `--- structured proof recorded (${parsed.kind}, ${proofName}) ---`,
     );
   };
 
