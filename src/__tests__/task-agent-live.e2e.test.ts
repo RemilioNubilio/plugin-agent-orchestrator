@@ -65,6 +65,9 @@ function claudeHasDeterministicAuth(): boolean {
   if (process.env.ANTHROPIC_API_KEY?.trim()) {
     return true;
   }
+  if (process.env.CLAUDE_CODE_OAUTH_TOKEN?.trim()) {
+    return true;
+  }
   return (
     fs.existsSync(path.join(os.homedir(), ".claude", ".credentials.json")) ||
     fs.existsSync(path.join(os.homedir(), ".claude.json"))
@@ -74,6 +77,13 @@ function claudeHasDeterministicAuth(): boolean {
 function isFrameworkAuthenticated(framework: Framework): boolean {
   if (framework === "claude" && !claudeHasDeterministicAuth()) {
     return false;
+  }
+  if (
+    framework === "claude" &&
+    (process.env.ANTHROPIC_API_KEY?.trim() ||
+      process.env.CLAUDE_CODE_OAUTH_TOKEN?.trim())
+  ) {
+    return true;
   }
 
   try {
@@ -187,7 +197,7 @@ claudeLiveDescribe("task-agent live smoke (claude)", () => {
     async () => {
       await runLiveSmokeScript("claude", "counter-app");
     },
-    15 * 60 * 1000,
+    25 * 60 * 1000,
   );
 });
 
@@ -213,6 +223,6 @@ codexLiveDescribe("task-agent live smoke (codex)", () => {
     async () => {
       await runLiveSmokeScript("codex", "counter-app");
     },
-    15 * 60 * 1000,
+    25 * 60 * 1000,
   );
 });
