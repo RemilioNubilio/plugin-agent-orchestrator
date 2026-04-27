@@ -31,6 +31,7 @@ export type OrchestratorDecisionType =
   | "stall-classify-decide"
   | "swarm-context-generation"
   | "event-triage"
+  | "launch-failure-message"
   | "task-validation"
   | "acceptance-verifier";
 
