@@ -219,7 +219,7 @@ Run the opt-in live smoke tests against real Claude Code and Codex sessions:
 bun run test:live
 ```
 
-The live suite creates a temporary workspace, asks the real CLI to complete a small file-writing task, and verifies both task execution and task-status visibility.
+The live suite creates temporary workspaces, asks the real CLIs to complete small file-writing and browser-backed tasks, and verifies both task execution and task-status visibility. It also has Claude Code and Codex create a simple counter app, emit `APP_CREATE_DONE`, pass parent-side typecheck/lint/test verification, and register the generated app through the unified `APP` `load_from_directory` mode. Set `MILADY_LIVE_CODEX_MODEL` or `MILADY_LIVE_CLAUDE_MODEL` to pin a live-test model when the local CLI cannot run its configured default.
 
 ## Dependencies
 

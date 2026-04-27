@@ -32,6 +32,10 @@ const liveSmokeScript = path.join(
   "task-agent-live-smoke.ts",
 );
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function codexHasStoredAuth(): boolean {
   if (process.env.OPENAI_API_KEY?.trim()) {
     return true;
@@ -39,10 +43,18 @@ function codexHasStoredAuth(): boolean {
   try {
     const authPath = path.join(os.homedir(), ".codex", "auth.json");
     const raw = fs.readFileSync(authPath, "utf8");
-    const parsed = JSON.parse(raw) as { OPENAI_API_KEY?: string };
+    const parsed = JSON.parse(raw) as unknown;
+    if (!isRecord(parsed)) return false;
+    const apiKey = parsed.OPENAI_API_KEY;
+    if (typeof apiKey === "string" && apiKey.trim().length > 0) return true;
+    const tokens = parsed.tokens;
     return (
-      typeof parsed.OPENAI_API_KEY === "string" &&
-      parsed.OPENAI_API_KEY.trim().length > 0
+      parsed.auth_mode === "chatgpt" &&
+      isRecord(tokens) &&
+      typeof tokens.access_token === "string" &&
+      tokens.access_token.trim().length > 0 &&
+      typeof tokens.refresh_token === "string" &&
+      tokens.refresh_token.trim().length > 0
     );
   } catch {
     return false;
@@ -53,7 +65,10 @@ function claudeHasDeterministicAuth(): boolean {
   if (process.env.ANTHROPIC_API_KEY?.trim()) {
     return true;
   }
-  return fs.existsSync(path.join(os.homedir(), ".claude", ".credentials.json"));
+  return (
+    fs.existsSync(path.join(os.homedir(), ".claude", ".credentials.json")) ||
+    fs.existsSync(path.join(os.homedir(), ".claude.json"))
+  );
 }
 
 function isFrameworkAuthenticated(framework: Framework): boolean {
@@ -105,7 +120,7 @@ const codexLiveDescribe =
 
 async function runLiveSmokeScript(
   framework: "claude" | "codex",
-  mode: "sequential" | "web",
+  mode: "sequential" | "web" | "counter-app",
 ): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const bunBinary = process.execPath;
@@ -166,6 +181,14 @@ claudeLiveDescribe("task-agent live smoke (claude)", () => {
     },
     12 * 60 * 1000,
   );
+
+  it(
+    "has Claude Code create a counter app and load it through APP",
+    async () => {
+      await runLiveSmokeScript("claude", "counter-app");
+    },
+    15 * 60 * 1000,
+  );
 });
 
 codexLiveDescribe("task-agent live smoke (codex)", () => {
@@ -183,5 +206,13 @@ codexLiveDescribe("task-agent live smoke (codex)", () => {
       await runLiveSmokeScript("codex", "web");
     },
     12 * 60 * 1000,
+  );
+
+  it(
+    "has Codex create a counter app and load it through APP",
+    async () => {
+      await runLiveSmokeScript("codex", "counter-app");
+    },
+    15 * 60 * 1000,
   );
 });
