@@ -475,6 +475,25 @@ export const spawnAgentAction: Action = {
             );
           }
         }
+        // Account-pool fallback: when no shim is registered or no account
+        // was picked, forward CLAUDE_CODE_OAUTH_TOKEN from the runtime
+        // settings (which falls back to process.env in test runtimes) so
+        // single-user setups can spawn an authenticated Claude Code child
+        // without standing up a multi-account pool. The host's CLI auth
+        // doesn't propagate through the spawn env allowlist, so without
+        // this the PTY child blocks on the login prompt forever.
+        if (!spawnEnv.CLAUDE_CODE_OAUTH_TOKEN) {
+          const fallbackOauth = runtime.getSetting(
+            "CLAUDE_CODE_OAUTH_TOKEN",
+          ) as string | undefined;
+          if (fallbackOauth?.trim()) {
+            spawnEnv.CLAUDE_CODE_OAUTH_TOKEN = fallbackOauth;
+            spawnEnv.ANTHROPIC_AUTH_TOKEN = fallbackOauth;
+            logger.info(
+              "[SPAWN_AGENT] forwarding CLAUDE_CODE_OAUTH_TOKEN from runtime settings (no account-pool shim configured)",
+            );
+          }
+        }
       }
 
       // Spawn the PTY session
