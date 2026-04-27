@@ -109,6 +109,224 @@ interface PreparedSkillAwareness {
   manifest: SkillsManifestResult;
 }
 
+interface LaunchFailureReport {
+  label: string;
+  agentType: string;
+  error?: string;
+}
+
+const LAUNCH_FAILURE_CONTEXT_CHARS = 3000;
+const LAUNCH_FAILURE_ACTION_HISTORY_CHARS = 2500;
+const LAUNCH_FAILURE_ERRORS_CHARS = 2000;
+
+function truncateForPrompt(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  return `${value.slice(0, maxChars - 15).trimEnd()}\n...[truncated]`;
+}
+
+function stringifyPromptValue(value: unknown, maxChars: number): string {
+  if (typeof value === "string") {
+    return truncateForPrompt(value.trim(), maxChars);
+  }
+  if (value === undefined || value === null) {
+    return "";
+  }
+  try {
+    return truncateForPrompt(JSON.stringify(value, null, 2), maxChars);
+  } catch {
+    return truncateForPrompt(String(value), maxChars);
+  }
+}
+
+function formatCharacterBio(bio: unknown): string {
+  if (Array.isArray(bio)) {
+    return bio
+      .map((line) => (typeof line === "string" ? line.trim() : ""))
+      .filter(Boolean)
+      .join("\n");
+  }
+  return typeof bio === "string" ? bio.trim() : "";
+}
+
+function getActionHistoryForFailure(state: State | undefined): string {
+  const promptedActionResults = stringifyPromptValue(
+    state?.values?.actionResults,
+    LAUNCH_FAILURE_ACTION_HISTORY_CHARS,
+  );
+  if (promptedActionResults) return promptedActionResults;
+
+  const recentActionResults = stringifyPromptValue(
+    state?.values?.recentActionResults,
+    LAUNCH_FAILURE_ACTION_HISTORY_CHARS,
+  );
+  if (recentActionResults) return recentActionResults;
+
+  const actionResults = state?.data?.actionResults;
+  if (!Array.isArray(actionResults) || actionResults.length === 0) {
+    return "No action history available.";
+  }
+
+  const lines = actionResults.slice(-5).map((result, index) => {
+    const actionName =
+      typeof result?.data?.actionName === "string"
+        ? result.data.actionName
+        : `action ${index + 1}`;
+    const status = result.success === false ? "failed" : "succeeded";
+    const output =
+      typeof result.text === "string" && result.text.trim().length > 0
+        ? ` Output: ${result.text.trim()}`
+        : "";
+    const error =
+      result.error instanceof Error
+        ? ` Error: ${result.error.message}`
+        : typeof result.error === "string" && result.error.trim().length > 0
+          ? ` Error: ${result.error.trim()}`
+          : "";
+    return `${actionName} - ${status}.${output}${error}`;
+  });
+
+  return truncateForPrompt(
+    lines.join("\n"),
+    LAUNCH_FAILURE_ACTION_HISTORY_CHARS,
+  );
+}
+
+async function getRecentConversationForFailure(
+  runtime: IAgentRuntime,
+  message: Memory,
+  state: State | undefined,
+): Promise<string> {
+  const promptedRecentMessages = stringifyPromptValue(
+    state?.values?.recentMessages,
+    LAUNCH_FAILURE_CONTEXT_CHARS,
+  );
+  if (promptedRecentMessages) return promptedRecentMessages;
+
+  try {
+    const memories = await runtime.getMemories({
+      roomId: message.roomId,
+      limit: 8,
+      tableName: "messages",
+    });
+    const lines = [...memories]
+      .reverse()
+      .map((memory) => {
+        const content =
+          memory.content && typeof memory.content === "object"
+            ? (memory.content as { text?: string; type?: string })
+            : null;
+        if (!content?.text || content.type === "action_result") return "";
+        const speaker =
+          memory.entityId === runtime.agentId
+            ? (runtime.character.name ?? "agent")
+            : "user";
+        return `${speaker}: ${content.text}`;
+      })
+      .filter(Boolean);
+    if (lines.length > 0) {
+      return truncateForPrompt(lines.join("\n"), LAUNCH_FAILURE_CONTEXT_CHARS);
+    }
+  } catch (err) {
+    logger.warn(
+      `[START_CODING_TASK] Failed to load recent conversation for launch failure message: ${err}`,
+    );
+  }
+
+  const messageText =
+    typeof message.content?.text === "string" ? message.content.text.trim() : "";
+  return messageText
+    ? `user: ${truncateForPrompt(messageText, LAUNCH_FAILURE_CONTEXT_CHARS)}`
+    : "No recent conversation available.";
+}
+
+function buildDeterministicLaunchFailureMessage(
+  runtime: IAgentRuntime,
+  failures: LaunchFailureReport[],
+  totalAgents: number,
+): string {
+  const characterName = runtime.character.name?.trim() || "I";
+  const firstError = failures[0]?.error?.trim() || "the launcher failed";
+  const target =
+    failures.length === 1
+      ? `"${failures[0]?.label ?? "the agent"}"`
+      : `${failures.length}/${totalAgents} agents`;
+  return `${characterName}: I could not launch ${target} because ${firstError}.`;
+}
+
+async function generateLaunchFailureUserMessage(
+  ctx: CodingTaskContext,
+  failures: LaunchFailureReport[],
+  totalAgents: number,
+): Promise<string> {
+  const { runtime, message, state } = ctx;
+  const characterName = runtime.character.name?.trim() || "Agent";
+  const characterBio = formatCharacterBio(runtime.character.bio);
+  const recentConversation = await getRecentConversationForFailure(
+    runtime,
+    message,
+    state,
+  );
+  const actionHistory = getActionHistoryForFailure(state);
+  const errors = truncateForPrompt(
+    failures
+      .map((failure, index) => {
+        const error = failure.error?.trim() || "unknown launch error";
+        return `${index + 1}. ${failure.label} (${failure.agentType}): ${error}`;
+      })
+      .join("\n"),
+    LAUNCH_FAILURE_ERRORS_CHARS,
+  );
+
+  const prompt = [
+    `You are ${characterName}. Write the message ${characterName} should send to the user after coding-agent launch failed.`,
+    "",
+    "Character bio:",
+    characterBio || "(none provided)",
+    "",
+    "Recent conversation:",
+    recentConversation,
+    "",
+    "Action history:",
+    actionHistory,
+    "",
+    "Launch errors:",
+    errors,
+    "",
+    "Instructions:",
+    "- Use the character's voice and the conversation context.",
+    "- Explain what happened in plain language without dumping a stack trace.",
+    "- Keep the concrete blocker, such as a missing CLI, intact.",
+    "- Keep it lightweight: 1-3 short sentences.",
+    "- Do not claim the coding task ran, succeeded, or was completed.",
+    "- Output only the user-facing message.",
+  ].join("\n");
+
+  try {
+    const result = await withTrajectoryContext(
+      runtime,
+      { source: "orchestrator", decisionType: "launch-failure-message" },
+      () =>
+        runtime.useModel(ModelType.TEXT_SMALL, {
+          prompt,
+          temperature: 0.4,
+          stream: false,
+        }),
+    );
+    const text = result?.trim();
+    if (text) return text;
+  } catch (err) {
+    logger.warn(
+      `[START_CODING_TASK] Failed to generate launch failure user message: ${err}`,
+    );
+  }
+
+  return buildDeterministicLaunchFailureMessage(
+    runtime,
+    failures,
+    totalAgents,
+  );
+}
+
 /**
  * Compute per-task skill recommendations, render SKILLS.md into the workspace,
  * and return the absolute manifest path so the spawned agent can find it via
@@ -845,13 +1063,6 @@ export async function handleMultiAgent(
         `[START_CODING_TASK] Failed to spawn agent ${i + 1}:`,
         errorMessage,
       );
-      if (callback) {
-        await callback({
-          text:
-            `[${i + 1}/${agentSpecs.length}] Failed to launch "${specLabel}". ` +
-            errorMessage,
-        });
-      }
       results.push({
         sessionId: "",
         agentType: specAgentType,
@@ -878,15 +1089,17 @@ export async function handleMultiAgent(
   // the handler didn't emit its own callback (see
   // packages/typescript/src/services/message.ts action-result routing).
   if (failed.length > 0) {
-    const failureSummary =
-      `Failed to launch ${failed.length}/${agentSpecs.length} agent${failed.length === 1 ? "" : "s"}: ` +
-      failed.map((r) => `"${r.label}" — ${r.error}`).join("; ");
+    const failureMessage = await generateLaunchFailureUserMessage(
+      ctx,
+      failed,
+      agentSpecs.length,
+    );
     if (callback) {
-      await callback({ text: failureSummary });
+      await callback({ text: failureMessage });
     }
     return {
       success: false,
-      text: failureSummary,
+      text: failureMessage,
       data: { agents: results },
     };
   }
