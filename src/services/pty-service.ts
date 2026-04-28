@@ -116,10 +116,33 @@ const TASK_COMPLETE_STOP_DELAY_MS = 5_000;
  * into $HOME or /tmp regardless of caller-supplied memoryContent. Deployment-
  * specific conventions (hosting, URLs, etc.) belong in caller memoryContent.
  */
-function buildWorkspaceLockMemory(workdir: string): string {
-  return `# Workspace
+const COMMON_LOCK_PREFIX = `# Operating mode
+
+You are an autonomous Milady sub-agent — there is no interactive human in this session. If you cannot do something, surface a \`DECISION: cannot continue because <reason>\` line on stdout (the orchestrator tails for those) and stop; do not ask a user to run a command for you.`;
+
+const TOOL_DISCOVERY_HINTS: Record<CodingAgentType, string> = {
+  claude:
+    "Tool availability varies by Claude Code build and account tier — enumerate your actual tools (read `.claude/settings.json`'s `permissions.allow`, or use `ToolSearch` if present) before deciding you can't do a thing. For the full operating manual see `~/.claude/skills/milady-runtime/SKILL.md` (or invoke `Skill milady-runtime` if your build has the Skill tool).",
+  gemini:
+    "Your tool list is defined in `.gemini/settings.json`. Use `run_shell_command` for shell, `read_file`/`write_file` for I/O. Read settings before assuming a tool is missing.",
+  codex:
+    "Your tool list is the OpenAI Codex runtime's built-in set (`exec_command`, `apply_patch`, `read_file`, etc.). Read `.codex/config.json` for any tier-specific overrides before assuming a tool is missing.",
+  aider:
+    "Your tools are aider's slash commands (`/run`, `/edit`, `/add`, etc.); see `.aider.conf.yml` if present for any overrides.",
+  hermes: "",
+  shell: "",
+  pi: "",
+};
+
+function buildWorkspaceLockMemory(
+  workdir: string,
+  agentType: CodingAgentType,
+): string {
+  const workspace = `# Workspace
 
 Your working directory is \`${workdir}\`. Stay inside it: do not \`cd\` to \`/tmp\`, \`/\`, \`$HOME\`, or any other path outside the workspace. Create all files, run all builds, and start all servers from this directory. If you need scratch space, make a subdirectory here.`;
+  const hint = TOOL_DISCOVERY_HINTS[agentType] ?? "";
+  return `${workspace}\n\n${COMMON_LOCK_PREFIX}${hint ? ` ${hint}` : ""}`;
 }
 
 function prependWorkspaceLockToTask(
@@ -293,6 +316,10 @@ export class PTYService {
     ReturnType<typeof setInterval>
   > = new Map();
   private completionSignalSince: Map<string, number> = new Map();
+  private taskCompleteAutoStopTimers: Map<
+    string,
+    ReturnType<typeof setTimeout>
+  > = new Map();
   private terminalSessionStates: Map<
     string,
     {
@@ -509,6 +536,10 @@ export class PTYService {
       unsubscribe();
     }
     this.transcriptUnsubscribers.clear();
+    for (const timer of this.taskCompleteAutoStopTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.taskCompleteAutoStopTimers.clear();
     for (const timer of this.completionReconcileTimers.values()) {
       clearInterval(timer);
     }
@@ -577,7 +608,7 @@ export class PTYService {
 
     const sessionId = this.generateSessionId();
     const workdir = options.workdir ?? process.cwd();
-    const workspaceLock = buildWorkspaceLockMemory(workdir);
+    const workspaceLock = buildWorkspaceLockMemory(workdir, resolvedAgentType);
     const shouldWriteMemoryFile =
       resolvedAgentType !== "shell" && Boolean(options.memoryContent?.trim());
     // The workspace lock is markdown prose meant to be read as CLAUDE.md
@@ -895,6 +926,12 @@ export class PTYService {
     if (metadata) {
       metadata.lastSentInput = input;
     }
+    // Caller is feeding the session new work — cancel any pending
+    // task_complete auto-stop so the agent gets to actually process this
+    // input. (Without this, the SwarmCoordinator's small-LLM correction
+    // for hallucinated refusals races against the 5s grace timer and the
+    // PTY gets killed before the corrected turn completes.)
+    this.cancelTaskCompleteAutoStop(sessionId);
     const message = await sendToSessionIO(this.ioContext(), sessionId, input);
     this.scheduleCompletionReconcile(sessionId);
     return message;
@@ -913,6 +950,7 @@ export class PTYService {
   async stopSession(sessionId: string, force = false): Promise<void> {
     if (!this.manager) throw new Error("PTYService not initialized");
     captureLifecycle(sessionId, "session_stopped", force ? "force" : undefined);
+    this.cancelTaskCompleteAutoStop(sessionId);
     try {
       return await stopSessionIO(
         this.ioContext(),
@@ -1242,10 +1280,17 @@ export class PTYService {
         // trigger phantom heartbeats in downstream streamers minutes
         // after the user already got their answer. The grace period
         // lets any backgrounded processes detach from the PTY parent
-        // before it exits.
-        setTimeout(() => {
-          this.stopSession(sessionId).catch(() => {});
-        }, TASK_COMPLETE_STOP_DELAY_MS);
+        // before it exits, AND lets the SwarmCoordinator's small-LLM
+        // assess and (if needed) send a corrective continuation prompt
+        // without racing against this timer (sendToSession cancels it).
+        this.cancelTaskCompleteAutoStop(sessionId);
+        this.taskCompleteAutoStopTimers.set(
+          sessionId,
+          setTimeout(() => {
+            this.taskCompleteAutoStopTimers.delete(sessionId);
+            this.stopSession(sessionId).catch(() => {});
+          }, TASK_COMPLETE_STOP_DELAY_MS),
+        );
         break;
       case "permission_approved":
         // Permission was auto-approved via PermissionRequest hook.
@@ -1950,6 +1995,14 @@ export class PTYService {
       this.completionReconcileTimers.delete(sessionId);
     }
     this.completionSignalSince.delete(sessionId);
+  }
+
+  private cancelTaskCompleteAutoStop(sessionId: string): void {
+    const timer = this.taskCompleteAutoStopTimers.get(sessionId);
+    if (timer) {
+      clearTimeout(timer);
+      this.taskCompleteAutoStopTimers.delete(sessionId);
+    }
   }
 
   private scheduleCompletionReconcile(sessionId: string): void {
