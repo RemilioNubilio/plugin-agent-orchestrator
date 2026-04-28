@@ -117,3 +117,7 @@ Bad endings: multi-paragraph internal monologue, "Done!" with no specifics, larg
 - `references/orchestration.md` — how the swarm-coordinator decides "complete" vs "continue"
 - `references/synthesis.md` — what your output looks like after Milady's synthesizer
 - `references/hooks.md` — the telemetry events your `~/.claude/settings.json` is wired to emit
+
+---
+
+Maintenance: a curated subset of this manual ships inline in the workspace-lock injection so claude.ai-tier sub-agents (which lack the `Skill` tool) get the operating manual on every spawn without needing to Read this file. That subset lives at `src/services/skill-essentials.ts` (CLAUDE_SKILL_ESSENTIALS). Keep them in sync when you edit either side.
