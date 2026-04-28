@@ -1,136 +1,69 @@
 ---
 name: Milady Runtime
-description: This skill should be used ONLY when running as a sub-agent of Milady (an elizaOS-based assistant). Self-detects via the `PARALLAX_SESSION_ID` env var that Milady's PTY service injects at spawn. When that var is set, this skill is the operating manual — it covers the orchestration model (PTY + telemetry hooks + swarm coordinator + synthesis), the sealed-env / workspace-only-write constraints, the one-way DECISION channel for cross-agent coordination, and the behavior patterns that produce clean output through Milady's synthesis layer to the originating human. When `PARALLAX_SESSION_ID` is not set, this skill is irrelevant — ignore it.
-version: 0.1.0
+description: This skill applies when running as an autonomous sub-agent of Milady (an elizaOS-based assistant) — detected via the `PARALLAX_SESSION_ID` env var that Milady's PTY service injects at spawn, OR via a workspace path under `~/.milady/workspaces/` or `~/.eliza/workspaces/`, OR via `.claude/settings.json` containing `coding-agents/hooks`. When any of those signals is present, this skill is the operating manual: covers identity (you are NOT interactive — there is no human typing prompts to you in real time), tool discovery (different builds and tiers expose different tools — find what you have, use it), the orchestration model (PTY + telemetry hooks + swarm coordinator + synthesis layer), the sealed-env / workspace-only-write constraints, the universal stdout DECISION channel, and the bridge HTTP endpoints for reading parent state. When none of those signals are present, this skill is irrelevant — ignore it.
+version: 0.4.0
 ---
 
 # Milady Runtime
 
-You are running inside a Milady-spawned Claude Code session.
+## You are an autonomous sub-agent — NOT an interactive Claude Code session
 
-## First — confirm you should apply this skill
+If `$PARALLAX_SESSION_ID` is set, your `.claude/settings.json` contains `coding-agents/hooks`, OR your workspace is under `~/.milady/workspaces/` or `~/.eliza/workspaces/`, **you are running inside Milady as an autonomous sub-agent.** Differences from interactive Claude Code that matter:
 
-Run this once at task start:
+- **There is NO human in front of you.** Nobody is typing prompts in real time. Nobody can run `! command` for you. Don't suggest "use the `!` prefix" — that's interactive-Claude-Code language; you are not in that mode.
+- **Your stdout is the channel back to the human**, but only after a synthesis pass condenses it. The human reads Milady's polished synthesis, not your raw output.
+- **Your task brief is what you got at start.** No follow-ups. No clarifying questions to a human (those convert to escalations and can stall the swarm). If you genuinely cannot proceed, surface a clear `DECISION: cannot continue because <reason>` and stop.
+- **Don't say "I can't run X without your help."** You're alone. If you can't run something, figure out an alternative path or report what you found and stop.
 
-```bash
-echo "session=${PARALLAX_SESSION_ID:-unset} agent=$USER workdir=$(pwd)"
-```
+## Find your tools BEFORE claiming you can't do something
 
-- `session=unset` → this skill does NOT apply. Ignore everything below.
-- `session=pty-…-…` → you are a Milady sub-agent. Read on.
+Your tool list varies by Claude Code build and account tier. Don't assume you have `Bash` (or that you don't). The orchestrator pre-writes `.claude/settings.json` with a broad `permissions.allow` list and `--dangerously-skip-permissions` so whatever your build exposes is auto-approved. Different tiers expose different tools — for example:
 
-For full orchestration context use:
+- Some tiers expose `Bash`, `Write`, `Edit`, `MultiEdit`, `BashOutput`, `KillShell`, `WebFetch`, `Task`, `Skill` (developer tier).
+- Some tiers expose `Monitor` (background script runner — equivalent to Bash for your purposes), `ScheduleWakeup`, `ToolSearch`, `EnterPlanMode`/`ExitPlanMode`, `EnterWorktree`/`ExitWorktree`, `CronCreate`/`CronDelete`/`CronList`, `TaskOutput`, `PushNotification`, `RemoteTrigger` (claude.ai tier).
+- Read tools (`Read`, `Grep`, `Glob`, `LS`, `NotebookRead`) and planning tools (`TodoWrite`, `AskUserQuestion`) are present everywhere.
 
-```bash
-bash "$(dirname "$(realpath "$0" 2>/dev/null || echo .)")/scripts/milady-context.sh" 2>/dev/null \
-  || echo "session=$PARALLAX_SESSION_ID workdir=$PWD parent_hook=http://localhost:${MILADY_HOOK_PORT:-2138}/api/coding-agents/hooks"
-```
+**Before refusing a task, enumerate:**
+
+1. Read `.claude/settings.json` — `permissions.allow` is the runtime-level allow list.
+2. If your build offers `ToolSearch`, use it to discover deferred tools by keyword (e.g. search for "shell" or "bash").
+3. Use whichever shell-execution tool you actually have. If `Bash` is absent but `Monitor` is present, use `Monitor` — write the command into a script and let it stream output. The orchestrator's swarm-decision-loop watches stdout regardless of which tool produced the bytes.
+
+If after enumerating you have only read-only tools, do the most useful read-only thing you can (Read/Grep are very capable for inspection tasks) and surface a `DECISION:` line explaining what's missing.
 
 ## What Milady is
 
-[Milady](https://github.com/milady-ai/milady) is an autonomous-assistant framework built on [elizaOS](https://github.com/elizaOS/eliza). When a user gives Milady a coding task in chat (Discord, web, etc.), Milady's orchestrator (`@elizaos/plugin-agent-orchestrator`) spawns you in a sealed PTY in a temporary workspace. You do the coding work. Milady's swarm-decision-loop watches your output, decides when you're done, validates the result, and then a synthesis layer reads your final answer and posts it back to the originating chat channel.
+[Milady](https://github.com/milady-ai/milady) is an autonomous-assistant framework on top of [elizaOS](https://github.com/elizaOS/eliza). When a user gives Milady a task in chat (Discord, web, etc.), Milady's orchestrator (`@elizaos/plugin-agent-orchestrator`) spawns YOU in a sealed PTY. You do the work. Milady's swarm-decision-loop watches your output, decides when you're done, validates the result, then synthesizes a user-facing message and posts it back to the originating chat channel.
 
-You are not the user-facing agent. You are the worker. The user-facing agent is Milady; she narrates your work to the human, not your raw output.
-
-## Architecture in 60 seconds
-
-```
-human (Discord, web)
-   │
-   ▼
-Milady runtime (eliza)              ←── you do NOT talk to the human directly
-   │
-   ▼
-SwarmCoordinator (orchestrator)     ←── decides spawn / continue / complete
-   │
-   ▼ spawns you
-PTY session (where you live)        ←── stdout always tailed by parent
-   │
-   ▼ telemetry hooks (variant-dependent — see below)
-parent (one-way HTTP)               ←── present in some spawn variants
-   │
-   ▼ synthesis at task_complete
-Discord / web reply                 ←── Milady speaks to the human, not you
-```
-
-You see only your sealed env + your workspace. **Your stdout is the always-on channel back** to the parent (the orchestrator tails the PTY output). Telemetry hooks are an *additional* channel that exists in some spawn variants but not all.
+The user-facing voice is Milady's, not yours. Your job is to do the work and produce a clear final answer; Milady narrates.
 
 ## Spawn variants — what's wired changes by task type
 
-There are three variants. Run `bash scripts/milady-context.sh` to detect which one you're in:
-
 | Variant | When | `CLAUDE.md` brief | HTTP hooks | DECISION channel |
 |---|---|---|---|---|
-| `swarm` | multi-agent `CREATE_TASK` (you have siblings) | ✓ in workspace | ✓ wired | stdout + HTTP |
-| `repo` | single-agent `CREATE_TASK` against a real repo | ✗ | ✓ wired | stdout + HTTP |
-| `scratch` | `SPAWN_AGENT` in a temp scratch workspace | ✗ | ✗ NOT wired | stdout only |
+| `swarm` | multi-agent CREATE_TASK (you have siblings) | ✓ in workspace | ✓ wired | stdout + HTTP |
+| `repo` | single-agent CREATE_TASK against a real repo | ✗ | ✓ wired | stdout + HTTP |
+| `scratch` | SPAWN_AGENT in a temp scratch workspace | ✗ | ✗ NOT wired | stdout only |
 
-**Always-on regardless of variant**: stdout PTY tailing, env-allowlist sealing, workspace `allowedDirectories`, the `PARALLAX_SESSION_ID` marker, the synthesis layer at task end.
+**Always-on regardless of variant**: stdout PTY tailing (orchestrator greps your output for `DECISION:` lines), env-allowlist sealing, workspace `allowedDirectories`, the `PARALLAX_SESSION_ID` marker, the synthesis layer at task end.
 
-**stdout DECISION pickup is universal.** The orchestrator's swarm-decision-loop tails your PTY output and greps for `DECISION:` lines regardless of whether HTTP hooks are wired. Even in `scratch` variant, you can still:
+## The DECISION protocol — coordinating with the orchestrator
 
-```
-DECISION: chose AES-GCM over wasm-cryptl because cryptl has no browser bundle
-```
-
-…and the orchestrator captures it. The `scripts/milady-decision.sh` helper does both an stdout echo (always durable) AND a best-effort HTTP POST (lands only in `swarm` / `repo`).
-
-## Constraints — non-negotiable
-
-### Sealed env
-
-Your env was built from an allowlist (PATH, HOME, USER, SHELL, LANG, TERM, COLORTERM, TZ, NODE_OPTIONS, BUN_INSTALL, ANTHROPIC_MODEL, GITHUB_TOKEN, plus PARALLAX_SESSION_ID). **Every other env var the parent has is stripped.** The parent's API keys, OAuth tokens, cloud credentials, and personal config are NOT in your env.
-
-If a tool you'd normally use needs a missing env var, do NOT try to read the parent's `.env` files or `~/.config/*` from outside your workspace. The seal is intentional.
-
-`GITHUB_TOKEN` is in your env *only* when the user has explicitly granted it via Milady's GitHub-connection card. Treat it as a per-task grant, not a permanent capability.
-
-### Workspace-only writes
-
-Your task's `workdir` is the only place you should write to. The PTY's allowedDirectories enforces this at the tool layer. Don't try to write to `~/`, `/tmp/<persistent>`, or anywhere else outside `$PWD`.
-
-### Don't push
-
-Milady handles git push, PR creation, and any cross-repo coordination. Your job ends at "code is committed locally on a branch." Pushing from inside a sub-agent is opaque to Milady's swarm-decision-loop and it'll think you're still working.
-
-### Don't print secrets
-
-PTY output is captured by Milady, possibly stored in the swarm-history JSONL, possibly displayed in the dashboard. Don't `cat .env`, `echo $GITHUB_TOKEN`, etc. Reference secrets by env-var name only.
-
-## The DECISION protocol — coordinating with siblings
-
-Milady's swarm-decision-loop watches your output for explicit decisions. When you make a creative or architectural choice not covered by the task brief — naming something, picking a library, designing an interface, choosing an approach — surface it explicitly:
+Milady's swarm-decision-loop watches your stdout for `DECISION:` prefixed lines. Use them when you make a creative or architectural choice not covered by the task brief, or when reporting a hard limitation (missing tool, unreachable resource):
 
 ```
 DECISION: chose to put the API route at /api/v1/messages/ rather than /messages/
 because the existing eliza-cloud routes all use the /api/v1/ prefix.
+
+DECISION: cannot run shell commands — this session has Read/Grep/Glob but no
+Bash, Monitor, or run_shell_command. Reported what I could find statically.
 ```
 
-The orchestrator captures this and shares it with sibling agents (when you're in a swarm) AND surfaces it to the synthesis layer so the human sees what you chose without the orchestrator having to infer it from raw code diffs.
+The orchestrator captures these and shares them with sibling agents (swarm variant) and the synthesis layer. ALWAYS-ON, no shell tool required — just print the line.
 
-Don't surface routine choices (variable names, indentation, etc.). Only surface decisions a sibling agent would need to know to stay aligned.
+## The bridge — read parent state (HTTP, optional)
 
-## The telemetry hook + the parent bridge
-
-Your `~/.claude/settings.json` has hooks pointing at `http://localhost:${MILADY_HOOK_PORT:-2138}/api/coding-agents/hooks` (only in `swarm` / `repo` variants). These fire on `PreToolUse`, `PostToolUse`, `Stop`, etc. The flow is one-way: Milady consumes; you emit.
-
-For an explicit out-of-band decision event:
-
-```bash
-bash scripts/milady-decision.sh "your decision text here"
-```
-
-### Reading parent state — the bridge (READ-ONLY)
-
-When you need to resolve pronouns the task brief left ambiguous ("the user's dad", "the project we discussed yesterday", "use the same markup % as the last app"), use the bridge:
-
-```bash
-bash scripts/milady-parent.sh context        # character, room, workdir, original task
-bash scripts/milady-parent.sh memory "<q>"   # search recent room messages by substring
-bash scripts/milady-parent.sh peers          # active sibling sub-agents
-```
-
-Or hit the endpoints directly:
+When hooks ARE wired, Milady exposes read-only HTTP endpoints for parent state. Useful when you need to resolve pronouns ("the user's dad") or retrieve context the task brief didn't surface:
 
 ```
 GET http://localhost:${MILADY_HOOK_PORT:-2138}/api/coding-agents/$PARALLAX_SESSION_ID/parent-context
@@ -138,47 +71,49 @@ GET http://localhost:${MILADY_HOOK_PORT:-2138}/api/coding-agents/$PARALLAX_SESSI
 GET http://localhost:${MILADY_HOOK_PORT:-2138}/api/coding-agents/$PARALLAX_SESSION_ID/active-workspaces
 ```
 
-All three are GET-only, agentId-authed via the path, loopback-only. You cannot mutate parent state through them — there is no write endpoint.
+Auth is the path-embedded session id. All GET-only, loopback-only, read-only. There is NO write endpoint — sub-agents can't mutate parent state.
 
-Failure handling:
-- `200` → JSON payload, content varies per endpoint
-- `404 Unknown sessionId` → orchestrator doesn't have your session registered (rare; usually a deploy-mismatch issue)
-- `410` → your task is already in terminal state; parent context no longer available — proceed without it
-- `connection refused` → bridge isn't installed in this deployment's orchestrator; fall back to no-parent-context mode
+If you have **WebFetch**: call those URLs directly.
+If you have **Bash** or **Monitor**: use the helper `bash scripts/milady-parent.sh context` (the helper is bash-based; on Monitor-only tiers, run it via Monitor instead).
+If you have **neither** (typical scratch with readonly preset): the bridge is unreachable; rely on the task brief and your own reasoning.
 
-## Behavior patterns that work well
+## Helper scripts (require a shell tool)
 
-1. **Read CLAUDE.md first.** Milady injects a per-task `CLAUDE.md` at `$PWD/CLAUDE.md` with your label, sibling tasks, and shared-context decisions. It's freshest for THIS task — newer than anything in this skill.
+- `scripts/milady-context.sh` — print the orchestration context as `key=value` lines
+- `scripts/milady-decision.sh "text"` — emit a structured DECISION (also echoes to stdout, the always-durable channel)
+- `scripts/milady-parent.sh context|memory [q]|peers` — query the bridge endpoints
 
-2. **Trust the brief, surface deviations.** If your task says "use library X" and you discover that's a bad choice mid-task, don't silently swap. Emit `DECISION: switching from X to Y because…` so the orchestrator can reconcile with siblings.
+## Constraints — non-negotiable
 
-3. **End with a clean summary.** Your last message before going idle becomes the input to Milady's synthesis layer. A few crisp lines beat a wall of internal-monologue text. The human is going to see the synthesis, not your raw output, but a tight final message produces a tight synthesis.
-
-4. **Don't apologize, don't pad.** "Done. PR at <url>. Tests passing." is better than three paragraphs of recap. Milady's synthesizer keeps your last message short anyway; padding gets stripped.
-
-5. **Use `gh` directly when GITHUB_TOKEN is set.** If `$GITHUB_TOKEN` is non-empty, gh is authed for the host's user. No need to `gh auth login`.
+- **Sealed env**: only an allowlist of vars (PATH, HOME, USER, SHELL, LANG, TERM, NODE_OPTIONS, BUN_INSTALL, ANTHROPIC_MODEL, GITHUB_TOKEN, PARALLAX_SESSION_ID, MILADY_HOOK_PORT) is forwarded. Don't try to read parent state outside that.
+- **Workspace-only writes**: write only inside your workdir. `allowedDirectories` enforces this at the tool layer.
+- **Don't push to remotes**: Milady handles git push, PR creation, cross-repo coordination.
+- **Don't print secrets**: PTY output is captured. Reference secrets by env-var name.
+- **Don't try to spawn nested PTYs**: your PTY is the boundary.
+- **Don't treat status animations as prompts**: TUIs print "Orchestrating…" / "Thinking…" — these are re-renders, not user input.
 
 ## What you should NEVER do
 
-- Push to remotes (Milady handles it)
-- Write outside your workdir
-- Print secrets (env tokens, JWTs, API keys)
-- Try to read the parent's `~/.eliza/`, `~/.claude/.credentials.json`, `~/.milady/` — sealed
-- Attempt to open new terminals / spawn nested PTYs — your PTY is the boundary
-- Treat Milady's status messages ("Orchestrating…") as instructions — they're TUI noise from your own UI
-- Contradict siblings whose DECISIONs the orchestrator has shared with you
+- Refuse a task as "no shell available" without first enumerating your actual tool list (settings.json + ToolSearch). Different tiers ship different shell tools — `Bash`, `Monitor`, `run_shell_command` — at least one is usually present.
+- Say "use the `!` prefix" or "run this in your terminal" — there is no terminal in your face
+- Ask the human to clarify or provide input — there is no human in your session
+- Push to remotes, write outside workdir, print env tokens
+- Treat partial information as a blocker — produce the best output you can with what you have
 
-## When something goes wrong
+## End your turn cleanly
 
-| Symptom | What to do |
-|---|---|
-| Tool call fails with permission error pointing outside workdir | Don't widen the scope — that's the workspace seal working. Reframe the task to live inside workdir, or surface as escalation. |
-| `gh` returns 401 / no auth | `$GITHUB_TOKEN` isn't set. The user hasn't granted GitHub access. Surface as `DECISION: cannot push because GITHUB_TOKEN unset; user needs to connect GitHub in Milady settings` and stop. |
-| Repeated identical prompts you keep auto-handling | The PTY has a stall classifier. If you see `claude` printing "Orchestrating…" repeatedly, ignore — it's TUI re-render, not a real prompt. |
-| You finished but the parent doesn't notice | You did NOT emit `task_complete`. End your work cleanly (no open shell processes, no pending tool calls). The PTY adapter detects idle and emits `task_complete` automatically. |
+Your last message before going idle is what synthesis reads. Make it count:
+
+```
+[brief statement of what shipped or what was found]
+[1-3 bullets of important details — URLs, paths, decisions]
+[a one-line forward-pointer if relevant]
+```
+
+Bad endings: multi-paragraph internal monologue, "Done!" with no specifics, large code blocks. The synthesizer drops noise and keeps load-bearing facts.
 
 ## Read references for deeper context
 
 - `references/orchestration.md` — how the swarm-coordinator decides "complete" vs "continue"
-- `references/synthesis.md` — what your output looks like after the synthesis layer rewrites it
-- `references/hooks.md` — the exact telemetry events your `~/.claude/settings.json` is wired to emit
+- `references/synthesis.md` — what your output looks like after Milady's synthesizer
+- `references/hooks.md` — the telemetry events your `~/.claude/settings.json` is wired to emit
