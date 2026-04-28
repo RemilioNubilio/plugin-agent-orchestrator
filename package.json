@@ -16,6 +16,7 @@
     }
   },
   "files": [
+    "assets",
     "dist",
     "scripts",
     "README.md",

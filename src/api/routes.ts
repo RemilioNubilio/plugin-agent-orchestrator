@@ -13,6 +13,7 @@ import type { PTYService } from "../services/pty-service.js";
 import type { SwarmCoordinator } from "../services/swarm-coordinator.js";
 import type { CodingWorkspaceService } from "../services/workspace-service.js";
 import { handleAgentRoutes } from "./agent-routes.js";
+import { handleBridgeRoutes } from "./bridge-routes.js";
 import { handleCoordinatorRoutes } from "./coordinator-routes.js";
 import { handleHookRoutes } from "./hook-routes.js";
 import { handleIssueRoutes } from "./issue-routes.js";
@@ -98,6 +99,13 @@ export async function handleCodingAgentRoutes(
 
   // Delegate to hook routes first — hooks need fast responses
   if (await handleHookRoutes(req, res, normalizedPathname, ctx)) {
+    return true;
+  }
+
+  // Sub-agent bridge (read-only parent-state queries from spawned coding
+  // sub-agents). Pattern is /api/coding-agents/<sessionId>/(parent-context|memory|active-workspaces)
+  // and is matched before agent-routes so its more-specific path wins.
+  if (await handleBridgeRoutes(req, res, normalizedPathname, ctx)) {
     return true;
   }
 

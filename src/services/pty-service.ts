@@ -35,6 +35,7 @@ import {
   extractCompletionSummary,
   peekTaskResponse,
 } from "./ansi-utils.js";
+import { ensureBundledClaudeCodeSkills } from "./claude-code-skill-installer.js";
 import { readConfigEnvKey } from "./config-env.js";
 import {
   type CoordinatorNormalizedEvent,
@@ -362,6 +363,17 @@ export class PTYService {
       | undefined;
     const service = new PTYService(runtime, config ?? {});
     await service.initialize();
+
+    // Install bundled Claude Code skills (e.g. milady-runtime) into
+    // ~/.claude/skills/ so spawned sub-agents see them on first use.
+    // Skip-if-exists semantics — never stomps user customizations.
+    try {
+      ensureBundledClaudeCodeSkills(logger);
+    } catch (err) {
+      logger.warn(
+        `[PTYService] bundled claude-code skill install failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
 
     // Wire the SwarmCoordinator here instead of plugin init()
     // because ElizaOS calls Service.start() reliably but may not call
