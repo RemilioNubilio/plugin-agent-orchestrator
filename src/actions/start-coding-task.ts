@@ -170,6 +170,38 @@ function looksLikeProseTask(text: string | undefined | null): boolean {
   return false;
 }
 
+
+/**
+ * When the action-selector LLM trims a multi-clause user prompt down to a
+ * single imperative `task`, the rest of the user text is dropped — e.g.
+ * "read /etc/timezone, then also tell me X" gets reduced to "read
+ * /etc/timezone" and the secondary clause never reaches the subagent.
+ * Reconstruct a brief that preserves the full user intent while still
+ * letting the planner-extracted task lead.
+ *
+ * Returns `extractedTask` unchanged when:
+ *   - userText is empty (programmatic spawn, no user message)
+ *   - userText is shorter or equal to extractedTask (the planner just
+ *     cleaned up casing/grammar — no information is lost)
+ *   - extractedTask is a substring of userText (the "extraction" was a
+ *     noop and userText alone carries everything)
+ *
+ * Otherwise returns a two-section brief: the planner-extracted task as the
+ * imperative header, and the full user message preserved for context the
+ * planner trimmed.
+ */
+export function preserveUserPromptInTask(
+	extractedTask: string,
+	userText: string,
+): string {
+	const task = (extractedTask ?? "").trim();
+	const raw = (userText ?? "").trim();
+	if (!raw) return task;
+	if (raw.length <= task.length) return task;
+	if (raw.toLowerCase().includes(task.toLowerCase())) return raw;
+	return `${task}\n\n# Full user message (preserved — may contain context the action-selector trimmed)\n\n${raw}`;
+}
+
 /**
  * Split a multi-intent task description into one segment per distinct ask.
  * Matches numbered lists (`1. ...`, `2) ...`) and bullets (`- ...`, `* ...`).
@@ -589,7 +621,7 @@ export const startCodingTaskAction: BackgroundAction = {
     if (agentsParam) {
       return handleMultiAgent(ctx, agentsParam);
     }
-    return handleMultiAgent(ctx, task || userText);
+    return handleMultiAgent(ctx, preserveUserPromptInTask(task, userText) || userText);
   },
 
   parameters: [

@@ -46,6 +46,7 @@ import { createScratchDir } from "./coding-task-helpers.js";
 import { mergeTaskThreadEvalMetadata } from "./eval-metadata.js";
 import {
   coerceShellAgentTypeForProse,
+  preserveUserPromptInTask,
   splitMultiIntentTask,
   startCodingTaskAction,
 } from "./start-coding-task.js";
@@ -261,7 +262,8 @@ export const spawnAgentAction: Action = {
       }));
     const agentType = normalizeAgentType(rawAgentType);
     const piRequested = isPiAgentType(rawAgentType);
-    const initialTask = piRequested ? toPiCommand(task) : task;
+    const baseTask = preserveUserPromptInTask(task, userText);
+    const initialTask = piRequested ? toPiCommand(baseTask) : baseTask;
 
     // Resolve workdir: explicit param > state from PROVISION_WORKSPACE > most recent workspace > cwd
     let workdir = (params?.workdir as string) ?? (content.workdir as string);
